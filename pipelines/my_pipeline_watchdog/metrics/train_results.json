@@ -1,0 +1,46 @@
+{
+    "timestamp": "2025-08-12 16:23:00",
+    "type": "retrain",
+    "file": "Data_2023.arff",
+    "mode": 2,
+    "fallback": false,
+    "strategy": "retrain with window (last 1000 samples)",
+    "model": "RandomForestClassifier(min_samples_leaf=2, min_samples_split=5, random_state=42)",
+    "gridsearch": {
+        "best_params": {
+            "max_depth": null,
+            "min_samples_leaf": 2,
+            "min_samples_split": 5,
+            "n_estimators": 100
+        },
+        "cv": 3
+    },
+    "balanced_accuracy": 0.9861460957178841,
+    "classification_report": {
+        "0": {
+            "precision": 1.0,
+            "recall": 0.9722921914357683,
+            "f1-score": 0.9859514687100894,
+            "support": 397.0
+        },
+        "1": {
+            "precision": 0.9734299516908212,
+            "recall": 1.0,
+            "f1-score": 0.9865361077111383,
+            "support": 403.0
+        },
+        "accuracy": 0.98625,
+        "macro avg": {
+            "precision": 0.9867149758454106,
+            "recall": 0.9861460957178841,
+            "f1-score": 0.9862437882106139,
+            "support": 800.0
+        },
+        "weighted avg": {
+            "precision": 0.9866153381642512,
+            "recall": 0.98625,
+            "f1-score": 0.9862459806068677,
+            "support": 800.0
+        }
+    }
+}

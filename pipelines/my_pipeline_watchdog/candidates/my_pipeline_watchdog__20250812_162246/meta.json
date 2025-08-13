@@ -1,0 +1,11 @@
+{
+    "approved": false,
+    "file": "Data_2023.arff",
+    "timestamp": "2025-08-12 16:22:46",
+    "metrics_keys": [
+        "accuracy",
+        "balanced_accuracy",
+        "f1",
+        "classification_report"
+    ]
+}

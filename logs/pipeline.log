@@ -1,0 +1,508 @@
+2025-08-02 21:01:07,241 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:01:22,694 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:01:23,292 - demo_pipeline - INFO - data_loader.py:62 - Fichero Data_2024.arff registrado como trabajado con fecha 1753174981.7752833.
+2025-08-02 21:01:23,894 - demo_pipeline - INFO - data_loader.py:62 - Fichero Data_2025.arff registrado como trabajado con fecha 1753262328.6189563.
+2025-08-02 21:01:23,902 - demo_pipeline - ERROR - data_loader.py:24 - Error cargando fichero Dockerfile: Formato de fichero no soportado: 
+2025-08-02 21:01:23,904 - demo_pipeline - ERROR - data_loader.py:24 - Error cargando fichero drift_monitor.log: Formato de fichero no soportado: .log
+2025-08-02 21:01:23,905 - demo_pipeline - ERROR - data_loader.py:24 - Error cargando fichero drift_monitor_error.log: Formato de fichero no soportado: .log
+2025-08-02 21:01:23,909 - demo_pipeline - INFO - data_loader.py:62 - Fichero requirements.txt registrado como trabajado con fecha 1753787205.198104.
+2025-08-02 21:01:23,926 - demo_pipeline - ERROR - data_loader.py:24 - Error cargando fichero train_models.py: Formato de fichero no soportado: .py
+2025-08-02 21:03:55,723 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:03:55,724 - demo_pipeline - INFO - data_loader.py:62 - Fichero Data_2024.arff ya procesado y sin modificaciones. Saltando.
+2025-08-02 21:03:55,724 - demo_pipeline - INFO - data_loader.py:62 - Fichero Data_2025.arff ya procesado y sin modificaciones. Saltando.
+2025-08-02 21:03:55,725 - demo_pipeline - INFO - data_loader.py:69 - Fichero fechas_trabajadas.txt registrado como trabajado con fecha 1754161283.9003346.
+2025-08-02 21:03:55,726 - demo_pipeline - INFO - data_loader.py:62 - Fichero requirements.txt ya procesado y sin modificaciones. Saltando.
+2025-08-02 21:05:23,663 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:05:24,272 - demo_pipeline - INFO - data_loader.py:69 - Fichero Data_2023.arff registrado como trabajado con fecha 1753178230.417293.
+2025-08-02 21:05:24,580 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:05:24,585 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:05:24,586 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:05:24,586 - demo_pipeline - INFO - default_train_retrain.py:30 - >>> Entrando en default_train
+2025-08-02 21:05:24,586 - demo_pipeline - INFO - default_train_retrain.py:31 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:05:42,969 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:05:43,524 - demo_pipeline - INFO - data_loader.py:69 - Fichero Data_2023.arff registrado como trabajado con fecha 1753178230.417293.
+2025-08-02 21:05:43,810 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:05:43,811 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:05:43,811 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:05:43,811 - demo_pipeline - INFO - default_train_retrain.py:30 - >>> Entrando en default_train
+2025-08-02 21:05:43,811 - demo_pipeline - INFO - default_train_retrain.py:31 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:06:01,675 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:06:02,310 - demo_pipeline - INFO - data_loader.py:69 - Fichero Data_2023.arff registrado como trabajado con fecha 1753178230.417293.
+2025-08-02 21:06:02,622 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:06:02,622 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:06:02,622 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:06:02,622 - demo_pipeline - INFO - default_train_retrain.py:30 - >>> Entrando en default_train
+2025-08-02 21:06:02,623 - demo_pipeline - INFO - default_train_retrain.py:31 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:08:10,716 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:08:10,717 - demo_pipeline - INFO - data_loader.py:63 - Fichero Data_2023.arff ya procesado y sin modificaciones. Saltando.
+2025-08-02 21:08:21,758 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:08:22,319 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:08:22,320 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:09:44,402 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:09:44,997 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:09:44,998 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:09:45,347 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:09:45,347 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:09:45,347 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:09:45,347 - demo_pipeline - INFO - default_train_retrain.py:30 - >>> Entrando en default_train
+2025-08-02 21:09:45,347 - demo_pipeline - INFO - default_train_retrain.py:31 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:10:19,440 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:10:20,028 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:10:20,029 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:10:20,297 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:10:20,297 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:10:20,297 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:10:20,298 - demo_pipeline - INFO - default_train_retrain.py:30 - >>> Entrando en default_train
+2025-08-02 21:10:20,298 - demo_pipeline - INFO - default_train_retrain.py:31 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:13:50,852 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:13:51,388 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:13:51,389 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:13:51,679 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:13:51,680 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:13:51,680 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:13:51,680 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-02 21:13:51,680 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:13:51,688 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-02 21:14:22,655 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-02 21:14:22,676 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-02 21:15:05,777 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:15:06,325 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:15:06,326 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:15:06,613 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:15:06,613 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:15:06,613 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:15:06,613 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-02 21:15:06,613 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:15:06,621 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-02 21:15:37,544 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-02 21:15:37,568 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-02 21:21:05,859 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:21:06,405 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:21:06,406 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:21:06,702 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:21:06,702 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:21:06,703 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:21:06,703 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-02 21:21:06,703 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:21:06,711 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-02 21:21:35,292 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-02 21:21:35,318 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-02 21:22:07,854 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:22:08,472 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:22:08,473 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:22:08,757 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:22:08,758 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:22:08,758 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:22:08,758 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-02 21:22:08,758 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:22:08,765 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-02 21:22:35,010 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-02 21:22:35,034 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-02 21:22:59,398 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:22:59,970 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:22:59,972 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:23:00,246 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:23:00,247 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:23:00,247 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:23:00,247 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-02 21:23:00,247 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:23:00,254 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-02 21:23:28,856 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-02 21:23:28,875 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-02 21:25:31,838 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:25:34,816 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:25:34,817 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:25:35,281 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:25:35,282 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:25:35,282 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:25:35,282 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-02 21:25:35,282 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:25:35,295 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-02 21:26:11,413 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-02 21:26:11,477 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-02 21:26:11,478 - demo_pipeline - INFO - evaluador.py:41 - >>> Iniciando evaluación del modelo
+2025-08-02 21:26:11,529 - demo_pipeline - WARNING - evaluador.py:70 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-02 21:26:11,529 - demo_pipeline - INFO - evaluador.py:78 - Métricas guardadas en /home/alex/demo/data/model/metrics.json
+2025-08-02 21:26:11,539 - demo_pipeline - INFO - evaluador.py:84 - Predicciones guardadas en /home/alex/demo/data/model/predicciones.csv
+2025-08-02 21:26:11,539 - demo_pipeline - INFO - evaluador.py:95 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-02 21:26:11,558 - demo_pipeline - INFO - main_pipeline.py:166 - Fin del pipeline
+2025-08-02 21:29:06,027 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:29:06,657 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:29:06,658 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:29:06,977 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:29:06,977 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:29:06,977 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:29:06,977 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-02 21:29:06,978 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:29:06,986 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-02 21:29:37,695 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-02 21:29:37,723 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-02 21:31:00,627 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:31:01,200 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2023.arff cargado correctamente.
+2025-08-02 21:31:01,201 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:31:01,506 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:31:01,507 - demo_pipeline - INFO - check_drift.py:22 - No hay modelo previo, entrenar desde cero
+2025-08-02 21:31:01,507 - demo_pipeline - INFO - main_pipeline.py:78 - Iniciando TRAIN
+2025-08-02 21:31:01,507 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-02 21:31:01,507 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-02 21:31:01,515 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-02 21:31:37,599 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-02 21:31:37,628 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-02 21:31:37,628 - demo_pipeline - INFO - evaluador.py:33 - >>> Iniciando evaluación del modelo
+2025-08-02 21:31:37,658 - demo_pipeline - WARNING - evaluador.py:62 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-02 21:31:37,659 - demo_pipeline - INFO - evaluador.py:70 - Métricas guardadas en /home/alex/demo/data/model/metrics.json
+2025-08-02 21:31:37,667 - demo_pipeline - INFO - evaluador.py:75 - Predicciones guardadas en /home/alex/demo/data/model/predicciones.csv
+2025-08-02 21:31:37,667 - demo_pipeline - INFO - evaluador.py:86 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-02 21:31:37,690 - demo_pipeline - INFO - evaluador.py:104 - Archivo de control actualizado con Data_2023.arff
+2025-08-02 21:31:37,690 - demo_pipeline - INFO - main_pipeline.py:171 - Fin del pipeline
+2025-08-02 21:32:12,931 - demo_pipeline - INFO - main_pipeline.py:51 - Inicio del pipeline
+2025-08-02 21:32:12,931 - demo_pipeline - INFO - data_loader.py:63 - Fichero Data_2023.arff ya procesado y sin modificaciones. Saltando.
+2025-08-02 21:32:13,564 - demo_pipeline - INFO - data_loader.py:68 - Fichero Data_2024.arff cargado correctamente.
+2025-08-02 21:32:13,841 - demo_pipeline - INFO - main_pipeline.py:66 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-02 21:32:14,276 - demo_pipeline - INFO - check_drift.py:117 - Predicciones guardadas en /home/alex/demo/data/metrics/drift_predictions.csv
+2025-08-02 21:32:14,276 - demo_pipeline - INFO - check_drift.py:123 - ⚠️ Drift Detectado → Retrain
+2025-08-02 21:32:14,276 - demo_pipeline - INFO - main_pipeline.py:110 - Iniciando RETRAIN
+2025-08-02 21:32:14,276 - demo_pipeline - INFO - default_train_retrain.py:76 - >>> Entrando en default_retrain con modo 0
+2025-08-02 21:32:14,288 - demo_pipeline - INFO - default_train_retrain.py:86 - Reentrenamiento completo desde cero (Full retraining).
+2025-08-02 21:32:49,195 - demo_pipeline - INFO - default_train_retrain.py:97 - Mejores hiperparámetros encontrados: {'max_depth': 10, 'n_estimators': 100}
+2025-08-02 21:32:49,195 - demo_pipeline - INFO - evaluador.py:33 - >>> Iniciando evaluación del modelo
+2025-08-02 21:32:49,301 - demo_pipeline - WARNING - evaluador.py:62 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-02 21:32:49,302 - demo_pipeline - INFO - evaluador.py:70 - Métricas guardadas en /home/alex/demo/data/model/metrics.json
+2025-08-02 21:32:49,308 - demo_pipeline - INFO - evaluador.py:75 - Predicciones guardadas en /home/alex/demo/data/model/predicciones.csv
+2025-08-02 21:32:49,308 - demo_pipeline - INFO - evaluador.py:86 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-02 21:32:49,309 - demo_pipeline - INFO - default_train_retrain.py:16 - Modelo anterior respaldado en /home/alex/demo/data/model/simple_model_previous.pkl
+2025-08-02 21:32:49,355 - demo_pipeline - INFO - evaluador.py:104 - Archivo de control actualizado con Data_2024.arff
+2025-08-02 21:32:49,355 - demo_pipeline - INFO - main_pipeline.py:171 - Fin del pipeline
+2025-08-03 11:51:59,085 - demo - INFO - demoPipeline.py:30 - Inicio del pipeline
+2025-08-03 11:51:59,090 - demo - INFO - demoPipeline.py:55 - Fichero Data_2023.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 11:51:59,090 - demo - INFO - demoPipeline.py:55 - Fichero Data_2024.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 11:51:59,090 - demo - INFO - demoPipeline.py:74 - El dataset está vacío
+2025-08-03 11:51:59,090 - demo - INFO - demoPipeline.py:103 - No hay modelo previo, entrenar desde cero
+2025-08-03 11:51:59,090 - demo - INFO - demoPipeline.py:212 - >>> Entrando en el método TRAIN
+2025-08-03 11:51:59,897 - demo - INFO - demoPipeline.py:30 - Inicio del pipeline
+2025-08-03 11:51:59,899 - demo - INFO - demoPipeline.py:55 - Fichero Data_2023.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 11:51:59,899 - demo - INFO - demoPipeline.py:55 - Fichero Data_2024.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 11:51:59,899 - demo - INFO - demoPipeline.py:74 - El dataset está vacío
+2025-08-03 11:51:59,900 - demo - INFO - demoPipeline.py:103 - No hay modelo previo, entrenar desde cero
+2025-08-03 11:51:59,900 - demo - INFO - demoPipeline.py:212 - >>> Entrando en el método TRAIN
+2025-08-03 11:57:24,812 - demo - INFO - demoPipeline.py:30 - Inicio del pipeline
+2025-08-03 11:57:24,814 - demo - INFO - demoPipeline.py:55 - Fichero Data_2023.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 11:57:24,814 - demo - INFO - demoPipeline.py:55 - Fichero Data_2024.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 11:57:24,814 - demo - INFO - demoPipeline.py:74 - El dataset está vacío
+2025-08-03 11:57:24,815 - demo - INFO - demoPipeline.py:103 - No hay modelo previo, entrenar desde cero
+2025-08-03 11:57:24,815 - demo - INFO - demoPipeline.py:212 - >>> Entrando en el método TRAIN
+2025-08-03 11:57:25,562 - demo - INFO - demoPipeline.py:30 - Inicio del pipeline
+2025-08-03 11:57:25,563 - demo - INFO - demoPipeline.py:55 - Fichero Data_2023.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 11:57:25,564 - demo - INFO - demoPipeline.py:55 - Fichero Data_2024.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 11:57:25,564 - demo - INFO - demoPipeline.py:74 - El dataset está vacío
+2025-08-03 11:57:25,564 - demo - INFO - demoPipeline.py:103 - No hay modelo previo, entrenar desde cero
+2025-08-03 11:57:25,564 - demo - INFO - demoPipeline.py:212 - >>> Entrando en el método TRAIN
+2025-08-03 12:35:46,235 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:35:46,878 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:35:46,880 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:35:47,180 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:35:47,180 - demo_pipeline - ERROR - main_pipeline.py:173 - Error crítico en run_pipeline: check_drift() missing 1 required positional argument: 'output_dir'
+2025-08-03 12:37:29,943 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:37:30,572 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:37:30,573 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:37:30,854 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:37:30,855 - demo_pipeline - INFO - check_drift.py:25 - No hay modelo previo, entrenar desde cero
+2025-08-03 12:37:30,855 - demo_pipeline - INFO - main_pipeline.py:82 - Iniciando TRAIN
+2025-08-03 12:37:30,855 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 12:37:30,855 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-03 12:37:30,868 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 12:38:00,980 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-03 12:38:01,005 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-03 12:38:01,005 - demo_pipeline - INFO - evaluador.py:33 - >>> Iniciando evaluación del modelo
+2025-08-03 12:38:01,032 - demo_pipeline - WARNING - evaluador.py:62 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-03 12:38:01,033 - demo_pipeline - INFO - evaluador.py:70 - Métricas guardadas en /home/alex/demo/data/output/metrics.json
+2025-08-03 12:38:01,039 - demo_pipeline - INFO - evaluador.py:75 - Predicciones guardadas en /home/alex/demo/data/output/predicciones.csv
+2025-08-03 12:38:01,039 - demo_pipeline - INFO - evaluador.py:86 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-03 12:38:01,052 - demo_pipeline - INFO - evaluador.py:104 - Archivo de control actualizado con Data_2023.arff
+2025-08-03 12:38:01,052 - demo_pipeline - INFO - main_pipeline.py:170 - Fin del pipeline
+2025-08-03 12:49:26,819 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:49:27,406 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:49:27,407 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:49:27,692 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:49:27,692 - demo_pipeline - ERROR - main_pipeline.py:173 - Error crítico en run_pipeline: check_drift() missing 1 required positional argument: 'output_dir'
+2025-08-03 12:50:00,613 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:50:01,123 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:50:01,124 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:50:01,412 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:50:01,412 - demo_pipeline - ERROR - main_pipeline.py:173 - Error crítico en run_pipeline: check_drift() missing 1 required positional argument: 'output_dir'
+2025-08-03 12:50:34,343 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:50:34,855 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:50:34,856 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:50:35,130 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:50:35,130 - demo_pipeline - ERROR - main_pipeline.py:173 - Error crítico en run_pipeline: check_drift() missing 1 required positional argument: 'output_dir'
+2025-08-03 12:50:47,091 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:50:47,644 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:50:47,645 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:50:47,937 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:50:47,938 - demo_pipeline - INFO - check_drift.py:20 - No hay modelo previo, entrenar desde cero
+2025-08-03 12:50:47,938 - demo_pipeline - INFO - main_pipeline.py:90 - Iniciando TRAIN
+2025-08-03 12:50:47,938 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 12:50:47,939 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-03 12:50:47,952 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 12:51:20,403 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-03 12:51:20,426 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-03 12:51:20,427 - demo_pipeline - INFO - evaluador.py:33 - >>> Iniciando evaluación del modelo
+2025-08-03 12:51:20,455 - demo_pipeline - WARNING - evaluador.py:62 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-03 12:51:20,455 - demo_pipeline - INFO - evaluador.py:70 - Métricas guardadas en /home/alex/demo/modelos/metrics.json
+2025-08-03 12:51:20,462 - demo_pipeline - INFO - evaluador.py:75 - Predicciones guardadas en /home/alex/demo/modelos/predicciones.csv
+2025-08-03 12:51:20,462 - demo_pipeline - INFO - evaluador.py:86 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-03 12:51:20,477 - demo_pipeline - INFO - evaluador.py:104 - Archivo de control actualizado con Data_2023.arff
+2025-08-03 12:51:20,477 - demo_pipeline - INFO - main_pipeline.py:178 - Fin del pipeline
+2025-08-03 12:51:53,378 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:51:53,910 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:51:53,911 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:51:54,182 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:51:54,182 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 12:51:54,183 - demo_pipeline - INFO - main_pipeline.py:176 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 12:51:54,183 - demo_pipeline - INFO - main_pipeline.py:178 - Fin del pipeline
+2025-08-03 12:55:32,544 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:55:33,064 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:55:33,065 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:55:33,322 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:55:33,322 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 12:55:33,322 - demo_pipeline - INFO - main_pipeline.py:179 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 12:55:33,323 - demo_pipeline - INFO - main_pipeline.py:181 - Fin del pipeline
+2025-08-03 12:56:17,832 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:56:18,380 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:56:18,381 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:56:18,674 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:56:18,674 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 12:56:18,675 - demo_pipeline - INFO - main_pipeline.py:179 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 12:56:18,675 - demo_pipeline - INFO - main_pipeline.py:181 - Fin del pipeline
+2025-08-03 12:56:51,495 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:56:51,983 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:56:51,983 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:56:52,235 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:56:52,236 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 12:56:52,237 - demo_pipeline - INFO - main_pipeline.py:179 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 12:56:52,237 - demo_pipeline - INFO - main_pipeline.py:181 - Fin del pipeline
+2025-08-03 12:57:25,066 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 12:57:25,649 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 12:57:25,650 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:57:25,963 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 12:57:25,963 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 12:57:25,964 - demo_pipeline - INFO - main_pipeline.py:179 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 12:57:25,964 - demo_pipeline - INFO - main_pipeline.py:181 - Fin del pipeline
+2025-08-03 13:00:31,900 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:00:32,454 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:00:32,455 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 13:00:32,718 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:00:32,719 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:00:32,719 - demo_pipeline - INFO - main_pipeline.py:179 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:00:32,720 - demo_pipeline - INFO - main_pipeline.py:181 - Fin del pipeline
+2025-08-03 13:01:05,687 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:01:06,210 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:01:06,500 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:01:06,500 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:01:06,501 - demo_pipeline - INFO - main_pipeline.py:179 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:01:06,501 - demo_pipeline - INFO - main_pipeline.py:181 - Fin del pipeline
+2025-08-03 13:03:18,975 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:03:19,499 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:03:19,762 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:03:19,762 - demo_pipeline - INFO - check_drift.py:20 - No hay modelo previo, entrenar desde cero
+2025-08-03 13:03:19,762 - demo_pipeline - INFO - main_pipeline.py:90 - Iniciando TRAIN
+2025-08-03 13:03:19,762 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 13:03:19,763 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-03 13:03:19,769 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 13:03:46,174 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-03 13:03:46,196 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-03 13:03:46,196 - demo_pipeline - ERROR - main_pipeline.py:184 - Error crítico en run_pipeline: evaluador() got an unexpected keyword argument 'data_dir'
+2025-08-03 13:04:19,132 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:04:19,638 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:04:19,897 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:04:19,897 - demo_pipeline - INFO - check_drift.py:20 - No hay modelo previo, entrenar desde cero
+2025-08-03 13:04:19,897 - demo_pipeline - INFO - main_pipeline.py:90 - Iniciando TRAIN
+2025-08-03 13:04:19,897 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 13:04:19,897 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-03 13:04:19,903 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 13:04:46,833 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-03 13:04:46,857 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-03 13:04:46,858 - demo_pipeline - ERROR - main_pipeline.py:184 - Error crítico en run_pipeline: evaluador() got an unexpected keyword argument 'data_dir'
+2025-08-03 13:05:19,827 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:05:20,330 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:05:20,598 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:05:20,599 - demo_pipeline - INFO - check_drift.py:20 - No hay modelo previo, entrenar desde cero
+2025-08-03 13:05:20,599 - demo_pipeline - INFO - main_pipeline.py:90 - Iniciando TRAIN
+2025-08-03 13:05:20,599 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 13:05:20,599 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-03 13:05:20,605 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 13:05:39,165 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:05:39,719 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:05:39,989 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:05:39,989 - demo_pipeline - INFO - check_drift.py:20 - No hay modelo previo, entrenar desde cero
+2025-08-03 13:05:39,989 - demo_pipeline - INFO - main_pipeline.py:90 - Iniciando TRAIN
+2025-08-03 13:05:39,989 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 13:05:39,990 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-03 13:05:39,997 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 13:06:11,090 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-03 13:06:11,113 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-03 13:06:11,114 - demo_pipeline - INFO - evaluador.py:33 - >>> Iniciando evaluación del modelo
+2025-08-03 13:06:11,140 - demo_pipeline - WARNING - evaluador.py:62 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-03 13:06:11,140 - demo_pipeline - INFO - evaluador.py:70 - Métricas guardadas en /home/alex/demo/modelos/metrics.json
+2025-08-03 13:06:11,146 - demo_pipeline - INFO - evaluador.py:75 - Predicciones guardadas en /home/alex/demo/modelos/predicciones.csv
+2025-08-03 13:06:11,146 - demo_pipeline - INFO - evaluador.py:86 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-03 13:06:11,163 - demo_pipeline - INFO - evaluador.py:110 - Archivo de control actualizado con Data_2023.arff
+2025-08-03 13:06:11,163 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:06:44,134 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:06:44,643 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:06:44,917 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:06:44,918 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:06:44,918 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:06:44,918 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:07:17,882 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:07:18,429 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:07:18,788 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:07:18,788 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:07:18,789 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:07:18,789 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:07:51,752 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:07:52,336 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:07:52,612 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:07:52,613 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:07:52,613 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:07:52,613 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:08:25,544 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:08:26,083 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:08:26,367 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:08:26,368 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:08:26,368 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:08:26,368 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:08:59,203 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:08:59,715 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:09:00,019 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:09:00,019 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:09:00,019 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:09:00,019 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:09:32,882 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:09:33,460 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:09:33,748 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:09:33,749 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:09:33,749 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:09:33,749 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:10:06,593 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:10:07,121 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:10:07,400 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:10:07,400 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:10:07,400 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:10:07,400 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:10:40,285 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:10:40,846 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:10:41,135 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:10:41,136 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:10:41,136 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:10:41,136 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:11:14,004 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:11:14,589 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:11:14,895 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:11:14,896 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:11:14,896 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:11:14,896 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:11:47,804 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 13:11:48,323 - demo_pipeline - INFO - data_loader.py:26 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:11:48,608 - demo_pipeline - INFO - main_pipeline.py:74 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:11:48,608 - demo_pipeline - INFO - check_drift.py:25 - No hay información histórica para detectar drift.
+2025-08-03 13:11:48,608 - demo_pipeline - INFO - main_pipeline.py:178 - No es necesario entrenar o reentrenar. Fin del pipeline.
+2025-08-03 13:11:48,608 - demo_pipeline - INFO - main_pipeline.py:180 - Fin del pipeline
+2025-08-03 13:12:15,332 - demo_pipeline - INFO - main_pipeline.py:50 - Inicio del pipeline
+2025-08-03 13:12:15,889 - demo_pipeline - INFO - data_loader.py:64 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 13:12:16,161 - demo_pipeline - INFO - main_pipeline.py:73 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:12:16,161 - demo_pipeline - INFO - check_drift.py:12 - No hay modelo previo, entrenar desde cero
+2025-08-03 13:12:16,162 - demo_pipeline - INFO - main_pipeline.py:83 - Iniciando TRAIN
+2025-08-03 13:12:16,162 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 13:12:16,162 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-03 13:12:16,170 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 13:12:43,005 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-03 13:12:43,038 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-03 13:12:43,038 - demo_pipeline - INFO - evaluador.py:29 - >>> Iniciando evaluación del modelo
+2025-08-03 13:12:43,076 - demo_pipeline - WARNING - evaluador.py:51 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-03 13:12:43,084 - demo_pipeline - INFO - evaluador.py:68 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-03 13:12:43,102 - demo_pipeline - INFO - evaluador.py:81 - Archivo de control actualizado en /home/alex/demo/control/archivo_control.txt
+2025-08-03 13:12:43,102 - demo_pipeline - INFO - main_pipeline.py:174 - Fin del pipeline
+2025-08-03 13:13:13,855 - demo_pipeline - INFO - main_pipeline.py:50 - Inicio del pipeline
+2025-08-03 13:13:13,856 - demo_pipeline - INFO - data_loader.py:59 - Fichero Data_2023.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 13:13:14,430 - demo_pipeline - INFO - data_loader.py:64 - Fichero Data_2024.arff cargado correctamente.
+2025-08-03 13:13:14,708 - demo_pipeline - INFO - main_pipeline.py:73 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:13:15,010 - demo_pipeline - INFO - check_drift.py:70 - ⚠️ Drift Detectado → Retrain
+2025-08-03 13:13:15,010 - demo_pipeline - INFO - main_pipeline.py:114 - Iniciando RETRAIN
+2025-08-03 13:13:15,010 - demo_pipeline - INFO - default_train_retrain.py:76 - >>> Entrando en default_retrain con modo 0
+2025-08-03 13:13:15,021 - demo_pipeline - INFO - default_train_retrain.py:86 - Reentrenamiento completo desde cero (Full retraining).
+2025-08-03 13:13:16,050 - demo_pipeline - INFO - main_pipeline.py:50 - Inicio del pipeline
+2025-08-03 13:13:16,051 - demo_pipeline - INFO - data_loader.py:59 - Fichero Data_2023.arff ya procesado y sin modificaciones. Saltando.
+2025-08-03 13:13:17,220 - demo_pipeline - INFO - data_loader.py:64 - Fichero Data_2024.arff cargado correctamente.
+2025-08-03 13:13:17,840 - demo_pipeline - INFO - main_pipeline.py:73 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 13:13:18,629 - demo_pipeline - INFO - check_drift.py:70 - ⚠️ Drift Detectado → Retrain
+2025-08-03 13:13:18,630 - demo_pipeline - INFO - main_pipeline.py:114 - Iniciando RETRAIN
+2025-08-03 13:13:18,630 - demo_pipeline - INFO - default_train_retrain.py:76 - >>> Entrando en default_retrain con modo 0
+2025-08-03 13:13:18,671 - demo_pipeline - INFO - default_train_retrain.py:86 - Reentrenamiento completo desde cero (Full retraining).
+2025-08-03 13:14:08,785 - demo_pipeline - INFO - default_train_retrain.py:97 - Mejores hiperparámetros encontrados: {'max_depth': 10, 'n_estimators': 100}
+2025-08-03 13:14:08,785 - demo_pipeline - INFO - evaluador.py:29 - >>> Iniciando evaluación del modelo
+2025-08-03 13:14:08,900 - demo_pipeline - WARNING - evaluador.py:51 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-03 13:14:08,905 - demo_pipeline - INFO - evaluador.py:68 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-03 13:14:08,906 - demo_pipeline - INFO - default_train_retrain.py:16 - Modelo anterior respaldado en /home/alex/demo/modelos/simple_model_previous.pkl
+2025-08-03 13:14:08,942 - demo_pipeline - INFO - evaluador.py:81 - Archivo de control actualizado en /home/alex/demo/control/archivo_control.txt
+2025-08-03 13:14:08,943 - demo_pipeline - INFO - main_pipeline.py:174 - Fin del pipeline
+2025-08-03 13:14:10,345 - demo_pipeline - INFO - default_train_retrain.py:97 - Mejores hiperparámetros encontrados: {'max_depth': 10, 'n_estimators': 100}
+2025-08-03 13:14:10,346 - demo_pipeline - INFO - evaluador.py:29 - >>> Iniciando evaluación del modelo
+2025-08-03 13:14:10,440 - demo_pipeline - WARNING - evaluador.py:51 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-03 13:14:10,445 - demo_pipeline - INFO - evaluador.py:68 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-03 13:14:10,451 - demo_pipeline - INFO - default_train_retrain.py:16 - Modelo anterior respaldado en /home/alex/demo/modelos/simple_model_previous.pkl
+2025-08-03 13:14:10,482 - demo_pipeline - INFO - evaluador.py:81 - Archivo de control actualizado en /home/alex/demo/control/archivo_control.txt
+2025-08-03 13:14:10,482 - demo_pipeline - INFO - main_pipeline.py:174 - Fin del pipeline
+2025-08-03 14:16:06,377 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 14:16:06,962 - demo_pipeline - INFO - data_loader.py:64 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 14:16:07,448 - demo_pipeline - INFO - data_loader.py:64 - Fichero Data_2024.arff cargado correctamente.
+2025-08-03 14:16:08,048 - demo_pipeline - INFO - main_pipeline.py:82 - Datos preprocesados: 200000 filas, 9 columnas
+2025-08-03 14:16:08,049 - demo_pipeline - INFO - check_drift.py:12 - No hay modelo previo, entrenar desde cero
+2025-08-03 14:16:08,049 - demo_pipeline - INFO - main_pipeline.py:93 - Iniciando TRAIN
+2025-08-03 14:16:08,049 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 14:16:08,049 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 200000 registros y 9 características
+2025-08-03 14:16:08,070 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 14:17:32,298 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 10, 'n_estimators': 100}
+2025-08-03 14:17:32,477 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.7410
+2025-08-03 14:17:32,478 - demo_pipeline - INFO - evaluador.py:29 - >>> Iniciando evaluación del modelo
+2025-08-03 14:17:32,662 - demo_pipeline - WARNING - evaluador.py:51 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-03 14:17:32,675 - demo_pipeline - WARNING - evaluador.py:85 - ❌ Modelo no supera los umbrales. No se actualiza el modelo.
+2025-08-03 14:17:32,675 - demo_pipeline - INFO - main_pipeline.py:184 - Fin del pipeline
+2025-08-03 14:17:32,700 - demo_pipeline - INFO - main_pipeline.py:53 - Inicio del pipeline
+2025-08-03 14:17:33,214 - demo_pipeline - INFO - data_loader.py:64 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 14:17:33,731 - demo_pipeline - INFO - data_loader.py:64 - Fichero Data_2024.arff cargado correctamente.
+2025-08-03 14:17:34,354 - demo_pipeline - INFO - main_pipeline.py:82 - Datos preprocesados: 200000 filas, 9 columnas
+2025-08-03 14:17:34,354 - demo_pipeline - INFO - check_drift.py:12 - No hay modelo previo, entrenar desde cero
+2025-08-03 14:17:34,355 - demo_pipeline - INFO - main_pipeline.py:93 - Iniciando TRAIN
+2025-08-03 14:17:34,355 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 14:17:34,355 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 200000 registros y 9 características
+2025-08-03 14:17:34,370 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 14:20:35,139 - demo_pipeline - INFO - main_pipeline.py:44 - Inicio del pipeline
+2025-08-03 14:20:35,750 - demo_pipeline - INFO - data_loader.py:34 - Fichero Data_2023.arff cargado correctamente.
+2025-08-03 14:20:36,034 - demo_pipeline - INFO - main_pipeline.py:62 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 14:20:36,034 - demo_pipeline - INFO - check_drift.py:12 - No hay modelo previo, entrenar desde cero
+2025-08-03 14:20:36,034 - demo_pipeline - INFO - main_pipeline.py:72 - Iniciando TRAIN
+2025-08-03 14:20:36,034 - demo_pipeline - INFO - default_train_retrain.py:29 - >>> Entrando en default_train
+2025-08-03 14:20:36,035 - demo_pipeline - INFO - default_train_retrain.py:30 - Dataset recibido con 100000 registros y 9 características
+2025-08-03 14:20:36,043 - demo_pipeline - INFO - default_train_retrain.py:44 - Ejecutando GridSearchCV...
+2025-08-03 14:21:09,025 - demo_pipeline - INFO - default_train_retrain.py:49 - Mejores hiperparámetros encontrados: {'max_depth': 5, 'n_estimators': 50}
+2025-08-03 14:21:09,058 - demo_pipeline - INFO - default_train_retrain.py:56 - Entrenamiento inicial completado. Accuracy en test: 0.9459
+2025-08-03 14:21:09,058 - demo_pipeline - INFO - evaluador.py:29 - >>> Iniciando evaluación del modelo
+2025-08-03 14:21:09,089 - demo_pipeline - WARNING - evaluador.py:51 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-03 14:21:09,097 - demo_pipeline - INFO - evaluador.py:68 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-03 14:21:09,108 - demo_pipeline - INFO - evaluador.py:81 - Archivo de control actualizado en /home/alex/demo/mi_pipeline/control/archivo_control.txt
+2025-08-03 14:21:09,109 - demo_pipeline - INFO - main_pipeline.py:137 - Fin del pipeline
+2025-08-03 14:21:27,339 - demo_pipeline - INFO - main_pipeline.py:44 - Inicio del pipeline
+2025-08-03 14:21:27,917 - demo_pipeline - INFO - data_loader.py:34 - Fichero Data_2024.arff cargado correctamente.
+2025-08-03 14:21:28,211 - demo_pipeline - INFO - main_pipeline.py:62 - Datos preprocesados: 100000 filas, 9 columnas
+2025-08-03 14:21:28,533 - demo_pipeline - INFO - check_drift.py:70 - ⚠️ Drift Detectado → Retrain
+2025-08-03 14:21:28,533 - demo_pipeline - INFO - main_pipeline.py:103 - Iniciando RETRAIN
+2025-08-03 14:21:28,534 - demo_pipeline - INFO - default_train_retrain.py:76 - >>> Entrando en default_retrain con modo 0
+2025-08-03 14:21:28,547 - demo_pipeline - INFO - default_train_retrain.py:86 - Reentrenamiento completo desde cero (Full retraining).
+2025-08-03 14:22:01,721 - demo_pipeline - INFO - default_train_retrain.py:97 - Mejores hiperparámetros encontrados: {'max_depth': 10, 'n_estimators': 100}
+2025-08-03 14:22:01,722 - demo_pipeline - INFO - evaluador.py:29 - >>> Iniciando evaluación del modelo
+2025-08-03 14:22:01,835 - demo_pipeline - WARNING - evaluador.py:51 - No se pudieron calcular métricas de regresión: got an unexpected keyword argument 'squared'
+2025-08-03 14:22:01,841 - demo_pipeline - INFO - evaluador.py:68 - ✅ Modelo aprobado. Guardando modelo...
+2025-08-03 14:22:01,842 - demo_pipeline - INFO - default_train_retrain.py:16 - Modelo anterior respaldado en /home/alex/demo/mi_pipeline/modelos/mi_pipeline_previous.pkl
+2025-08-03 14:22:01,874 - demo_pipeline - INFO - evaluador.py:81 - Archivo de control actualizado en /home/alex/demo/mi_pipeline/control/archivo_control.txt
+2025-08-03 14:22:01,874 - demo_pipeline - INFO - main_pipeline.py:137 - Fin del pipeline

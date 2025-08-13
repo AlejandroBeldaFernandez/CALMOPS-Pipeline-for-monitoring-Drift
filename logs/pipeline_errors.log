@@ -1,0 +1,33 @@
+2025-08-02 21:01:23,902 - demo_pipeline - ERROR - data_loader.py:24 - Error cargando fichero Dockerfile: Formato de fichero no soportado: 
+2025-08-02 21:01:23,904 - demo_pipeline - ERROR - data_loader.py:24 - Error cargando fichero drift_monitor.log: Formato de fichero no soportado: .log
+2025-08-02 21:01:23,905 - demo_pipeline - ERROR - data_loader.py:24 - Error cargando fichero drift_monitor_error.log: Formato de fichero no soportado: .log
+2025-08-02 21:01:23,926 - demo_pipeline - ERROR - data_loader.py:24 - Error cargando fichero train_models.py: Formato de fichero no soportado: .py
+2025-08-02 21:08:22,320 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:09:44,998 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:10:20,029 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:13:51,389 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:15:06,326 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:21:06,406 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:22:08,473 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:22:59,972 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:25:34,817 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:29:06,658 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-02 21:31:01,201 - demo_pipeline - ERROR - data_loader.py:28 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:35:46,880 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:35:47,180 - demo_pipeline - ERROR - main_pipeline.py:173 - Error crítico en run_pipeline: check_drift() missing 1 required positional argument: 'output_dir'
+2025-08-03 12:37:30,573 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:49:27,407 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:49:27,692 - demo_pipeline - ERROR - main_pipeline.py:173 - Error crítico en run_pipeline: check_drift() missing 1 required positional argument: 'output_dir'
+2025-08-03 12:50:01,124 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:50:01,412 - demo_pipeline - ERROR - main_pipeline.py:173 - Error crítico en run_pipeline: check_drift() missing 1 required positional argument: 'output_dir'
+2025-08-03 12:50:34,856 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:50:35,130 - demo_pipeline - ERROR - main_pipeline.py:173 - Error crítico en run_pipeline: check_drift() missing 1 required positional argument: 'output_dir'
+2025-08-03 12:50:47,645 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:51:53,911 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:55:33,065 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:56:18,381 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:56:51,983 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 12:57:25,650 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 13:00:32,455 - demo_pipeline - ERROR - data_loader.py:29 - Error cargando fichero fechas_trabajadas.txt: No columns to parse from file
+2025-08-03 13:03:46,196 - demo_pipeline - ERROR - main_pipeline.py:184 - Error crítico en run_pipeline: evaluador() got an unexpected keyword argument 'data_dir'
+2025-08-03 13:04:46,858 - demo_pipeline - ERROR - main_pipeline.py:184 - Error crítico en run_pipeline: evaluador() got an unexpected keyword argument 'data_dir'
