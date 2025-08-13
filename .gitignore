@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.ipynb_checkpoints/
+
+# Project artifacts
+logs/
+pipelines/*/logs/
+pipelines/*/models/
+pipelines/*/modelos/
+pipelines/*/metrics/
+pipelines/*/resultados/
+pipelines/*/control/previous_data.csv
+pipelines/*/candidates/
+data/
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
