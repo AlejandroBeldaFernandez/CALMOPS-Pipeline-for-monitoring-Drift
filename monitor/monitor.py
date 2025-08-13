@@ -82,7 +82,13 @@ def _write_runner_script(pipeline_name: str, runner_cfg_path: str, base_dir: str
     runner_path = os.path.join(pipeline_dir, f"run_{pipeline_name}.py")
 
     content = f'''# Auto-generated runner for pipeline: {pipeline_name}
-import json, importlib
+import os, sys, json, importlib
+
+# Ensure project root on sys.path (two levels up from this file)
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 from monitor.monitor import start_monitor
 
 def _load_cfg(path):
@@ -135,6 +141,73 @@ if __name__ == "__main__":
 # =========================
 # Persistence Launchers
 # =========================
+def pm2_list(prefix: str = "calmops-") -> list[dict]:
+    """
+    Return a list of PM2 apps (as dicts) whose name starts with `prefix`.
+    Also imprime un resumen legible.
+    Requiere pm2 instalado.
+    """
+    if not _which("pm2"):
+        print("[ERROR] PM2 no está instalado. Instálalo con: sudo npm install -g pm2")
+        return []
+
+    try:
+        # jlist devuelve JSON con la descripción de procesos
+        out = subprocess.check_output(["pm2", "jlist"], text=True)
+        procs = json.loads(out)
+    except Exception as e:
+        print(f"[ERROR] No se pudo obtener la lista de PM2: {e}")
+        return []
+
+    filtered = [p for p in procs if p.get("name", "").startswith(prefix)]
+    if not filtered:
+        print(f"No hay procesos PM2 con prefijo '{prefix}'.")
+        return []
+
+    print("Procesos PM2:")
+    for p in filtered:
+        name = p.get("name")
+        pid = p.get("pid")
+        status = p.get("pm2_env", {}).get("status")
+        restart = p.get("pm2_env", {}).get("restart_time")
+        print(f"- {name} | pid={pid} | status={status} | restarts={restart}")
+    return filtered
+
+
+def pm2_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> None:
+    """
+    Detiene y elimina el proceso PM2 de la pipeline y borra su carpeta:
+      - pm2 delete calmops-<pipeline_name>
+      - rm -rf pipelines/<pipeline_name>
+
+    Usa con cuidado: elimina todos los artefactos de esa pipeline.
+    """
+    app_name = f"calmops-{pipeline_name}"
+    if not _which("pm2"):
+        print("[ERROR] PM2 no está instalado. Instálalo con: sudo npm install -g pm2")
+        return
+
+    # 1) detener y borrar en PM2 (ignorar errores si no existe)
+    try:
+        subprocess.call(["pm2", "stop", app_name])
+        subprocess.call(["pm2", "delete", app_name])
+        # guardar lista para restauración tras reinicio
+        subprocess.call(["pm2", "save"])
+        print(f"[PM2] Proceso '{app_name}' detenido y eliminado.")
+    except Exception as e:
+        print(f"[WARN] No se pudo eliminar en PM2: {e}")
+
+    # 2) borrar carpeta de la pipeline
+    pipeline_path = os.path.join(base_dir, pipeline_name)
+    try:
+        if os.path.exists(pipeline_path):
+            shutil.rmtree(pipeline_path)
+            print(f"[FS] Carpeta '{pipeline_path}' eliminada.")
+        else:
+            print(f"[FS] Carpeta '{pipeline_path}' no existe.")
+    except Exception as e:
+        print(f"[ERROR] No se pudo eliminar la carpeta de la pipeline: {e}")
+
 
 def _pm2_install_hint() -> str:
     return (
@@ -145,6 +218,106 @@ def _pm2_install_hint() -> str:
         "Then re-run with persistence='pm2'."
     )
 
+def _docker_available():
+    return shutil.which("docker") is not None
+
+def _compose_available():
+    # docker compose v2 preferred, fallback to docker-compose v1
+    if not _docker_available():
+        return None
+    try:
+        subprocess.check_call(
+            ["docker", "compose", "version"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        return "v2"
+    except Exception:
+        return "v1" if shutil.which("docker-compose") else None
+
+def docker_list(all_containers: bool = True):
+    """
+    Print list of docker containers (like `docker ps`).
+    """
+    if not _docker_available():
+        print("[ERROR] Docker no está instalado. Instálalo y vuelve a intentarlo.")
+        return
+    cmd = ["docker", "ps", "-a"] if all_containers else ["docker", "ps"]
+    subprocess.call(cmd)
+
+def docker_logs(container_name: str, tail: int = 200, follow: bool = True):
+    """
+    Stream logs for a given container.
+    """
+    if not _docker_available():
+        print("[ERROR] Docker no está instalado.")
+        return
+    cmd = ["docker", "logs", f"--tail={tail}"]
+    if follow:
+        cmd.append("-f")
+    cmd.append(container_name)
+    subprocess.call(cmd)
+
+def docker_stop(container_name: str, remove: bool = False):
+    """
+    Stop a container (and optionally remove it).
+    """
+    if not _docker_available():
+        print("[ERROR] Docker no está instalado.")
+        return
+    subprocess.call(["docker", "stop", container_name])
+    if remove:
+        subprocess.call(["docker", "rm", "-f", container_name])
+
+def docker_compose_up(project_root: str = None, service: str | None = None, build: bool = True, detach: bool = True):
+    """
+    `docker compose up` (o docker-compose up) desde la raíz del proyecto.
+    """
+    if _compose_available() is None:
+        print("[ERROR] Ni `docker compose` (v2) ni `docker-compose` (v1) están disponibles.")
+        return
+    cwd = project_root or _project_root()
+    is_v2 = _compose_available() == "v2"
+    base = ["docker", "compose"] if is_v2 else ["docker-compose"]
+    cmd = base + ["up"]
+    if detach:
+        cmd.append("-d")
+    if build:
+        cmd.append("--build")
+    if service:
+        cmd.append(service)
+    subprocess.call(cmd, cwd=cwd)
+
+def docker_compose_down(project_root: str = None, remove_images: bool = False, remove_volumes: bool = False):
+    """
+    `docker compose down` (o docker-compose down) para parar y limpiar.
+    """
+    if _compose_available() is None:
+        print("[ERROR] Ni `docker compose` (v2) ni `docker-compose` (v1) están disponibles.")
+        return
+    cwd = project_root or _project_root()
+    is_v2 = _compose_available() == "v2"
+    base = ["docker", "compose"] if is_v2 else ["docker-compose"]
+    cmd = base + ["down"]
+    if remove_images:
+        cmd += ["--rmi", "all"]
+    if remove_volumes:
+        cmd += ["--volumes"]
+    subprocess.call(cmd, cwd=cwd)
+
+def docker_purge_pipeline(pipeline_name: str, also_delete_files: bool = False):
+    """
+    Detiene y elimina el contenedor de la pipeline y (opcional) borra su carpeta.
+    Contenedor creado por nuestro compose: `calmops_{pipeline_name}`
+    """
+    container = f"calmops_{pipeline_name}"
+    if _docker_available():
+        subprocess.call(["docker", "rm", "-f", container])
+    else:
+        print("[WARN] Docker no está instalado; no puedo eliminar el contenedor.")
+
+    if also_delete_files:
+        delete_pipeline(pipeline_name)  # reutiliza tu función existente
+        
 
 def _docker_install_hint() -> str:
     return (
@@ -168,16 +341,21 @@ def _launch_with_pm2(pipeline_name: str, runner_script: str, base_dir: str):
 
     eco_path = os.path.join(base_dir, "pipelines", pipeline_name, "ecosystem.config.js")
     app_name = f"calmops-{pipeline_name}"
-    python_exec = sys.executable  # current Python
+
+    # Precompute POSIX-ish paths to avoid backslashes inside f-string expressions
+    python_exec = sys.executable
+    runner_script_posix = runner_script.replace("\\", "/")
+    python_exec_posix = python_exec.replace("\\", "/")
+    base_dir_posix = base_dir.replace("\\", "/")
 
     ecosystem = f"""
 module.exports = {{
   apps: [{{
     name: "{app_name}",
-    script: "{runner_script.replace("\\\\","/")}",
-    interpreter: "{python_exec.replace("\\\\","/")}",
+    script: "{runner_script_posix}",
+    interpreter: "{python_exec_posix}",
     interpreter_args: "-u",
-    cwd: "{base_dir.replace("\\\\","/")}",
+    cwd: "{base_dir_posix}",
     autorestart: true,
     watch: false,
     max_restarts: 10
@@ -206,10 +384,22 @@ module.exports = {{
 
 
 def _write_docker_files(pipeline_name: str, runner_script_abs: str, base_dir: str, port: int | None):
-    """Generate Dockerfile and docker-compose.yml in project root."""
-    dockerfile_path = os.path.join(base_dir, "Dockerfile")
-    compose_path = os.path.join(base_dir, "docker-compose.yml")
-    runner_in_container = "/app" + runner_script_abs.replace(base_dir, "").replace("\\", "/")
+    """
+    Generate Dockerfile and docker-compose.yml inside pipelines/<pipeline_name>/.
+    Build context is the project root so the entire repo is copied into /app.
+    """
+    pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
+    os.makedirs(pipeline_dir, exist_ok=True)
+
+    dockerfile_path = os.path.join(pipeline_dir, "Dockerfile")
+    compose_path = os.path.join(pipeline_dir, "docker-compose.yml")
+
+    # Map host runner path -> container /app/...
+    runner_rel = runner_script_abs.replace(base_dir, "").lstrip(os.sep)
+    runner_rel_posix = runner_rel.replace(os.sep, "/")
+    runner_in_container = f"/app/{runner_rel_posix}"
+
+    exposed_port = port or 8501
 
     dockerfile = f"""# Auto-generated Dockerfile for {pipeline_name}
 FROM python:3.10-slim
@@ -221,12 +411,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 WORKDIR /app
 
+# The build context is the project root (set in docker-compose.yml)
 COPY . /app
 
 RUN pip install --no-cache-dir --upgrade pip && \\
     (test -f requirements.txt && pip install --no-cache-dir -r requirements.txt || true)
 
-EXPOSE {port or 8501}
+EXPOSE {exposed_port}
 
 ENV PYTHONUNBUFFERED=1 \\
     STREAMLIT_SERVER_ADDRESS=0.0.0.0 \\
@@ -235,17 +426,23 @@ ENV PYTHONUNBUFFERED=1 \\
 CMD ["python", "{runner_in_container}"]
 """
 
+    # docker-compose.yml lives in pipelines/<pipeline_name>/
+    # Build context: repo root (../../ from here)
+    # Dockerfile path: ./pipelines/<pipeline_name>/Dockerfile
+    # Mount the whole repo so hot-reload of code is easy during dev
     compose = f"""# Auto-generated docker-compose for {pipeline_name}
 version: "3.8"
 services:
   {pipeline_name}:
-    build: .
+    build:
+      context: ../../
+      dockerfile: ./pipelines/{pipeline_name}/Dockerfile
     container_name: calmops_{pipeline_name}
     restart: unless-stopped
     ports:
-      - "{(port or 8501)}:{(port or 8501)}"
+      - "{exposed_port}:{exposed_port}"
     volumes:
-      - "{base_dir}:/app"
+      - "../../:/app"
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
@@ -260,19 +457,50 @@ services:
     return dockerfile_path, compose_path
 
 
+
 def _launch_with_docker(pipeline_name: str, runner_script: str, base_dir: str, port: int | None):
-    """Build and run docker-compose in detached mode with restart policy with friendly errors."""
+    """
+    Build and run docker-compose in detached mode from pipelines/<pipeline_name>/,
+    with friendly errors if Docker/Compose are missing.
+    """
+    def _which(cmd: str):
+        from shutil import which
+        return which(cmd)
+
+    def _fatal(msg: str, code: int = 1):
+        print(f"[FATAL] {msg}", file=sys.stderr)
+        sys.exit(code)
+
+    def _docker_install_hint() -> str:
+        return (
+            "Docker is required but not found.\n"
+            "Install Docker Engine, e.g. on Debian/Ubuntu:\n"
+            "  sudo apt-get update && sudo apt-get install -y docker.io\n"
+            "  sudo systemctl enable --now docker\n"
+            "  sudo usermod -aG docker $USER   # then log out/in\n"
+            "For docker compose v2 plugin:\n"
+            "  sudo apt-get install -y docker-compose-plugin\n"
+            "Alternatively (legacy v1):\n"
+            "  sudo apt-get install -y docker-compose\n"
+        )
+
     if not _which("docker"):
         _fatal(_docker_install_hint())
 
+    # Ensure files are written under pipelines/<pipeline_name>/
     _write_docker_files(pipeline_name, runner_script, base_dir, port or 8501)
+
+    pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
 
     # Prefer 'docker compose' (v2), fallback to 'docker-compose' (v1)
     try:
-        if _which("docker") and subprocess.call(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
-            subprocess.check_call(["docker", "compose", "up", "-d", "--build"], cwd=base_dir)
+        if _which("docker") and subprocess.call(
+            ["docker", "compose", "version"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ) == 0:
+            subprocess.check_call(["docker", "compose", "up", "-d", "--build"], cwd=pipeline_dir)
         elif _which("docker-compose"):
-            subprocess.check_call(["docker-compose", "up", "-d", "--build"], cwd=base_dir)
+            subprocess.check_call(["docker-compose", "up", "-d", "--build"], cwd=pipeline_dir)
         else:
             _fatal(
                 "Neither `docker compose` (v2) nor `docker-compose` (v1) is available.\n"
@@ -280,6 +508,7 @@ def _launch_with_docker(pipeline_name: str, runner_script: str, base_dir: str, p
             )
     except Exception as e:
         _fatal(f"Failed to build/run Docker services: {e}\n{_docker_install_hint()}")
+
 
 
 # =========================
@@ -574,7 +803,7 @@ if __name__ == "__main__":
 
     start_monitor(
         pipeline_name="my_pipeline_watchdog",
-        data_dir="/home/alex/calmops/data",
+        data_dir="/home/alex/datos",
         preprocess_file="/home/alex/calmops/pipeline/preprocessing.py",
         thresholds_perf={"balanced_accuracy": 0.8},
         thresholds_drift={"balanced_accuracy": 0.8},

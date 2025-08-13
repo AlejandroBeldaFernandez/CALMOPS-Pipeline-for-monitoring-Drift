@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 CalmOps Monitor (Scheduled)
-- Programa comprobaciones periódicas con APScheduler (interval/cron/date).
-- Lanza el dashboard de Streamlit para monitorizar.
-- Modos de persistencia opcionales:
-    * "none"   : ejecución en primer plano (comportamiento actual)
-    * "pm2"    : genera un runner y arranca con PM2 (auto-restart + on-boot)
-    * "docker" : genera Dockerfile + docker-compose y arranca en background con restart policy
+- Periodically checks a data directory with APScheduler (interval/cron/date).
+- Launches a Streamlit dashboard for monitoring.
+- Optional persistence modes:
+    * "none"   : run in foreground (current behavior)
+    * "pm2"    : generate a runner and start with PM2 (auto restart + on-boot)
+    * "docker" : generate Dockerfile + docker-compose and run in background with restart policy
 """
 
 import os
@@ -24,7 +24,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
-from calmops.pipeline.pipeline_stream import run_pipeline
+# Keep imports relative to repo root (run as: python -m monitor.monitor_schedule)
+from pipeline.pipeline_stream import run_pipeline
 
 
 # =========================
@@ -83,7 +84,9 @@ def _write_runner_script_schedule(pipeline_name: str, runner_cfg_path: str, base
     os.makedirs(pipeline_dir, exist_ok=True)
     runner_path = os.path.join(pipeline_dir, f"run_{pipeline_name}_schedule.py")
 
-    content = f'''# Auto-generated runner (schedule) for pipeline: {pipeline_name}
+    # Avoid backslashes in f-strings by pre-building literal text
+    header = f"# Auto-generated runner (schedule) for pipeline: {pipeline_name}"
+    body = f"""
 import json, importlib
 from monitor.monitor_schedule import start_monitor_schedule
 
@@ -129,21 +132,81 @@ if __name__ == "__main__":
         port=cfg.get("port"),
         persistence="none"  # avoid recursive PM2/Docker spawning
     )
-'''
+"""
     with open(runner_path, "w") as f:
-        f.write(content)
+        f.write(header + body)
     return runner_path
 
 
-def _pm2_install_hint() -> str:
-    return (
-        "PM2 is required but not found.\n"
-        "Install Node.js + PM2, e.g. on Debian/Ubuntu:\n"
-        "  sudo apt-get update && sudo apt-get install -y nodejs npm\n"
-        "  sudo npm install -g pm2\n"
-        "Then re-run with persistence='pm2'."
-    )
+# =========================
+# PM2 helpers (list / delete)
+# =========================
 
+def pm2_list(prefix: str = "calmops-") -> list[dict]:
+    """
+    Return a list of PM2 apps (as dicts) whose name starts with `prefix`.
+    Also prints a readable summary.
+    Requires pm2 installed.
+    """
+    if not _which("pm2"):
+        print("[ERROR] PM2 is not installed. Install it with: sudo npm install -g pm2")
+        return []
+
+    try:
+        out = subprocess.check_output(["pm2", "jlist"], text=True)
+        procs = json.loads(out)
+    except Exception as e:
+        print(f"[ERROR] Could not obtain PM2 list: {e}")
+        return []
+
+    filtered = [p for p in procs if p.get("name", "").startswith(prefix)]
+    if not filtered:
+        print(f"No PM2 processes with prefix '{prefix}'.")
+        return []
+
+    print("PM2 processes:")
+    for p in filtered:
+        name = p.get("name")
+        pid = p.get("pid")
+        status = p.get("pm2_env", {}).get("status")
+        restart = p.get("pm2_env", {}).get("restart_time")
+        print(f"- {name} | pid={pid} | status={status} | restarts={restart}")
+    return filtered
+
+
+def pm2_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> None:
+    """
+    Stop & delete PM2 process of the pipeline and remove its folder:
+      - pm2 delete calmops-<pipeline_name>
+      - rm -rf pipelines/<pipeline_name>
+    """
+    app_name = f"calmops-schedule-{pipeline_name}"
+    if not _which("pm2"):
+        print("[ERROR] PM2 is not installed. Install it with: sudo npm install -g pm2")
+        return
+
+    try:
+        subprocess.call(["pm2", "stop", app_name])
+        subprocess.call(["pm2", "delete", app_name])
+        subprocess.call(["pm2", "save"])
+        print(f"[PM2] Process '{app_name}' stopped and deleted.")
+    except Exception as e:
+        print(f"[WARN] Could not delete in PM2: {e}")
+
+    pipeline_path = os.path.join(base_dir, pipeline_name)
+    try:
+        if os.path.exists(pipeline_path):
+            shutil.rmtree(pipeline_path)
+            print(f"[FS] Folder '{pipeline_path}' removed.")
+        else:
+            print(f"[FS] Folder '{pipeline_path}' does not exist.")
+    except Exception as e:
+        print(f"[ERROR] Could not remove pipeline folder: {e}")
+
+
+# =========================
+# Docker helpers (files / launch / list / delete)
+# =========================
 
 def _docker_install_hint() -> str:
     return (
@@ -156,15 +219,26 @@ def _docker_install_hint() -> str:
         "  sudo apt-get install -y docker-compose-plugin\n"
         "Alternatively (legacy v1):\n"
         "  sudo apt-get install -y docker-compose\n"
-        "Then re-run with persistence='docker'."
     )
 
 
 def _write_docker_files(pipeline_name: str, runner_script_abs: str, base_dir: str, port: int | None):
-    """Generate Dockerfile and docker-compose.yml in project root."""
-    dockerfile_path = os.path.join(base_dir, "Dockerfile")
-    compose_path = os.path.join(base_dir, "docker-compose.yml")
-    runner_in_container = "/app" + runner_script_abs.replace(base_dir, "").replace("\\", "/")
+    """
+    Generate Dockerfile and docker-compose.yml inside pipelines/<pipeline_name>/.
+    Build context is the project root so the entire repo is copied into /app.
+    """
+    pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
+    os.makedirs(pipeline_dir, exist_ok=True)
+
+    dockerfile_path = os.path.join(pipeline_dir, "Dockerfile")
+    compose_path = os.path.join(pipeline_dir, "docker-compose.yml")
+
+    # Map host runner path -> container /app/...
+    runner_rel = runner_script_abs.replace(base_dir, "").lstrip(os.sep)
+    runner_rel_posix = runner_rel.replace(os.sep, "/")
+    runner_in_container = f"/app/{runner_rel_posix}"
+
+    exposed_port = port or 8501
 
     dockerfile = f"""# Auto-generated Dockerfile (schedule) for {pipeline_name}
 FROM python:3.10-slim
@@ -176,12 +250,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 WORKDIR /app
 
+# Build context is repo root (see docker-compose.yml)
 COPY . /app
 
 RUN pip install --no-cache-dir --upgrade pip && \\
     (test -f requirements.txt && pip install --no-cache-dir -r requirements.txt || true)
 
-EXPOSE {port or 8501}
+EXPOSE {exposed_port}
 
 ENV PYTHONUNBUFFERED=1 \\
     STREAMLIT_SERVER_ADDRESS=0.0.0.0 \\
@@ -194,13 +269,15 @@ CMD ["python", "{runner_in_container}"]
 version: "3.8"
 services:
   {pipeline_name}_schedule:
-    build: .
+    build:
+      context: ../../
+      dockerfile: ./pipelines/{pipeline_name}/Dockerfile
     container_name: calmops_{pipeline_name}_schedule
     restart: unless-stopped
     ports:
-      - "{(port or 8501)}:{(port or 8501)}"
+      - "{exposed_port}:{exposed_port}"
     volumes:
-      - "{base_dir}:/app"
+      - "../../:/app"
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
@@ -215,23 +292,129 @@ services:
     return dockerfile_path, compose_path
 
 
+def _launch_with_docker(pipeline_name: str, runner_script: str, base_dir: str, port: int | None):
+    """Build and run docker-compose in detached mode from pipelines/<pipeline_name>/."""
+    if not _which("docker"):
+        _fatal(_docker_install_hint())
+
+    _write_docker_files(pipeline_name, runner_script, base_dir, port or 8501)
+
+    pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
+
+    # Prefer 'docker compose' (v2), fallback to 'docker-compose' (v1)
+    try:
+        if _which("docker") and subprocess.call(
+            ["docker", "compose", "version"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ) == 0:
+            subprocess.check_call(["docker", "compose", "up", "-d", "--build"], cwd=pipeline_dir)
+        elif _which("docker-compose"):
+            subprocess.check_call(["docker-compose", "up", "-d", "--build"], cwd=pipeline_dir)
+        else:
+            _fatal(
+                "Neither `docker compose` (v2) nor `docker-compose` (v1) is available.\n"
+                f"{_docker_install_hint()}"
+            )
+    except Exception as e:
+        _fatal(f"Failed to build/run Docker services: {e}\n{_docker_install_hint()}")
+
+
+def docker_list(prefix: str = "calmops_") -> list[tuple[str, str]]:
+    """
+    List docker containers whose name starts with prefix. Returns list of (name, status).
+    """
+    if not _which("docker"):
+        print("[ERROR] Docker not installed.")
+        return []
+    try:
+        out = subprocess.check_output(
+            ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"], text=True
+        ).strip()
+    except Exception as e:
+        print(f"[ERROR] docker ps failed: {e}")
+        return []
+
+    rows = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        name, status = line.split("\t", 1)
+        if name.startswith(prefix):
+            rows.append((name, status))
+    if rows:
+        print("Docker containers:")
+        for name, status in rows:
+            print(f"- {name}: {status}")
+    else:
+        print(f"No docker containers with prefix '{prefix}'.")
+    return rows
+
+
+def docker_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> None:
+    """
+    Bring down compose (if present) for the pipeline and remove pipeline folder.
+    Container names used: calmops_<pipeline_name>_schedule
+    """
+    pipeline_dir = os.path.join(base_dir, pipeline_name)
+    compose_path = os.path.join(pipeline_dir, "docker-compose.yml")
+    if not _which("docker"):
+        print("[ERROR] Docker not installed.")
+        return
+
+    try:
+        if os.path.exists(compose_path):
+            if subprocess.call(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+                subprocess.call(["docker", "compose", "down", "--volumes", "--remove-orphans"], cwd=pipeline_dir)
+            elif _which("docker-compose"):
+                subprocess.call(["docker-compose", "down", "--volumes", "--remove-orphans"], cwd=pipeline_dir)
+        else:
+            # Try plain stop/rm by name if compose is missing
+            cname = f"calmops_{pipeline_name}_schedule"
+            subprocess.call(["docker", "rm", "-f", cname])
+        print(f"[DOCKER] Pipeline '{pipeline_name}' containers removed.")
+    except Exception as e:
+        print(f"[WARN] Could not bring down docker compose: {e}")
+
+    try:
+        if os.path.exists(pipeline_dir):
+            shutil.rmtree(pipeline_dir)
+            print(f"[FS] Folder '{pipeline_dir}' removed.")
+    except Exception as e:
+        print(f"[ERROR] Could not remove pipeline folder: {e}")
+
+
+# =========================
+# PM2 launcher (schedule)
+# =========================
+
 def _launch_with_pm2(pipeline_name: str, runner_script: str, base_dir: str):
     """Start the schedule runner with PM2."""
     if not _which("pm2"):
-        _fatal(_pm2_install_hint())
+        _fatal(
+            "PM2 is required but not found.\n"
+            "Install Node.js + PM2, e.g. on Debian/Ubuntu:\n"
+            "  sudo apt-get update && sudo apt-get install -y nodejs npm\n"
+            "  sudo npm install -g pm2\n"
+            "Then re-run with persistence='pm2'."
+        )
 
     eco_path = os.path.join(base_dir, "pipelines", pipeline_name, "ecosystem.schedule.config.js")
     app_name = f"calmops-schedule-{pipeline_name}"
     python_exec = sys.executable
 
+    # Avoid backslash expressions inside f-strings
+    runner_script_posix = runner_script.replace("\\", "/")
+    python_exec_posix = python_exec.replace("\\", "/")
+    base_dir_posix = base_dir.replace("\\", "/")
+
     ecosystem = f"""
 module.exports = {{
   apps: [{{
     name: "{app_name}",
-    script: "{runner_script.replace("\\\\","/")}",
-    interpreter: "{python_exec.replace("\\\\","/")}",
+    script: "{runner_script_posix}",
+    interpreter: "{python_exec_posix}",
     interpreter_args: "-u",
-    cwd: "{base_dir.replace("\\\\","/")}",
+    cwd: "{base_dir_posix}",
     autorestart: true,
     watch: false,
     max_restarts: 10
@@ -244,7 +427,7 @@ module.exports = {{
     try:
         subprocess.check_call(["pm2", "start", eco_path])
     except Exception as e:
-        _fatal(f"Failed to start with PM2: {e}\n{_pm2_install_hint()}")
+        _fatal(f"Failed to start with PM2: {e}\n(Install with: sudo npm install -g pm2)")
 
     # Persist process list (best-effort)
     try:
@@ -252,33 +435,15 @@ module.exports = {{
     except Exception:
         pass
     try:
-        subprocess.check_call(["pm2", "startup", "-u", os.getenv("USER", "") or ""])
+        user = os.getenv("USER", "") or ""
+        if user:
+            subprocess.check_call(["pm2", "startup", "-u", user])
+        else:
+            subprocess.check_call(["pm2", "startup"])
     except Exception:
         pass
 
     print(f"[PM2] App '{app_name}' started and saved. It will restart on boot (if pm2 startup is active).")
-
-
-def _launch_with_docker(pipeline_name: str, runner_script: str, base_dir: str, port: int | None):
-    """Build and run docker-compose in detached mode with restart policy."""
-    if not _which("docker"):
-        _fatal(_docker_install_hint())
-
-    _write_docker_files(pipeline_name, runner_script, base_dir, port or 8501)
-
-    # Prefer 'docker compose' (v2), fallback to 'docker-compose' (v1)
-    try:
-        if _which("docker") and subprocess.call(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
-            subprocess.check_call(["docker", "compose", "up", "-d", "--build"], cwd=_project_root())
-        elif _which("docker-compose"):
-            subprocess.check_call(["docker-compose", "up", "-d", "--build"], cwd=_project_root())
-        else:
-            _fatal(
-                "Neither `docker compose` (v2) nor `docker-compose` (v1) is available.\n"
-                f"{_docker_install_hint()}"
-            )
-    except Exception as e:
-        _fatal(f"Failed to build/run Docker services: {e}\n{_docker_install_hint()}")
 
 
 # =========================
@@ -313,10 +478,7 @@ def start_monitor_schedule(
       - Periodically checks the data directory and triggers run_pipeline on new/modified files
       - Launches Streamlit dashboard
       - Optionally bootstraps persistence via PM2 or Docker
-
-    On PM2/Docker selection without the tools installed, a friendly error is printed and the process exits.
     """
-
     if schedule is None or "type" not in schedule or "params" not in schedule:
         _fatal("schedule must be a dict with keys: 'type' and 'params'.")
 
@@ -325,7 +487,6 @@ def start_monitor_schedule(
     base_dir = _project_root()
 
     if persistence in ("pm2", "docker"):
-        # Prepare runner config + script that reconstructs the model & args
         model_spec = _model_spec_from_instance(model_instance)
         runner_cfg_obj = {
             "pipeline_name": pipeline_name,
@@ -398,6 +559,7 @@ def start_monitor_schedule(
         sys.exit(1)
 
     def get_records():
+        """Read control file with processed files and mtimes."""
         records = {}
         if os.path.exists(control_file):
             with open(control_file, "r") as f:
@@ -440,6 +602,7 @@ def start_monitor_schedule(
             stop_all(f"The pipeline failed for {file}: {e}")
 
     def check_files():
+        """Check the directory for new/modified files and trigger processing."""
         try:
             print("[CHECK] Checking files in directory...")
             records = get_records()
@@ -485,7 +648,7 @@ def start_monitor_schedule(
         except Exception as e:
             stop_all(f"Could not launch Streamlit: {e}")
 
-    print(f"[MAIN] Launching monitor with APScheduler...")
+    print(f"[MAIN] Launching scheduled monitor with APScheduler...")
 
     if early_start:
         check_files()
@@ -562,7 +725,7 @@ if __name__ == "__main__":
 
     start_monitor_schedule(
         pipeline_name="my_pipeline_schedule",
-        data_dir="/home/alex/demo/data",
+        data_dir="/home/alex/datos",
         preprocess_file="/home/alex/demo/pipeline/preprocessing.py",
         thresholds_drift={"balanced_accuracy": 0.8},
         thresholds_perf={"accuracy": 0.9, "balanced_accuracy": 0.9, "f1": 0.85},

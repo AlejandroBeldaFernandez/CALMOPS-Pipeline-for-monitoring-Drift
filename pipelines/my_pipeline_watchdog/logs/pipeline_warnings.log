@@ -1,2 +1,0 @@
-2025-08-12 16:22:46,757 - my_pipeline_watchdog - WARNING - evaluador.py:195 - ❌ balanced_accuracy: 0.506300 < 0.8 (min required)
-2025-08-12 16:22:46,758 - my_pipeline_watchdog - WARNING - evaluador.py:248 - ❌ Model did not pass thresholds. Model not updated.
