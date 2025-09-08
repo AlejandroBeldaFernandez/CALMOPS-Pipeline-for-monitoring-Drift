@@ -4,43 +4,29 @@ import json
 import pandas as pd
 from pathlib import Path
 from scipy.io import arff
-import logging
-
-def clear_logs(logs_dir, logger):
-    """Clears the content of all log files without deleting them."""
-    try:
-        if os.path.exists(logs_dir):
-            for file in os.listdir(logs_dir):
-                file_path = Path(logs_dir) / file
-                if file_path.is_file():
-                    with open(file_path, "w"):
-                        pass  # Clear the file
-            logger.info(f"🧹 Logs cleared in {logs_dir}")
-        else:
-            logger.warning(f"Logs directory {logs_dir} not found.")
-    except Exception as e:
-        logger.error(f"Error clearing logs: {e}")
 
 def load_file(path: Path, delimiter=None) -> pd.DataFrame:
     """Loads a file based on its extension."""
     try:
-        if path.suffix.lower() == ".csv":
+        suf = path.suffix.lower()
+        if suf == ".csv":
             return pd.read_csv(path, delimiter=delimiter) if delimiter else pd.read_csv(path)
-        elif path.suffix.lower() == ".arff":
-            data, meta = arff.loadarff(path)
+        elif suf == ".arff":
+            data, _ = arff.loadarff(path)
             df = pd.DataFrame(data)
             # decode bytes in object columns
             for c in df.select_dtypes(include=["object"]).columns:
                 if df[c].apply(lambda v: isinstance(v, (bytes, bytearray))).any():
                     df[c] = df[c].apply(lambda v: v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else v)
             return df
-        elif path.suffix.lower() == ".json":
+        elif suf == ".json":
             return pd.read_json(path)
-        elif path.suffix.lower() in (".xls", ".xlsx"):
+        elif suf in (".xls", ".xlsx"):
             return pd.read_excel(path)
-        elif path.suffix.lower() == ".parquet":
+        elif suf == ".parquet":
             return pd.read_parquet(path)
-        elif path.suffix.lower() == ".txt":
+        elif suf == ".txt":
+            # si no se pasa delimiter, que intente inferir
             return pd.read_csv(path, sep=delimiter if delimiter else None, engine="python")
         else:
             raise ValueError(f"Unsupported format: {path.suffix}")
@@ -76,16 +62,7 @@ def _sorted_block_ids(series: pd.Series):
 
 def _write_blocks_snapshot(control_dir: Path, *, file_name: str, block_col: str, df: pd.DataFrame, mtime: float, logger):
     """
-    Persist simple snapshot of blocks present now:
-    {
-      "<file>": {
-        "block_col": "...",
-        "blocks": [...],  # ordered
-        "counts": {"id": n, ...},
-        "n_rows": N,
-        "mtime": <float>
-      }
-    }
+    Persist simple snapshot of blocks present now.
     """
     snap_path = control_dir / "blocks_snapshot.json"
     snapshot = {}
@@ -121,16 +98,13 @@ def _write_blocks_snapshot(control_dir: Path, *, file_name: str, block_col: str,
 
 def data_loader(logger, data_dir, control_dir, delimiter=None, target_file=None, *, block_col: str = None):
     """
-    Loads data from a specific file (target_file) or checks the entire directory.
-    Supports multiple formats: .csv, .arff, .json, .xlsx, .parquet, .txt
-
-    Behavior:
-    - Returns the FULL dataset as a DataFrame (no per-block slicing).
-    - If `block_col` is provided and exists, writes/updates a blocks snapshot JSON.
-    - Clears logs when a new or modified dataset is detected.
+    Loads data from a specific file (target_file) or scans the directory.
+    Returns:
+      - df FULL (sin trocear por bloques),
+      - last_processed_file (str),
+      - last_mtime (float)
     """
     control_file = Path(control_dir) / "control_file.txt"
-    logs_dir = Path(os.getcwd()) / "pipelines" / "my_pipeline_watchdog" / "logs"
 
     # records of processed mtimes
     records = {}
@@ -154,7 +128,6 @@ def data_loader(logger, data_dir, control_dir, delimiter=None, target_file=None,
             df = load_file(file_path, delimiter=delimiter)
             last_mtime = os.path.getmtime(file_path)
             logger.info(f"File {target_file} loaded successfully.")
-            clear_logs(logs_dir, logger)
             _write_blocks_snapshot(Path(control_dir), file_name=target_file, block_col=block_col, df=df, mtime=last_mtime, logger=logger)
             return df, target_file, last_mtime
         except Exception as e:
@@ -172,7 +145,9 @@ def data_loader(logger, data_dir, control_dir, delimiter=None, target_file=None,
         logger.warning("No files found in the data directory.")
         return pd.DataFrame(), None, None
 
-    # return the first new/modified file
+    # ordenar por mtime DESC para elegir determinísticamente el más reciente “nuevo/modificado”
+    files = sorted(files, key=lambda fn: os.path.getmtime(Path(data_dir) / fn), reverse=True)
+
     for file in files:
         file_path = Path(data_dir) / file
         mtime = os.path.getmtime(file_path)
@@ -181,7 +156,6 @@ def data_loader(logger, data_dir, control_dir, delimiter=None, target_file=None,
             try:
                 df = load_file(file_path, delimiter=delimiter)
                 logger.info(f"File {file} loaded successfully.")
-                clear_logs(logs_dir, logger)
                 _write_blocks_snapshot(Path(control_dir), file_name=file, block_col=block_col, df=df, mtime=mtime, logger=logger)
                 return df, file, mtime
             except Exception as e:

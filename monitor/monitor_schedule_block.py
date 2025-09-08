@@ -18,15 +18,68 @@ import socket
 import shutil
 import threading
 import subprocess
-from typing import Optional
+import logging
+from typing import Optional, Dict, Tuple
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+    _TZ_EUROPE_MADRID = ZoneInfo("Europe/Madrid")
+except Exception:
+    _TZ_EUROPE_MADRID = None
+
 # Importa la pipeline por BLOQUES
 from pipeline_block.pipeline_block import run_pipeline as run_pipeline_blocks
+
+
+# =========================
+# Logging (formato unificado)
+# =========================
+
+_LOG_FORMAT = "[%(levelname)s] %(asctime)s - %(name)s - %(message)s"
+
+def configure_root_logging(level: int = logging.INFO) -> None:
+    """
+    Configura el root logger con un único StreamHandler a stdout y
+    el formato del monitor. Limpia handlers previos, captura warnings
+    y reduce verbosidad de librerías ruidosas.
+    """
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # suprime INFO/WARNING de TF
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    sh = logging.StreamHandler(stream=sys.stdout)
+    sh.setLevel(level)
+    sh.setFormatter(logging.Formatter(_LOG_FORMAT))
+    root.addHandler(sh)
+
+    logging.captureWarnings(True)
+    for noisy in ("urllib3", "apscheduler", "PIL", "matplotlib"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def _get_logger(name: str | None = None) -> logging.Logger:
+    """
+    Devuelve un logger que hereda el handler/format del root.
+    No añade handlers (evita duplicados).
+    """
+    if name is None:
+        name = __name__
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    return logger
+
+
+# Logger por defecto del módulo; dentro de start_monitor_schedule_block() se renombra por pipeline
+log = _get_logger()
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
 # =========================
@@ -44,7 +97,7 @@ def _which(cmd: str):
 
 
 def _fatal(msg: str, code: int = 1):
-    print(f"[FATAL] {msg}", file=sys.stderr)
+    log.critical(msg)
     sys.exit(code)
 
 
@@ -80,15 +133,10 @@ def _write_runner_script(pipeline_name: str, runner_cfg_path: str, base_dir: str
     """
     pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
     os.makedirs(pipeline_dir, exist_ok=True)
-    runner_path = os.path.join(pipeline_dir, f"run_{pipeline_name}_schedule_blocks.py")
+    runner_path = os.path.join(pipeline_dir, f"run_{pipeline_name}_blocks_schedule.py")
 
     content = f'''# Auto-generated runner (schedule, blocks) for pipeline: {pipeline_name}
-import os, sys, json, importlib
-
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
+import json, importlib
 from monitor.monitor_schedule_block import start_monitor_schedule_block
 
 def _load_cfg(path):
@@ -146,50 +194,50 @@ if __name__ == "__main__":
 
 def pm2_list(prefix: str = "calmops-") -> list[dict]:
     if not _which("pm2"):
-        print("[ERROR] PM2 no está instalado. sudo npm install -g pm2")
+        log.error("PM2 no está instalado. sudo npm install -g pm2")
         return []
     try:
         out = subprocess.check_output(["pm2", "jlist"], text=True)
         procs = json.loads(out)
     except Exception as e:
-        print(f"[ERROR] No se pudo obtener la lista de PM2: {e}")
+        log.error(f"No se pudo obtener la lista de PM2: {e}")
         return []
     filtered = [p for p in procs if p.get("name", "").startswith(prefix)]
     if not filtered:
-        print(f"No hay procesos PM2 con prefijo '{prefix}'.")
+        log.info(f"No hay procesos PM2 con prefijo '{prefix}'.")
         return []
-    print("Procesos PM2:")
+    log.info("Procesos PM2:")
     for p in filtered:
         name = p.get("name")
         pid = p.get("pid")
         status = p.get("pm2_env", {}).get("status")
         restart = p.get("pm2_env", {}).get("restart_time")
-        print(f"- {name} | pid={pid} | status={status} | restarts={restart}")
+        log.info(f"- {name} | pid={pid} | status={status} | restarts={restart}")
     return filtered
 
 
 def pm2_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> None:
-    app_name = f"calmops-schedule-{pipeline_name}"
+    app_name = f"calmops-schedule-{pipeline_name}-blocks"
     if not _which("pm2"):
-        print("[ERROR] PM2 no está instalado.")
+        log.error("[ERROR] PM2 no está instalado.")
         return
     try:
         subprocess.call(["pm2", "stop", app_name])
         subprocess.call(["pm2", "delete", app_name])
         subprocess.call(["pm2", "save"])
-        print(f"[PM2] Proceso '{app_name}' detenido y eliminado.")
+        log.info(f"[PM2] Proceso '{app_name}' detenido y eliminado.")
     except Exception as e:
-        print(f"[WARN] No se pudo eliminar en PM2: {e}")
+        log.warning(f"No se pudo eliminar en PM2: {e}")
 
     pipeline_path = os.path.join(base_dir, pipeline_name)
     try:
         if os.path.exists(pipeline_path):
             shutil.rmtree(pipeline_path)
-            print(f"[FS] Carpeta '{pipeline_path}' eliminada.")
+            log.info(f"[FS] Carpeta '{pipeline_path}' eliminada.")
         else:
-            print(f"[FS] Carpeta '{pipeline_path}' no existe.")
+            log.info(f"[FS] Carpeta '{pipeline_path}' no existe.")
     except Exception as e:
-        print(f"[ERROR] No se pudo eliminar la carpeta de la pipeline: {e}")
+        log.error(f"No se pudo eliminar la carpeta de la pipeline: {e}")
 
 
 # =========================
@@ -223,7 +271,7 @@ def _write_docker_files(pipeline_name: str, runner_script_abs: str, base_dir: st
 
     exposed_port = port or 8501
 
-    dockerfile = f"""# Auto-generated Dockerfile (schedule blocks) for {pipeline_name}
+    dockerfile = f"""# Auto-generated Dockerfile (schedule, blocks) for {pipeline_name}
 FROM python:3.10-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
@@ -246,14 +294,14 @@ ENV PYTHONUNBUFFERED=1 \\
 CMD ["python", "{runner_in_container}"]
 """
 
-    compose = f"""# Auto-generated docker-compose (schedule blocks) for {pipeline_name}
+    compose = f"""# Auto-generated docker-compose (schedule, blocks) for {pipeline_name}
 version: "3.8"
 services:
-  {pipeline_name}_schedule_blocks:
+  {pipeline_name}_blocks_schedule:
     build:
       context: ../../
       dockerfile: ./pipelines/{pipeline_name}/Dockerfile
-    container_name: calmops_{pipeline_name}_schedule_blocks
+    container_name: calmops_{pipeline_name}_blocks_schedule
     restart: unless-stopped
     ports:
       - "{exposed_port}:{exposed_port}"
@@ -297,18 +345,18 @@ def _launch_with_docker(pipeline_name: str, runner_script: str, base_dir: str, p
         _fatal(f"Failed to build/run Docker services: {e}\n{_docker_install_hint()}")
 
 
-def docker_list(prefix: str = "calmops_") -> list[tuple[str, str]]:
+def docker_list(prefix: str = "calmops_") -> list[Tuple[str, str]]:
     if not _which("docker"):
-        print("[ERROR] Docker no instalado.")
+        log.error("Docker no instalado.")
         return []
     try:
         out = subprocess.check_output(
             ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"], text=True
         ).strip()
     except Exception as e:
-        print(f"[ERROR] docker ps falló: {e}")
+        log.error(f"docker ps falló: {e}")
         return []
-    rows = []
+    rows: list[Tuple[str, str]] = []
     for line in out.splitlines():
         if not line.strip():
             continue
@@ -316,11 +364,11 @@ def docker_list(prefix: str = "calmops_") -> list[tuple[str, str]]:
         if name.startswith(prefix):
             rows.append((name, status))
     if rows:
-        print("Contenedores Docker:")
+        log.info("Contenedores Docker:")
         for name, status in rows:
-            print(f"- {name}: {status}")
+            log.info(f"- {name}: {status}")
     else:
-        print(f"No hay contenedores con prefijo '{prefix}'.")
+        log.info(f"No hay contenedores con prefijo '{prefix}'.")
     return rows
 
 
@@ -328,7 +376,7 @@ def docker_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> N
     pipeline_dir = os.path.join(base_dir, pipeline_name)
     compose_path = os.path.join(pipeline_dir, "docker-compose.yml")
     if not _which("docker"):
-        print("[ERROR] Docker no instalado.")
+        log.error("Docker no instalado.")
         return
     try:
         if os.path.exists(compose_path):
@@ -337,36 +385,45 @@ def docker_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> N
             elif _which("docker-compose"):
                 subprocess.call(["docker-compose", "down", "--volumes", "--remove-orphans"], cwd=pipeline_dir)
         else:
-            cname = f"calmops_{pipeline_name}_schedule_blocks"
+            cname = f"calmops_{pipeline_name}_blocks_schedule"
             subprocess.call(["docker", "rm", "-f", cname])
-        print(f"[DOCKER] Pipeline '{pipeline_name}' (schedule blocks) eliminada.")
+        log.info(f"[DOCKER] Pipeline '{pipeline_name}' (blocks schedule) eliminada.")
     except Exception as e:
-        print(f"[WARN] No se pudo bajar docker compose: {e}")
+        log.warning(f"No se pudo bajar docker compose: {e}")
 
     try:
         if os.path.exists(pipeline_dir):
             shutil.rmtree(pipeline_dir)
-            print(f"[FS] Carpeta '{pipeline_dir}' eliminada.")
+            log.info(f"[FS] Carpeta '{pipeline_dir}' eliminada.")
     except Exception as e:
-        print(f"[ERROR] No se pudo eliminar la carpeta: {e}")
+        log.error(f"No se pudo eliminar la carpeta: {e}")
 
 
 # =========================
 # PM2 launcher (schedule blocks)
 # =========================
 
-def _launch_with_pm2(pipeline_name: str, runner_script: str, base_dir: str):
+def _launch_with_pm2(pipeline_name: str, runner_script: str, base_dir: str, logger: logging.Logger | None = None):
+    """
+    Launch a pipeline with PM2.
+    Works on Linux/macOS. On Windows, PM2 can run but automatic startup on boot won't work.
+    """
+    import os, sys, subprocess, logging
+
+    if logger is None:
+        logger = logging.getLogger("calmops.monitor")
+
     if not _which("pm2"):
         _fatal(
             "PM2 is required but not found.\n"
-            "sudo npm install -g pm2\n"
+            "Install it with: sudo npm install -g pm2\n"
             "Then re-run with persistence='pm2'."
         )
 
-    eco_path = os.path.join(base_dir, "pipelines", pipeline_name, "ecosystem.schedule.blocks.config.js")
-    app_name = f"calmops-schedule-{pipeline_name}"
-    python_exec = sys.executable
+    eco_path = os.path.join(base_dir, "pipelines", pipeline_name, "ecosystem.blocks.schedule.config.js")
+    app_name = f"calmops-schedule-{pipeline_name}-blocks"
 
+    python_exec = sys.executable
     runner_script_posix = runner_script.replace("\\", "/")
     python_exec_posix = python_exec.replace("\\", "/")
     base_dir_posix = base_dir.replace("\\", "/")
@@ -388,30 +445,40 @@ module.exports = {{
     with open(eco_path, "w") as f:
         f.write(ecosystem)
 
+    # Start the PM2 app
     try:
         subprocess.check_call(["pm2", "start", eco_path])
     except Exception as e:
         _fatal(f"Failed to start with PM2: {e}\n(Install with: sudo npm install -g pm2)")
 
+    # Save the PM2 process list
     try:
         subprocess.check_call(["pm2", "save"])
     except Exception:
-        pass
-    try:
-        user = os.getenv("USER", "") or ""
-        if user:
-            subprocess.check_call(["pm2", "startup", "-u", user])
-        else:
-            subprocess.check_call(["pm2", "startup"])
-    except Exception:
-        pass
+        logger.warning("[PM2] Could not save PM2 process list.")
 
-    print(f"[PM2] App '{app_name}' started and saved.")
+    # Attempt auto-start on Linux/macOS
+    if os.name != "nt":
+        try:
+            user = os.getenv("USER") or os.getenv("USERNAME") or ""
+            if user:
+                subprocess.check_call(["pm2", "startup", "-u", user])
+            else:
+                subprocess.check_call(["pm2", "startup"])
+        except Exception:
+            logger.warning("[PM2] Could not create startup script. Configure manually if needed.")
+    else:
+        logger.info("[PM2] Windows detected: automatic startup on boot not configured.")
+
+    logger.info(f"[PM2] App '{app_name}' started and saved. Autorestart enabled.")
+
 
 
 # =========================
 # Main scheduled monitor (BLOQUES)
 # =========================
+
+_ALLOWED_EXTS = (".arff", ".csv", ".txt", ".xml", ".json", ".parquet", ".xls", ".xlsx")
 
 def start_monitor_schedule_block(
     *,
@@ -444,6 +511,13 @@ def start_monitor_schedule_block(
       - Lanza el dashboard de bloques.
       - Puede arrancar persistente con PM2 o Docker.
     """
+    # Logging global con formato del monitor
+    configure_root_logging(logging.INFO)
+
+    # Logger específico por pipeline
+    global log
+    log = _get_logger(f"calmops.monitor.schedule_blocks.{pipeline_name}")
+
     if schedule is None or "type" not in schedule or "params" not in schedule:
         _fatal("schedule must be a dict with keys: 'type' and 'params'.")
 
@@ -480,20 +554,20 @@ def start_monitor_schedule_block(
 
         if persistence == "pm2":
             _launch_with_pm2(pipeline_name, runner_script, base_dir)
-            print("[PM2] Persistence enabled. Exiting foreground process.")
+            log.info("[PM2] Persistence enabled. Exiting foreground process.")
             return
         else:
             _launch_with_docker(pipeline_name, runner_script, base_dir, port or 8501)
-            print("[DOCKER] Persistence enabled via docker-compose. Exiting foreground process.")
+            log.info("[DOCKER] Persistence enabled via docker-compose. Exiting foreground process.")
             return
 
     # ---------- regular (non-persistent) flow ----------
     BASE_PIPELINE_DIR = os.path.join(os.getcwd(), "pipelines", pipeline_name)
-    OUTPUT_DIR = os.path.join(BASE_PIPELINE_DIR, "modelos")
+    OUTPUT_DIR  = os.path.join(BASE_PIPELINE_DIR, "modelos")
     CONTROL_DIR = os.path.join(BASE_PIPELINE_DIR, "control")
-    LOGS_DIR = os.path.join(BASE_PIPELINE_DIR, "logs")
-    METRICS_DIR = os.path.join(BASE_PIPELINE_DIR, "metrics")
-    CONFIG_DIR = os.path.join(BASE_PIPELINE_DIR, "config")
+    LOGS_DIR    = os.path.join(BASE_PIPELINE_DIR, "logs")
+    METRICS_DIR = os.path.join(BASE_PIPELINE_DIR, "resultados")
+    CONFIG_DIR  = os.path.join(BASE_PIPELINE_DIR, "config")
 
     for d in [OUTPUT_DIR, CONTROL_DIR, LOGS_DIR, METRICS_DIR, CONFIG_DIR]:
         os.makedirs(d, exist_ok=True)
@@ -509,25 +583,29 @@ def start_monitor_schedule_block(
             "pipeline_name": pipeline_name,
             "data_dir": data_dir,
             "preprocess_file": preprocess_file,
-            "block_col": block_col
+            "block_col": block_col,
+            "mode": "blocks"
         }, f)
 
     streamlit_process = None
 
     def stop_all(error_msg=None):
         nonlocal streamlit_process
-        print("[CRITICAL] Stopping all processes...")
+        log.critical("Stopping all processes...")
         if streamlit_process and streamlit_process.poll() is None:
-            print("[STREAMLIT] Terminating Streamlit...")
+            log.info("[STREAMLIT] Terminating Streamlit...")
             streamlit_process.terminate()
-            streamlit_process.wait()
+            try:
+                streamlit_process.wait(timeout=10)
+            except Exception:
+                streamlit_process.kill()
         if error_msg:
-            print(f"[ERROR] {error_msg}")
+            log.error(error_msg)
         sys.exit(1)
 
-    def get_records():
-        """Lee control_file con ficheros + mtimes procesados."""
-        records = {}
+    def get_records() -> Dict[str, int]:
+        """Lee control_file con ficheros + mtimes procesados. <filename>,<mtime>"""
+        records: Dict[str, int] = {}
         if os.path.exists(control_file):
             with open(control_file, "r") as f:
                 for line in f:
@@ -539,10 +617,10 @@ def start_monitor_schedule_block(
                             continue
         return records
 
-    def run_pipeline_for_file(file):
+    def run_pipeline_for_file(file: str):
         file_path = os.path.join(data_dir, file)
         mtime = int(os.path.getmtime(file_path))
-        print(f"[PIPELINE] (blocks) Running pipeline for file {file}...")
+        log.info(f"[PIPELINE] (blocks) Running pipeline for {file} (mtime={mtime})...")
         try:
             run_pipeline_blocks(
                 pipeline_name=pipeline_name,
@@ -560,32 +638,31 @@ def start_monitor_schedule_block(
                 custom_retrain_file=custom_retrain_file,
                 custom_fallback_file=custom_fallback_file,
                 delimiter=delimiter,
-                target_file=file,
+                target_file=file,          # basename (alineado con control_file)
                 window_size=window_size,
-                # --- BLOQUES ---
                 block_col=block_col,
             )
-            print(f"[PIPELINE] (blocks) Completed for {file}")
+            log.info(f"[PIPELINE] (blocks) Completed for {file}")
         except Exception as e:
             stop_all(f"The block pipeline failed for {file}: {e}")
 
     def check_files():
         """Busca nuevos/modificados y dispara procesamiento."""
         try:
-            print("[CHECK] Scanning directory for new/modified files...")
+            log.info("[CHECK] Scanning directory for new/modified files...")
             records = get_records()
             for file in os.listdir(data_dir):
                 file_path = os.path.join(data_dir, file)
                 if not os.path.isfile(file_path):
                     continue
-                if not file.lower().endswith((".arff", ".csv", ".txt", ".xml", ".json", ".parquet", ".xls", ".xlsx")):
+                if not file.lower().endswith(_ALLOWED_EXTS):
                     continue
                 mtime = int(os.path.getmtime(file_path))
                 if file not in records or mtime > records[file]:
-                    print(f"[CHECK] New/updated: {file}")
+                    log.info(f"[CHECK] New/updated: {file}")
                     run_pipeline_for_file(file)
                 else:
-                    print(f"[CONTROL] {file} already processed, skipping.")
+                    log.info(f"[CONTROL] {file} already processed (stored mtime={records[file]}), skipping.")
         except Exception as e:
             stop_all(f"Error during directory scan: {e}")
 
@@ -602,10 +679,10 @@ def start_monitor_schedule_block(
         if port is None:
             port = 8501
             if is_port_in_use(port):
-                print(f"[STREAMLIT] Port {port} is occupied. Trying 8510...")
+                log.info(f"[STREAMLIT] Port {port} is occupied. Trying 8510...")
                 port = 8510
 
-        print(f"[STREAMLIT] Launching blocks dashboard on port {port}...")
+        log.info(f"[STREAMLIT] Launching blocks dashboard on port {port}...")
         try:
             streamlit_process = subprocess.Popen([
                 "streamlit", "run", dashboard_path,
@@ -616,25 +693,53 @@ def start_monitor_schedule_block(
         except Exception as e:
             stop_all(f"Could not launch Streamlit (blocks): {e}")
 
-    print(f"[MAIN] Launching scheduled blocks monitor with APScheduler...")
-
-    if schedule is None:
-        _fatal("You must provide a schedule dict with 'type' and 'params'.")
+    log.info("[MAIN] Launching scheduled blocks monitor with APScheduler...")
 
     # Primera ejecución (opcional)
     if early_start:
         check_files()
 
-    scheduler = BackgroundScheduler()
+    # Scheduler robusto
+    scheduler = BackgroundScheduler(
+        job_defaults={
+            "coalesce": True,
+            "max_instances": 1,
+            "misfire_grace_time": 300
+        },
+        timezone=_TZ_EUROPE_MADRID if _TZ_EUROPE_MADRID else None
+    )
+
+    if schedule is None:
+        _fatal("You must provide a schedule dict with 'type' and 'params'.")
+
     stype = schedule["type"]
-    sparams = schedule["params"]
+    sparams = dict(schedule["params"])
 
     if stype == "interval":
-        scheduler.add_job(check_files, IntervalTrigger(**sparams))
+        jitter = sparams.pop("jitter", 10)
+        trigger = IntervalTrigger(jitter=jitter, **sparams)
+        scheduler.add_job(
+            check_files, trigger=trigger,
+            id=f"check_files:{pipeline_name}:blocks",
+            replace_existing=True, coalesce=True,
+            max_instances=1, misfire_grace_time=300
+        )
     elif stype == "cron":
-        scheduler.add_job(check_files, CronTrigger(**sparams))
+        trigger = CronTrigger(**sparams)
+        scheduler.add_job(
+            check_files, trigger=trigger,
+            id=f"check_files:{pipeline_name}:blocks",
+            replace_existing=True, coalesce=True,
+            max_instances=1, misfire_grace_time=300
+        )
     elif stype == "date":
-        scheduler.add_job(check_files, DateTrigger(run_date=sparams["run_date"]))
+        trigger = DateTrigger(run_date=sparams["run_date"])
+        scheduler.add_job(
+            check_files, trigger=trigger,
+            id=f"check_files:{pipeline_name}:blocks",
+            replace_existing=True, coalesce=True,
+            max_instances=1, misfire_grace_time=300
+        )
     else:
         stop_all(f"[ERROR] Invalid schedule type: {stype}")
 
@@ -644,7 +749,7 @@ def start_monitor_schedule_block(
 
     try:
         while True:
-            print("[DEBUG] Blocks schedule monitor running...")
+            log.info("Monitor heartbeat (BLOCKS)...")
             time.sleep(30)
     except KeyboardInterrupt:
         stop_all("[INTERRUPT] Terminated by keyboard.")
@@ -660,31 +765,31 @@ def list_pipelines(base_dir="pipelines"):
     try:
         pipelines = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
         if not pipelines:
-            print("No pipelines found.")
+            log.info("No pipelines found.")
         else:
-            print("Available Pipelines:")
+            log.info("Available Pipelines:")
             for pipeline in pipelines:
-                print(f"- {pipeline}")
+                log.info(f"- {pipeline}")
     except Exception as e:
-        print(f"[ERROR] Could not list pipelines: {e}")
+        log.error(f"Could not list pipelines: {e}")
 
 
 def delete_pipeline(pipeline_name, base_dir="pipelines"):
     pipeline_path = os.path.join(base_dir, pipeline_name)
     if not os.path.exists(pipeline_path):
-        print(f"[ERROR] Pipeline {pipeline_name} does not exist.")
+        log.error(f"Pipeline {pipeline_name} does not exist.")
         return
     try:
         confirmation = input(
             f"Are you sure you want to delete the pipeline '{pipeline_name}'? This action is irreversible. (y/n): "
         )
         if confirmation.lower() != 'y':
-            print("Deletion cancelled.")
+            log.info("Deletion cancelled.")
             return
         shutil.rmtree(pipeline_path)
-        print(f"[INFO] Pipeline '{pipeline_name}' has been deleted.")
+        log.info(f"[INFO] Pipeline '{pipeline_name}' has been deleted.")
     except Exception as e:
-        print(f"[ERROR] Failed to delete pipeline {pipeline_name}: {e}")
+        log.error(f"[ERROR] Failed to delete pipeline {pipeline_name}: {e}")
 
 
 # =========================
@@ -692,10 +797,13 @@ def delete_pipeline(pipeline_name, base_dir="pipelines"):
 # =========================
 
 if __name__ == "__main__":
+    # Asegura el formato unificado al ejecutar directamente
+    configure_root_logging(logging.INFO)
+
     from sklearn.ensemble import RandomForestClassifier
 
     start_monitor_schedule_block(
-        pipeline_name="my_pipeline_schedule_blocks",
+        pipeline_name="my_pipeline_blocks_schedule",
         data_dir="/home/alex/datos",
         preprocess_file="/home/alex/calmops/pipeline_block/preprocessing.py",
         thresholds_drift={"balanced_accuracy": 0.8},
@@ -712,9 +820,9 @@ if __name__ == "__main__":
         },
         cv=3,
         delimiter=",",
-        schedule={"type": "interval", "params": {"minutes": 2}},  # interval/cron/date
+        schedule={"type": "interval", "params": {"minutes": 2}},
         early_start=True,
-        port=None,              # e.g. 8600 si necesitas puerto fijo
+        port=None,              # p.ej., 8600 si necesitas puerto fijo
         persistence="none",     # "none" | "pm2" | "docker"
         block_col=None          # si None, la pipeline intentará detectar "block"/"block_id"
     )

@@ -1,144 +1,128 @@
-# pipeline/modules/pipeline_block_ipip.py
+# pipeline/pipeline_ipip.py
 from __future__ import annotations
 
 import os
-import time
 import json
 import logging
 import importlib.util
-import inspect
-import pandas as pd
-import joblib
 from pathlib import Path
-from sklearn.model_selection import train_test_split
+from typing import List, Dict, Optional
+
+import joblib
+import pandas as pd
 
 from logger.logger import PipelineLogger
-from Detector.drift_detector import DriftDetector
 
-# === Módulos IPIP (versión adaptada) ===
-from .data_loader_ipip import data_loader
-from .check_drift_ipip import check_drift
-from .evaluador_ipip import evaluator
-from .default_train_retrain_ipip import default_train, default_retrain
+# --- Robust imports de tus módulos ---
+from .modules.data_loader import data_loader
+from .modules.check_drift import check_drift
+from .modules.default_train_retrain import default_train, default_retrain
 
 
-# -------------------------------  Circuit Breaker  -------------------------------
+# =========================================================
+# Helpers
+# =========================================================
+def _previous_model_path(model_path: str) -> str:
+    root, ext = os.path.splitext(model_path)
+    return f"{root}_previous{ext or '.pkl'}"
 
-def _health_path(metrics_dir: str) -> str:
-    return os.path.join(metrics_dir, "health.json")
+def _upsert_control_entry(control_file: Path, file_name: str, mtime: float, logger: logging.Logger):
+    control_file.parent.mkdir(parents=True, exist_ok=True)
+    key = Path(file_name).name
 
-def _load_health(metrics_dir: str):
-    p = _health_path(metrics_dir)
-    if os.path.exists(p):
-        with open(p, "r") as f:
-            return json.load(f)
-    return {"consecutive_failures": 0, "last_failure_ts": None, "paused_until": None}
+    existing = {}
+    if control_file.exists():
+        with open(control_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(",", 1)
+                if len(parts) == 2:
+                    existing[parts[0]] = parts[1]
 
-def _save_health(metrics_dir: str, data: dict):
-    p = _health_path(metrics_dir)
-    os.makedirs(metrics_dir, exist_ok=True)
-    with open(p, "w") as f:
-        json.dump(data, f, indent=2)
+    existing[key] = str(mtime)
+    tmp = control_file.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        for k, v in existing.items():
+            f.write(f"{k},{v}\n")
+    os.replace(tmp, control_file)
+    logger.info(f"[CONTROL] Upserted {key} with mtime={mtime} into {control_file.resolve()}")
 
-def _should_pause(health: dict) -> bool:
-    pu = health.get("paused_until")
-    if pu is None:
-        return False
+def _persist_model(
+    *,
+    model,
+    pipeline_name: str,
+    output_dir: str,
+    logger: logging.Logger
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    model_path = os.path.join(output_dir, f"{pipeline_name}.pkl")
+    if os.path.exists(model_path):
+        prev = _previous_model_path(model_path)
+        os.replace(model_path, prev)
+        logger.info(f"[MODEL] Previous model backed up at {Path(prev).resolve()}")
+    joblib.dump(model, model_path)
+    logger.info(f"💾 Model saved at {Path(model_path).resolve()}")
+    return model_path
+
+def _load_python(file_path: str, func_name: str):
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    spec = importlib.util.spec_from_file_location("custom_module", file_path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    if not hasattr(mod, func_name):
+        raise AttributeError(f"{file_path} must define {func_name}(...)")
+    return getattr(mod, func_name)
+
+def _load_drifted_blocks(metrics_dir: str) -> List[str]:
+    p = os.path.join(metrics_dir, "drift_results.json")
+    if not os.path.exists(p):
+        return []
     try:
-        return time.time() < float(pu)
+        with open(p, "r", encoding="utf-8") as f:
+            jr = json.load(f)
+        if "drifted_blocks" in jr and isinstance(jr["drifted_blocks"], list):
+            return [str(x) for x in jr["drifted_blocks"]]
+        bw = (jr.get("blockwise", {}) or {})
+        if "drifted_blocks_stats" in bw:
+            return [str(x) for x in bw["drifted_blocks_stats"]]
+        return []
     except Exception:
-        return False
-
-def _update_on_result(health: dict, approved: bool, backoff_minutes: int, max_failures: int):
-    if approved:
-        health.update({"consecutive_failures": 0, "last_failure_ts": None, "paused_until": None})
-    else:
-        health["consecutive_failures"] = int(health.get("consecutive_failures", 0)) + 1
-        health["last_failure_ts"] = time.time()
-        if health["consecutive_failures"] >= max_failures:
-            health["paused_until"] = time.time() + backoff_minutes * 60
-    return health
+        return []
 
 
-# -------------------------------  Utils  -------------------------------
-
-def _detect_block_col(df: pd.DataFrame, explicit: str | None = None) -> str | None:
-    """Best-effort para detectar columna de bloque."""
-    if explicit and explicit in df.columns:
-        return explicit
-    if "block_id" in df.columns:
-        return "block_id"
-    for c in df.columns:
-        if "block" in c.lower() or c.lower() == "mes":
-            return c
-    return None
-
-def _load_preprocess_func(preprocess_file: str):
-    """Carga data_preprocessing(df) desde un .py externo."""
-    if not os.path.exists(preprocess_file):
-        raise FileNotFoundError(f"Please provide a valid preprocessing file: {preprocess_file}")
-    spec = importlib.util.spec_from_file_location("custom_module", preprocess_file)
-    custom_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(custom_module)
-    if not hasattr(custom_module, "data_preprocessing"):
-        raise AttributeError(f"{preprocess_file} must define data_preprocessing(df)")
-    return getattr(custom_module, "data_preprocessing")
-
-def _call_with_supported_args(fn, **kwargs):
-    """Llama a una función pasando solo los kwargs que soporte (según su firma)."""
-    sig = inspect.signature(fn)
-    allowed = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    return fn(**allowed)
-
-
-# -------------------------------  Run Pipeline (GLOBAL POR DATASET)  -------------------------------
-
+# =========================================================
+# Run Pipeline
+# =========================================================
 def run_pipeline(
     *,
     pipeline_name: str,
     data_dir: str,
     preprocess_file: str,
-    thresholds_drift: dict,
-    thresholds_perf: dict,
+    thresholds_drift: dict,       # <-- se usa en check_drift
+    thresholds_perf: dict,        # <-- se usa para aprobar en train/retrain
     model_instance,
     retrain_mode: int,
-    fallback_mode: int,
     random_state: int,
-    param_grid: dict = None,
-    cv: int = None,
-    custom_train_file: str = None,
-    custom_retrain_file: str = None,
-    custom_fallback_file: str = None,
+    custom_train_file: str | None = None,
+    custom_retrain_file: str | None = None,
     delimiter: str = ",",
-    target_file: str = None,
-    window_size: int = None,
-    breaker_max_failures: int = 3,
-    breaker_backoff_minutes: int = 120,
-    # reporting por bloque:
+    target_file: str | None = None,
+    window_size: int | None = None,
     block_col: str | None = None,
-    # configuración específica de IPIP (opcional):
     ipip_config: dict | None = None,
-):
-    """
-    Modo GLOBAL (usa TODOS los bloques disponibles):
+) -> None:
 
-      1) Carga todo el dataset (data_loader_ipip deja snapshot de bloques).
-      2) Preprocesa con tu preprocessing_ipip (X numérico, y int).
-      3) check_drift_ipip(X, y, ...) — admite blocks/block_col si están disponibles.
-      4) TRAIN/RETRAIN con default_train/default_retrain IPIP (o ficheros custom).
-      5) evaluator_ipip publica métricas globales y por bloque (test y/o full).
-      6) Si aprueba, guarda previous_data.csv con TODO (features + target).
-
-    Nota: `ipip_config` se reenvía a train/retrain si sus firmas lo aceptan.
-    """
-    # Rutas base (mantén nombres iguales a tu dashboard)
-    base_dir = os.path.join(os.getcwd(), "pipelines", pipeline_name)
+    # Paths
+    base_dir   = os.path.join(os.getcwd(), "pipelines", pipeline_name)
     output_dir = os.path.join(base_dir, "modelos")
     control_dir = os.path.join(base_dir, "control")
-    logs_dir = os.path.join(base_dir, "logs")
+    logs_dir   = os.path.join(base_dir, "logs")
     metrics_dir = os.path.join(base_dir, "metrics")
-    candidates_dir = os.path.join(base_dir, "candidates")
-    for d in (output_dir, control_dir, logs_dir, metrics_dir, candidates_dir):
+    for d in (output_dir, control_dir, logs_dir, metrics_dir):
         os.makedirs(d, exist_ok=True)
 
     model_path = os.path.join(output_dir, f"{pipeline_name}.pkl")
@@ -146,309 +130,135 @@ def run_pipeline(
     # Logger
     logger = PipelineLogger(pipeline_name, log_dir=logs_dir).get_logger()
     logging.basicConfig()
-    logger.info("Pipeline (IPIP) started — GLOBAL mode over all blocks")
+    logger.info("Pipeline (IPIP) started — GLOBAL mode over all blocks.")
 
-    # Circuit breaker
-    health = _load_health(metrics_dir)
-    if _should_pause(health):
-        logger.warning("⚠️ Retraining paused by circuit breaker. Skipping this run.")
-        return
+    if not block_col:
+        raise ValueError("You must provide block_col explicitly (e.g., 'chunk').")
 
-    # Validación de umbrales incompatibles
-    if {"accuracy", "f1", "balanced_accuracy"} & set(thresholds_perf.keys()) and \
-       {"rmse", "mae", "mse", "r2"} & set(thresholds_perf.keys()):
-        raise ValueError("Cannot define both classification and regression thresholds at the same time.")
-
-    # Preprocess
-    preprocess_func = _load_preprocess_func(preprocess_file)
-
-    # Detector
-    detector = DriftDetector()
-
-    # 1) Cargar TODO el dataset (y snapshot de bloques)
+    # 1) Carga dataset
     df_full, last_processed_file, last_mtime = data_loader(
         logger, data_dir, control_dir, delimiter=delimiter, target_file=target_file, block_col=block_col
     )
     if df_full.empty:
         logger.warning("No new data to process.")
         return
+    if block_col not in df_full.columns:
+        raise ValueError(f"block_col='{block_col}' not found in the loaded dataset.")
 
-    # 2) Preprocesar -> X_total, y_total
-    X, y = preprocess_func(df_full)
-    logger.info(f"Data preprocessed: {X.shape[0]} rows, {X.shape[1]} columns")
-    df_xy = pd.concat([X, y], axis=1)  # features + target (para previous_data.csv si aprueba)
+    # 2) Preprocess (el prepro elige target y devuelve X,y)
+    spec = importlib.util.spec_from_file_location("custom_preproc", preprocess_file)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    if not hasattr(mod, "data_preprocessing"):
+        raise AttributeError(f"{preprocess_file} must define data_preprocessing(df)->(X,y)")
+    X, y = mod.data_preprocessing(df_full)
+    if isinstance(y, pd.DataFrame):
+        y = y.iloc[:, 0]
+    logger.info(f"Preprocesado OK: {X.shape[0]} filas, {X.shape[1]} columnas.")
 
-    # 3) Columna de bloque (reporting; no afecta decisión)
-    blk_col = _detect_block_col(df_full, block_col)
-    blocks_series = df_full[blk_col] if (blk_col and blk_col in df_full.columns) else None
-    if blocks_series is not None:
-        # Alinear índices (por si el preprocesado filtró/ordenó)
-        try:
-            blocks_series = blocks_series.loc[X.index]
-        except Exception:
-            common = X.index.intersection(blocks_series.index)
-            blocks_series = blocks_series.loc[common]
-            X = X.loc[common]; y = y.loc[common]
-            df_xy = pd.concat([X, y], axis=1)
+    # Re-alinear índice de bloques (por si el prepro no lo preserva en X)
+    try:
+        blocks_series = df_full.loc[X.index, block_col].astype(str)
+    except Exception:
+        common = X.index.intersection(df_full.index)
+        X = X.loc[common]
+        y = y.loc[common]
+        blocks_series = df_full.loc[common, block_col].astype(str)
+    X = X.copy()
+    X[block_col] = blocks_series
 
-    # 4) check_drift con TODO el dataset
-    decision = _call_with_supported_args(
-        check_drift,
-        X=X, y=y,
-        detector=detector,
+    # 3) Drift check (para decidir train/retrain) — usando thresholds_drift
+    # Pasamos X con block_col porque check_drift lo necesita para cortar por bloque.
+    decision = check_drift(
+        X=X,
+        y=y,
         logger=logger,
-        perf_thresholds=thresholds_drift,
+        drift_thresholds=thresholds_drift,   # umbrales de data-drift
         model_filename=f"{pipeline_name}.pkl",
-        data_dir=data_dir,
         output_dir=metrics_dir,
-        control_dir=control_dir,
         model_dir=output_dir,
-        blocks=blocks_series,
-        block_col=blk_col,
+        block_col=block_col,
     )
 
-    try:
-        # === TRAIN desde cero ===
-        if decision == "train":
-            logger.info("Starting TRAIN phase (IPIP) on ALL blocks")
+    is_first_run = not os.path.exists(model_path)
+    if is_first_run and decision not in ("train", "retrain"):
+        logger.info("No existing model found — forcing TRAIN on first run.")
+        decision = "train"
 
-            if custom_train_file:
-                spec_t = importlib.util.spec_from_file_location("train_module", custom_train_file)
-                mod_t = importlib.util.module_from_spec(spec_t); spec_t.loader.exec_module(mod_t)
-                if not hasattr(mod_t, "train"):
-                    raise AttributeError(f"{custom_train_file} must define train(...)")
-                # Pasamos ipip_config si lo soporta el custom
-                model, X_test, y_test, _ = _call_with_supported_args(
-                    mod_t.train,
-                    X=X, y=y,
-                    last_processed_file=last_processed_file,
+    # 4) TRAIN / RETRAIN (la aprobación usa thresholds_perf)
+    approved = False
+    results: Optional[Dict] = None
+
+    if decision == "train":
+        logger.info("TRAIN (IPIP) sobre TODOS los bloques.")
+
+        if custom_train_file:
+            train_func = _load_python(custom_train_file, "train")
+            # Intento con nombre estándar
+            try:
+                model, _, _, results = train_func(
+                    X=X, y=y, last_processed_file=last_processed_file,
                     logger=logger, output_dir=metrics_dir,
-                    ipip_config=ipip_config
+                    ipip_config=ipip_config, thresholds_perf=thresholds_perf,
+                    block_col=block_col, model_instance=model_instance, random_state=random_state
                 )
-            else:
-                model, X_test, y_test, _ = _call_with_supported_args(
-                    default_train,
-                    X=X, y=y,
-                    last_processed_file=last_processed_file,
-                    model_instance=model_instance,
-                    random_state=random_state,
-                    logger=logger,
-                    param_grid=param_grid,
-                    cv=cv,
-                    output_dir=metrics_dir,
-                    ipip_config=ipip_config
-                )
-
-            # test_blocks (si X_test es DataFrame y tenemos blk_col)
-            test_blocks = None
-            if isinstance(X_test, pd.DataFrame) and blocks_series is not None:
-                try:
-                    test_blocks = blocks_series.loc[X_test.index]
-                except Exception:
-                    test_blocks = None
-
-            approved = _call_with_supported_args(
-                evaluator,
-                model=model,
-                X_test=X_test,
-                y_test=y_test,
-                last_processed_file=last_processed_file,
-                last_mtime=last_mtime,
-                logger=logger,
-                is_first_model=True,
-                thresholds_perf=thresholds_perf,
-                model_dir=output_dir,
-                model_filename=f"{pipeline_name}.pkl",
-                control_dir=control_dir,
-                df=df_xy,
-                output_dir=metrics_dir,
-                # bloques (si el evaluador los soporta):
-                block_col=blk_col,
-                evaluated_block_id="ALL",
-                test_blocks=test_blocks,
-                reference_df=df_xy,
-                reference_blocks=(sorted(map(str, blocks_series.unique())) if blocks_series is not None else None),
-                X_all=X, y_all=y, all_blocks=blocks_series,
-                candidates_dir=candidates_dir,
-                save_candidates=True
-            )
-
-            health = _update_on_result(health, bool(approved), breaker_backoff_minutes, breaker_max_failures)
-            _save_health(metrics_dir, health)
-
-        # === RETRAIN sobre TODO el dataset ===
-        elif decision == "retrain":
-            logger.info("Starting RETRAIN phase (IPIP) on ALL blocks")
-
-            if custom_retrain_file:
-                spec_r = importlib.util.spec_from_file_location("retrain_module", custom_retrain_file)
-                mod_r = importlib.util.module_from_spec(spec_r); spec_r.loader.exec_module(mod_r)
-                if not hasattr(mod_r, "retrain"):
-                    raise AttributeError(f"{custom_retrain_file} must define retrain(...)")
-                model, X_test, y_test, _ = _call_with_supported_args(
-                    mod_r.retrain,
-                    X=X, y=y,
-                    last_processed_file=last_processed_file,
+            except TypeError:
+                # Compat: algunos custom podrían usar 'perf_thresholds'
+                model, _, _, results = train_func(
+                    X=X, y=y, last_processed_file=last_processed_file,
                     logger=logger, output_dir=metrics_dir,
-                    ipip_config=ipip_config
+                    ipip_config=ipip_config, perf_thresholds=thresholds_perf,
+                    block_col=block_col, model_instance=model_instance, random_state=random_state
                 )
-            else:
-                model, X_test, y_test, _ = _call_with_supported_args(
-                    default_retrain,
-                    X=X, y=y,
-                    last_processed_file=last_processed_file,
-                    model_path=model_path,
-                    mode=retrain_mode,
-                    random_state=random_state,
-                    logger=logger,
-                    param_grid=param_grid,
-                    cv=cv,
-                    output_dir=metrics_dir,
-                    window_size=window_size,
-                    ipip_config=ipip_config
-                )
-
-            test_blocks = None
-            if isinstance(X_test, pd.DataFrame) and blocks_series is not None:
-                try:
-                    test_blocks = blocks_series.loc[X_test.index]
-                except Exception:
-                    test_blocks = None
-
-            approved = _call_with_supported_args(
-                evaluator,
-                model=model,
-                X_test=X_test,
-                y_test=y_test,
-                last_processed_file=last_processed_file,
-                last_mtime=last_mtime,
-                logger=logger,
-                is_first_model=False,
-                thresholds_perf=thresholds_perf,
-                model_dir=output_dir,
-                model_filename=f"{pipeline_name}.pkl",
-                control_dir=control_dir,
-                df=df_xy,
-                output_dir=metrics_dir,
-                block_col=blk_col,
-                evaluated_block_id="ALL",
-                test_blocks=test_blocks,
-                reference_df=df_xy,
-                reference_blocks=(sorted(map(str, blocks_series.unique())) if blocks_series is not None else None),
-                X_all=X, y_all=y, all_blocks=blocks_series,
-                candidates_dir=candidates_dir,
-                save_candidates=True
-            )
-
-            # Fallback si no aprueba
-            if not approved and fallback_mode is not None:
-                logger.info(f"Attempting fallback (mode={fallback_mode}) on ALL blocks (IPIP)...")
-
-                if custom_fallback_file:
-                    spec_f = importlib.util.spec_from_file_location("fallback_module", custom_fallback_file)
-                    mod_f = importlib.util.module_from_spec(spec_f); spec_f.loader.exec_module(mod_f)
-                    if not hasattr(mod_f, "fallback"):
-                        raise AttributeError(f"{custom_fallback_file} must define fallback(...)")
-                    model, X_test, y_test, _ = _call_with_supported_args(
-                        mod_f.fallback,
-                        X=X, y=y,
-                        last_processed_file=last_processed_file,
-                        logger=logger, output_dir=metrics_dir,
-                        ipip_config=ipip_config
-                    )
-                else:
-                    model, X_test, y_test, _ = _call_with_supported_args(
-                        default_retrain,
-                        X=X, y=y,
-                        last_processed_file=last_processed_file,
-                        model_path=model_path,
-                        mode=fallback_mode,
-                        random_state=random_state,
-                        logger=logger,
-                        param_grid=param_grid,
-                        cv=cv,
-                        output_dir=metrics_dir,
-                        window_size=window_size,
-                        ipip_config=ipip_config
-                    )
-
-                test_blocks = None
-                if isinstance(X_test, pd.DataFrame) and blocks_series is not None:
-                    try:
-                        test_blocks = blocks_series.loc[X_test.index]
-                    except Exception:
-                        test_blocks = None
-
-                approved = _call_with_supported_args(
-                    evaluator,
-                    model=model,
-                    X_test=X_test,
-                    y_test=y_test,
-                    last_processed_file=last_processed_file,
-                    last_mtime=last_mtime,
-                    logger=logger,
-                    is_first_model=False,
-                    thresholds_perf=thresholds_perf,
-                    model_dir=output_dir,
-                    model_filename=f"{pipeline_name}.pkl",
-                    control_dir=control_dir,
-                    df=df_xy,
-                    output_dir=metrics_dir,
-                    block_col=blk_col,
-                    evaluated_block_id="ALL",
-                    test_blocks=test_blocks,
-                    reference_df=df_xy,
-                    reference_blocks=(sorted(map(str, blocks_series.unique())) if blocks_series is not None else None),
-                    X_all=X, y_all=y, all_blocks=blocks_series,
-                    candidates_dir=candidates_dir,
-                    save_candidates=True
-                )
-
-            health = _update_on_result(health, bool(approved), breaker_backoff_minutes, breaker_max_failures)
-            _save_health(metrics_dir, health)
-
-        # === NO ACCIÓN (re-eval opcional del campeón) ===
         else:
-            logger.info("Model already trained, no retraining needed (global, IPIP).")
-            if os.path.exists(model_path):
-                model = joblib.load(model_path)
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.2, random_state=random_state
-                )
-                test_blocks = None
-                if isinstance(X_test, pd.DataFrame) and blocks_series is not None:
-                    try:
-                        test_blocks = blocks_series.loc[X_test.index]
-                    except Exception:
-                        test_blocks = None
+            model, _, _, results = default_train(
+                X=X, y=y, last_processed_file=last_processed_file,
+                model_instance=model_instance, random_state=random_state, logger=logger,
+                output_dir=metrics_dir, block_col=block_col,
+                ipip_config=ipip_config, thresholds_perf=thresholds_perf
+            )
+        approved = bool((results or {}).get("approval", {}).get("approved", False))
 
-                approved = _call_with_supported_args(
-                    evaluator,
-                    model=model,
-                    X_test=X_test,
-                    y_test=y_test,
-                    last_processed_file=last_processed_file,
-                    last_mtime=last_mtime,
-                    logger=logger,
-                    is_first_model=False,
-                    thresholds_perf=thresholds_perf,
-                    model_dir=output_dir,
-                    model_filename=f"{pipeline_name}.pkl",
-                    control_dir=control_dir,
-                    df=df_xy,
-                    output_dir=metrics_dir,
-                    block_col=blk_col,
-                    evaluated_block_id="ALL",
-                    test_blocks=test_blocks,
-                    reference_df=df_xy,
-                    reference_blocks=(sorted(map(str, blocks_series.unique())) if blocks_series is not None else None),
-                    X_all=X, y_all=y, all_blocks=blocks_series,
-                    candidates_dir=None,
-                    save_candidates=False
-                )
-                health = _update_on_result(health, bool(approved), breaker_backoff_minutes, breaker_max_failures)
-                _save_health(metrics_dir, health)
+    elif decision == "retrain":
+        logger.info("RETRAIN (IPIP).")
+        affected_blocks = _load_drifted_blocks(metrics_dir)
 
-    except Exception as e:
-        logger.error(f"[CRITICAL] Critical error in run_pipeline (IPIP): {e}")
-        raise
+        if custom_retrain_file:
+            retrain_func = _load_python(custom_retrain_file, "retrain")
+            try:
+                model, _, _, results = retrain_func(
+                    X=X, y=y, last_processed_file=last_processed_file,
+                    logger=logger, output_dir=metrics_dir,
+                    ipip_config=ipip_config, thresholds_perf=thresholds_perf,
+                    block_col=block_col, drifted_blocks=affected_blocks,
+                    model_instance=model_instance, random_state=random_state, window_size=window_size
+                )
+            except TypeError:
+                model, _, _, results = retrain_func(
+                    X=X, y=y, last_processed_file=last_processed_file,
+                    logger=logger, output_dir=metrics_dir,
+                    ipip_config=ipip_config, perf_thresholds=thresholds_perf,
+                    block_col=block_col, drifted_blocks=affected_blocks,
+                    model_instance=model_instance, random_state=random_state, window_size=window_size
+                )
+        else:
+            model, _, _, results = default_retrain(
+                X=X, y=y, last_processed_file=last_processed_file,
+                model_path=model_path, mode=retrain_mode, random_state=random_state, logger=logger,
+                output_dir=metrics_dir, window_size=window_size, block_col=block_col,
+                drifted_blocks=affected_blocks, ipip_config=ipip_config,
+                model_instance=model_instance, thresholds_perf=thresholds_perf
+            )
+        approved = bool((results or {}).get("approval", {}).get("approved", False))
+
+    else:
+        logger.info("No retraining needed. Skipping training step.")
+        return
+
+    # 5) Persistencia condicionada a aprobación
+    if approved:
+        _persist_model(model=model, pipeline_name=pipeline_name, output_dir=output_dir, logger=logger)
+        _upsert_control_entry(Path(control_dir) / "control_file.txt", last_processed_file, last_mtime, logger)
+    else:
+        logger.warning("Modelo NO aprobado. Se mantiene el modelo previo y no se actualiza control_file.")

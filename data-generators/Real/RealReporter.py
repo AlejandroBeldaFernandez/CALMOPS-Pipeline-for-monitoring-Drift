@@ -1,17 +1,8 @@
 import pandas as pd
 from sdmetrics.reports.single_table import QualityReport
 from sdv.metadata import SingleTableMetadata
-import logging
-
-# Setup logger to track events and errors
-logger = logging.getLogger('RealReporterLogger')
-logger.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
-logger.addHandler(ch)
-
+import numpy as np
+from scipy.spatial.distance import jensenshannon
 
 class RealReporter:
     def _report_real_dataset(
@@ -23,59 +14,102 @@ class RealReporter:
         extra_info: dict = None
     ):
         """
-        Generates and logs a report comparing the real and synthetic datasets.
+        Generates and logs a report comparing the real and synthetic datasets,
+        including drift analysis and optional block-level analysis.
         """
-        logger.info("\n📊 === REAL DATASET REPORT ===")
-        logger.info(f"Method: {method}")
-        logger.info(f"Original samples: {len(real_df)} | Synthetic samples: {len(synthetic_df)}")
+        print("\n === REAL DATASET REPORT ===")
+        print(f"Method: {method}")
+        print(f"Original samples: {len(real_df)} | Synthetic samples: {len(synthetic_df)}")
 
-        # Check if the target column is present in both datasets
+        # Target column distribution
         if target_col in real_df.columns and target_col in synthetic_df.columns:
-            logger.info("\n⚖️ Class distribution comparison:")
+            print("\nClass distribution comparison:")
             real_dist = real_df[target_col].value_counts(normalize=True).to_dict()
             synth_dist = synthetic_df[target_col].value_counts(normalize=True).to_dict()
             for cls in sorted(set(real_dist) | set(synth_dist)):
-                logger.info(f"  - Class {cls}: real={real_dist.get(cls, 0):.2%}, synth={synth_dist.get(cls, 0):.2%}")
+                print(f"  - Class {cls}: real={real_dist.get(cls, 0):.2%}, synth={synth_dist.get(cls, 0):.2%}")
         else:
-            logger.warning(f"Target column '{target_col}' not found in one or both datasets")
+            print(f"Target column '{target_col}' not found in one or both datasets")
 
-        # Statistics for synthetic features
-        logger.info("\n📈 Synthetic feature statistics:")
+        # Feature statistics
+        print("\nSynthetic feature statistics:")
         synthetic_stats = synthetic_df.drop(columns=[target_col, "chunk"], errors="ignore").describe().T
-        logger.info(synthetic_stats)
+        print(synthetic_stats)
 
-        # Statistics for real features
-        logger.info("\n📈 Original feature statistics:")
+        print("\nOriginal feature statistics:")
         real_stats = real_df.drop(columns=[target_col], errors="ignore").describe().T
-        logger.info(real_stats)
+        print(real_stats)
 
-        # Filter columns that exist in both datasets
+        # SDV quality report
         common_cols = [col for col in synthetic_df.columns if col in real_df.columns]
         real_clean = real_df[common_cols].copy()
         synth_clean = synthetic_df[common_cols].copy()
 
-        # Initialize metadata and generate quality report
         metadata = SingleTableMetadata()
         metadata.detect_from_dataframe(real_clean)
 
         quality_report = QualityReport()
-        quality_report.generate(
-            real_data=real_clean,
-            synthetic_data=synth_clean,
-            metadata=metadata.to_dict()
-        )
-
-        # Log quality score and details
-        logger.info(f"\n✅ Quality Score: {quality_report.get_score():.3f}")
-        logger.info("📊 Quality details:")
+        quality_report.generate(real_data=real_clean, synthetic_data=synth_clean, metadata=metadata.to_dict())
+        print(f"\nQuality Score: {quality_report.get_score():.3f}")
+        print("Quality details:")
         for prop in ["Column Shapes", "Column Pair Trends"]:
-            logger.info(f"\n🔹 {prop}")
-            logger.info(quality_report.get_details(prop).head())
+            print(f"\n🔹 {prop}")
+            print(quality_report.get_details(prop).head())
 
-        # Log extra information if available
+        # Extra info
         if extra_info:
-            logger.info("\nℹ️ Extra information:")
+            print("\nExtra information:")
             for key, val in extra_info.items():
-                logger.info(f"  - {key}: {val}")
+                print(f"  - {key}: {val}")
 
-        logger.info("\n=== END OF REAL DATASET REPORT ===\n")
+        # --- Drift analysis for entire dataset ---
+        print("\n=== DRIFT ANALYSIS (REAL vs SYNTHETIC) ===")
+        if target_col in real_df.columns and target_col in synthetic_df.columns:
+            p = real_df[target_col].value_counts(normalize=True).sort_index()
+            q = synthetic_df[target_col].value_counts(normalize=True).reindex(p.index, fill_value=0)
+            js_div = jensenshannon(p, q)**2
+            print(f"JS divergence (class distribution): {js_div:.4f}")
+
+            # Numeric features
+            numeric_cols = real_df.select_dtypes(include=[np.number]).columns.difference([target_col])
+            for col in numeric_cols:
+                mean_real = real_df[col].mean()
+                mean_synth = synthetic_df[col].mean()
+                change = mean_synth - mean_real
+                print(f"  Feature '{col}': mean real={mean_real:.4f}, mean synth={mean_synth:.4f}, change={change:.4f}")
+
+        # --- Block analysis if present ---
+        if "chunk" in synthetic_df.columns:
+            print("\n=== BLOCK ANALYSIS ===")
+            blocks = synthetic_df["chunk"].unique()
+            for b in blocks:
+                block_df = synthetic_df[synthetic_df["chunk"] == b]
+                print(f"\n--- Block {b} ---")
+                print(f"Samples: {len(block_df)}")
+                dist = block_df[target_col].value_counts(normalize=True).to_dict()
+                print("Class distribution:")
+                for cls, prop in dist.items():
+                    print(f"  - {cls}: {len(block_df[block_df[target_col]==cls])} ({prop:.2%})")
+                print("Feature statistics:")
+                try:
+                    print(block_df.drop(columns=[target_col, "chunk"], errors="ignore").describe().T)
+                except:
+                    print("Could not compute feature statistics.")
+
+            # Drift between consecutive blocks
+            print("\n=== DRIFT BETWEEN BLOCKS ===")
+            for i in range(len(blocks)-1):
+                b1, b2 = blocks[i], blocks[i+1]
+                df1 = synthetic_df[synthetic_df["chunk"] == b1]
+                df2 = synthetic_df[synthetic_df["chunk"] == b2]
+                print(f"\nBlock {b1} → Block {b2}")
+                p = df1[target_col].value_counts(normalize=True).sort_index()
+                q = df2[target_col].value_counts(normalize=True).reindex(p.index, fill_value=0)
+                js_div = jensenshannon(p, q)**2
+                print(f"JS divergence (class distribution): {js_div:.4f}")
+                numeric_cols = df1.select_dtypes(include=[np.number]).columns.difference([target_col, "chunk"])
+                for col in numeric_cols:
+                    mean_diff = df2[col].mean() - df1[col].mean()
+                    print(f"  Feature '{col}': mean change {mean_diff:.4f}")
+
+        print("\n=== END OF REAL DATASET REPORT ===\n")

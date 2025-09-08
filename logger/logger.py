@@ -1,5 +1,11 @@
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+import sys
+
+# Add config path to import defaults
+sys.path.append(str(Path(__file__).parent.parent))
+from config.defaults import LOGGING
 
 
 class PipelineLogger:
@@ -15,16 +21,19 @@ class PipelineLogger:
 
     def _setup_logger(self):
         """
-        Set up the logger with handlers for console, general, error, and warning logs.
+        Set up the logger with rotating handlers for console, general, error, and warning logs.
+        Implements log rotation to prevent disk space issues in production environments.
         """
         logger = logging.getLogger(self.name)
         logger.setLevel(logging.DEBUG)  # Set base logging level to DEBUG
         logger.handlers.clear()  # Clear any existing handlers
 
-        # Define log format
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
-        )
+        # Define log format using centralized configuration
+        formatter = logging.Formatter(LOGGING["formats"]["pipeline"])
+
+        # Get rotation configuration
+        max_bytes = LOGGING["rotation"]["max_bytes"]
+        backup_count = LOGGING["rotation"]["backup_count"]
 
         # Console Handler: For INFO and above level logs
         console_handler = logging.StreamHandler()
@@ -32,20 +41,35 @@ class PipelineLogger:
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
-        # File Handler: For all logs (DEBUG and above)
-        file_handler = logging.FileHandler(self.get_general_log_file(), encoding='utf-8')
+        # Rotating File Handler: For all logs (DEBUG and above)
+        file_handler = RotatingFileHandler(
+            self.get_general_log_file(),
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding='utf-8'
+        )
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
-        # Error Handler: For ERROR level logs
-        error_handler = logging.FileHandler(self.get_error_log_file(), encoding='utf-8')
+        # Rotating Error Handler: For ERROR level logs
+        error_handler = RotatingFileHandler(
+            self.get_error_log_file(),
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding='utf-8'
+        )
         error_handler.setLevel(logging.ERROR)
         error_handler.setFormatter(formatter)
         logger.addHandler(error_handler)
 
-        # Warning Handler: For WARNING level logs
-        warning_handler = logging.FileHandler(self.get_warning_log_file(), encoding='utf-8')
+        # Rotating Warning Handler: For WARNING level logs
+        warning_handler = RotatingFileHandler(
+            self.get_warning_log_file(),
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding='utf-8'
+        )
         warning_handler.setLevel(logging.WARNING)
         warning_handler.setFormatter(formatter)
         logger.addHandler(warning_handler)
@@ -56,19 +80,19 @@ class PipelineLogger:
         """
         Returns the path for the general log file.
         """
-        return self.log_dir / 'pipeline.log'
+        return self.log_dir / LOGGING["files"]["general"]
 
     def get_error_log_file(self):
         """
         Returns the path for the error log file.
         """
-        return self.log_dir / 'pipeline_errors.log'
+        return self.log_dir / LOGGING["files"]["errors"]
 
     def get_warning_log_file(self):
         """
         Returns the path for the warning log file.
         """
-        return self.log_dir / 'pipeline_warnings.log'
+        return self.log_dir / LOGGING["files"]["warnings"]
 
     def get_logger(self):
         """

@@ -1,244 +1,416 @@
-# modules/check_drift.py
+# pipeline/modules/check_drift.py
+# -*- coding: utf-8 -*-
+
 import os
 import json
 import joblib
 import numpy as np
 import pandas as pd
+from typing import Dict, Any, Optional, List, Tuple
+
 from sklearn.base import is_classifier, is_regressor
+from sklearn.metrics import (
+    accuracy_score, balanced_accuracy_score, f1_score,
+    mean_squared_error, mean_absolute_error, r2_score
+)
+
+from Detector.drift_detector import DriftDetector
+
+
+# =========================
+# Utils (serialization & helpers)
+# =========================
+
+def _jsonable(obj):
+    """Make Python/numpy objects JSON-serializable."""
+    if isinstance(obj, (np.bool_, bool)): return bool(obj)
+    if isinstance(obj, (np.integer,)):   return int(obj)
+    if isinstance(obj, (np.floating,)):  return float(obj)
+    if isinstance(obj, (np.ndarray, list, tuple)):
+        return [_jsonable(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _jsonable(v) for k, v in obj.items()}
+    return obj
+
+
+def _save_results(payload: Dict[str, Any], path: str, logger) -> None:
+    """Persist results to JSON with safe serialization."""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(_jsonable(payload), f, indent=4)
+        logger.info(f"[DRIFT] Results saved to {path}")
+    except Exception as e:
+        logger.error(f"[DRIFT] Failed to save results: {e}")
+
+
+def _detect_block_col(df: pd.DataFrame, cand: Optional[str]) -> Optional[str]:
+    """Detect the block column from a candidate or common names."""
+    if cand and cand in df.columns:
+        return cand
+    for c in df.columns:
+        lc = str(c).lower()
+        if "block" in lc or lc in ("block_id", "chunk"):
+            return c
+    return None
+
+
+def _task_from_model(model) -> str:
+    """Infer task type from model (classification/regression)."""
+    gm = getattr(model, "global_model", model)
+    if is_classifier(gm):
+        return "classification"
+    if is_regressor(gm):
+        return "regression"
+    # fallback heuristic
+    return "classification"
+
+
+def _metrics_classification(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    """Standard classification metrics."""
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "f1": float(f1_score(y_true, y_pred, average="macro")),
+    }
+
+
+def _metrics_regression(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    """Standard regression metrics."""
+    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+    return {
+        "rmse": rmse,
+        "mae": float(mean_absolute_error(y_true, y_pred)),
+        "mse": float(mean_squared_error(y_true, y_pred)),
+        "r2": float(r2_score(y_true, y_pred)),
+    }
+
+
+def _relative_degradation(prev: float, curr: float, metric: str, task: str) -> float:
+    """
+    Relative degradation (positive means worse) from previous → current.
+    For classification (↑ is better):    (prev - curr) / max(|prev|, eps)
+    For regression errors (↓ is better): (curr - prev) / max(|prev|, eps)
+    For r2 (↑ is better):                (prev - curr) / max(|prev|, eps)
+    """
+    eps = 1e-9
+    if task == "classification":
+        # higher is better (accuracy, balanced_accuracy, f1)
+        return (prev - curr) / max(abs(prev), eps)
+    else:
+        if metric.lower() in ("r2", "r²", "r_2"):
+            return (prev - curr) / max(abs(prev), eps)
+        # error metrics: lower is better
+        return (curr - prev) / max(abs(prev), eps)
+
+
+# =========================
+# Main
+# =========================
 
 def check_drift(
-    X,
-    y,
-    detector,
+    X: pd.DataFrame,
+    y: pd.Series,
     logger,
     perf_thresholds: dict,
     model_filename: str,
-    data_dir: str,      # kept for signature compatibility (not used)
     output_dir: str,
-    control_dir: str,
     model_dir: str,
-    # --- bloques ---
-    blocks: pd.Series | None = None,   # ids de bloque alineados con X/y
-    block_col: str | None = None,      # nombre lógico (para reporting)
-):
+    *,
+    block_col: Optional[str] = None,
+    # thresholds for data-drift tests (optional)
+    alpha: float = 0.05,
+    psi_threshold: float = 0.10,
+    hellinger_threshold: float = 0.10,
+    emd_threshold: Optional[float] = None,
+    mmd_alpha: Optional[float] = None,
+    energy_alpha: Optional[float] = None,
+    # previous vs current comparison
+    decay_ratio: float = 0.30,
+) -> str:
     """
-    Drift checker global y por bloque.
-
-    Global:
-      - Performance del modelo actual vs umbrales.
-      - Comparativa con modelo previo (30% decay rule) + posible rollback.
-      - Drift estadístico vs control/previous_data.csv si existe.
-
-    Por bloque (si `blocks` disponible):
-      - Performance por bloque (umbral).
-      - Tests estadísticos por bloque comparando X_bloque vs X_restante.
-      - Si un bloque dispara flags → cuenta como drift.
+    Drift check (BLOCK MODE):
+      • Always runs pairwise statistical tests across blocks (even on the very first run).
+      • Runs per-block performance tests only if a CURRENT model exists.
+      • If PREVIOUS exists, compares CURRENT vs PREVIOUS by block+metric.
+      • Optional automatic promotion of PREVIOUS (same policy as before).
+    Returns: 'train' | 'retrain' | 'no_drift' | 'end_error'
+    and persists metrics/drift_results.json for the dashboard.
     """
     os.makedirs(output_dir, exist_ok=True)
     drift_path = os.path.join(output_dir, "drift_results.json")
     model_path = os.path.join(model_dir, model_filename)
     prev_model_path = model_path.replace(".pkl", "_previous.pkl")
-    ref_path = os.path.join(control_dir, "previous_data.csv")
 
-    drift_results = {
-        "thresholds": perf_thresholds or {},
-        "tests": {},
-        "drift": {},
-        "metrics": {},
+    results: Dict[str, Any] = {
         "decision": None,
-        "blockwise": {"block_col": block_col, "by_block": {}},
+        "drift": {
+            "any_stat_drift": False,
+            "any_perf_drift": False,
+            "by_test": {},
+        },
+        "blockwise": {
+            "block_col": None,
+            "blocks": [],
+            "pairwise": {},
+            "by_block_stat_drift": {},
+            "performance": {
+                "thresholds": perf_thresholds or {},
+                "current":   {"per_block": {}, "flags": {}},
+                "previous":  {"per_block": {}, "flags": {}},
+                "comparison": {"decay_ratio": decay_ratio, "per_block": {}, "flags": {}},
+            },
+        },
+        "promoted_model": False,
+        "promotion_reason": None,
     }
 
-    def _serializable(obj):
-        if isinstance(obj, (np.bool_, bool)): return bool(obj)
-        if isinstance(obj, (np.integer,)): return int(obj)
-        if isinstance(obj, (np.floating,)): return float(obj)
-        if isinstance(obj, (np.ndarray, list, tuple)): return [_serializable(x) for x in obj]
-        if isinstance(obj, dict): return {k: _serializable(v) for k, v in obj.items()}
-        return obj
-
-    def _save_results():
-        try:
-            with open(drift_path, "w") as f:
-                json.dump(_serializable(drift_results), f, indent=4)
-            logger.info(f"[DRIFT] Results saved to {drift_path}")
-        except Exception as e:
-            logger.error(f"[DRIFT] Failed to save results: {e}")
-
-    # 0) No hay modelo → entrenar
-    if not os.path.exists(model_path):
-        logger.info("No current model found → train from scratch.")
-        drift_results["info"] = "First model, no drift check performed."
-        drift_results["decision"] = "train"
-        _save_results()
-        return "train"
-
-    # 1) Cargar modelo actual
     try:
-        model = joblib.load(model_path)
-    except Exception as e:
-        logger.error(f"Error loading current model: {e}")
-        drift_results["error"] = "failed_to_load_current_model"
-        drift_results["decision"] = "end_error"
-        _save_results()
-        return "end"
+        # --------- block discovery ----------
+        bc = _detect_block_col(X, block_col)
+        results["blockwise"]["block_col"] = bc
+        if not bc:
+            logger.error("[DRIFT] No block column detected. Aborting drift analysis.")
+            results["decision"] = "end_error"
+            _save_results(results, drift_path, logger)
+            return "end_error"
 
-    # Helper: performance vs umbrales
-    def _run_perf_tests(_model, X_, y_):
-        results, flags = {}, {}
-        if is_classifier(_model):
-            if "accuracy" in (perf_thresholds or {}):
-                d, res = detector.performance_degradation_test_accuracy(X_, y_, _model, threshold=perf_thresholds["accuracy"])
-                results["Accuracy"] = {**res, "drift": bool(d)}; flags["accuracy"] = bool(d)
-            if "balanced_accuracy" in (perf_thresholds or {}):
-                d, res = detector.performance_degradation_test_balanced_accuracy(X_, y_, _model, threshold=perf_thresholds["balanced_accuracy"])
-                results["Balanced Accuracy"] = {**res, "drift": bool(d)}; flags["balanced_accuracy"] = bool(d)
-            if "f1" in (perf_thresholds or {}):
-                d, res = detector.performance_degradation_test_f1(X_, y_, _model, threshold=perf_thresholds["f1"])
-                results["F1 Score"] = {**res, "drift": bool(d)}; flags["f1"] = bool(d)
-        elif is_regressor(_model):
-            if "rmse" in (perf_thresholds or {}):
-                d, res = detector.performance_degradation_test_rmse(X_, y_, _model, threshold=perf_thresholds["rmse"])
-                results["RMSE"] = {**res, "drift": bool(d)}; flags["rmse"] = bool(d)
-            if "r2" in (perf_thresholds or {}):
-                d, res = detector.performance_degradation_test_r2(X_, y_, _model, threshold=perf_thresholds["r2"])
-                results["R2"] = {**res, "drift": bool(d)}; flags["r2"] = bool(d)
-            if "mae" in (perf_thresholds or {}):
-                d, res = detector.performance_degradation_test_mae(X_, y_, _model, threshold=perf_thresholds["mae"])
-                results["MAE"] = {**res, "drift": bool(d)}; flags["mae"] = bool(d)
-            if "mse" in (perf_thresholds or {}):
-                d, res = detector.performance_degradation_test_mse(X_, y_, _model, threshold=perf_thresholds["mse"])
-                results["MSE"] = {**res, "drift": bool(d)}; flags["mse"] = bool(d)
-        return results, flags
+        blocks = pd.unique(X[bc].astype(str)).tolist()
+        results["blockwise"]["blocks"] = blocks
 
-    # 2) Performance global con modelo actual
-    perf_results_current, perf_flags_current = _run_perf_tests(model, X, y)
-    drift_results["tests"]["Performance_Current"] = perf_results_current
-    drift_results["drift"].update({f"current::{k}": bool(v) for k, v in perf_flags_current.items()})
-    current_perf_drift = (len(perf_flags_current) > 0 and sum(perf_flags_current.values()) >= (len(perf_flags_current) / 2))
+        # --------- 1) Statistical tests (ALWAYS) ----------
+        det = DriftDetector()
 
-    # 3) Comparativa con modelo previo + posible rollback
-    prev_model_path = model_path.replace(".pkl", "_previous.pkl")
-    if os.path.exists(prev_model_path):
+        pair_tests = {
+            "KS": {}, "MWU": {}, "CVM": {}, "PSI": {}, "Hellinger": {}, "EMD": {}, "MMD": {}, "Energy": {}
+        }
+        per_block_stat_flag = {b: False for b in blocks}
+
+        for i in range(len(blocks)):
+            for j in range(i + 1, len(blocks)):
+                bi, bj = blocks[i], blocks[j]
+                key = f"{bi}|{bj}"
+
+                Xi = X[X[bc].astype(str) == bi]
+                Xj = X[X[bc].astype(str) == bj]
+                # --- build numeric, aligned matrices for Xi and Xj ---
+                Xi_num = Xi.select_dtypes(include=[np.number]).copy()
+                Xj_num = Xj.select_dtypes(include=[np.number]).copy()
+
+                # columns present in BOTH blocks
+                common_cols = Xi_num.columns.intersection(Xj_num.columns).tolist()
+                if not common_cols:
+                    for K in pair_tests.keys():
+                        pair_tests[K][key] = {
+                            "drift": False,
+                            "error": "no common numeric cols",
+                        }
+                    continue
+
+                XiN = Xi_num[common_cols]
+                XjN = Xj_num[common_cols]
+
+                # optional: skip if too few rows
+                if len(XiN) < 5 or len(XjN) < 5:
+                    for K in pair_tests.keys():
+                        pair_tests[K][key] = {
+                            "drift": False,
+                            "error": "not enough rows in numeric cols",
+                        }
+                    continue
+
+
+                XiN = Xi[common_cols]
+                XjN = Xj[common_cols]
+
+                # Univariate tests
+                ks_flag, ks_detail = det.kolmogorov_smirnov_test(XiN, XjN, alpha=alpha)
+                mwu_flag, mwu_detail = det.mann_whitney_test(XiN, XjN, alpha=alpha)
+                cvm_flag, cvm_detail = det.cramervonmises_test(XiN, XjN, alpha=alpha)
+
+                pmin = lambda detail: None if not isinstance(detail, dict) else \
+                    (min([float(v.get("p_value")) for v in detail.values() if v.get("p_value") is not None], default=None))
+
+                pair_tests["KS"][key]  = {"p_min": pmin(ks_detail),  "alpha": alpha, "drift": bool(ks_flag)}
+                pair_tests["MWU"][key] = {"p_min": pmin(mwu_detail), "alpha": alpha, "drift": bool(mwu_flag)}
+                pair_tests["CVM"][key] = {"p_min": pmin(cvm_detail), "alpha": alpha, "drift": bool(cvm_flag)}
+
+                psi_flag, psi_detail = det.population_stability_index_test(XiN, XjN, psi_threshold=psi_threshold, num_bins=10)
+                psi_max = 0.0
+                if isinstance(psi_detail, dict):
+                    for payload in psi_detail.values():
+                        v = payload.get("psi")
+                        if v is not None:
+                            psi_max = max(psi_max, float(v))
+                pair_tests["PSI"][key] = {"psi_max": psi_max, "threshold": psi_threshold, "drift": bool(psi_flag)}
+
+                hell_flag, hell_detail = det.hellinger_distance_test(XiN, XjN, num_bins=30, threshold=hellinger_threshold)
+                h_max = 0.0
+                if isinstance(hell_detail, dict):
+                    for payload in hell_detail.values():
+                        v = payload.get("hellinger_distance")
+                        if v is not None:
+                            h_max = max(h_max, float(v))
+                pair_tests["Hellinger"][key] = {"distance_max": h_max, "threshold": hellinger_threshold, "drift": bool(hell_flag)}
+
+                emd_flag, emd_detail = det.earth_movers_distance_test(XiN, XjN, threshold=emd_threshold)
+                e_max, thr_used = 0.0, None
+                if isinstance(emd_detail, dict):
+                    for payload in emd_detail.values():
+                        v = payload.get("emd_distance")
+                        if v is not None:
+                            e_max = max(e_max, float(v))
+                        thr_used = payload.get("threshold", thr_used)
+                pair_tests["EMD"][key] = {"distance_max": e_max, "threshold": thr_used, "drift": bool(emd_flag)}
+
+  
+
+                if any([ks_flag, mwu_flag, cvm_flag, psi_flag, hell_flag, emd_flag]):
+                    per_block_stat_flag[bi] = True
+                    per_block_stat_flag[bj] = True
+
+        by_test = {t: any(bool(v.get("drift", False)) for v in mat.values()) for t, mat in pair_tests.items()}
+        results["blockwise"]["pairwise"] = pair_tests
+        results["blockwise"]["by_block_stat_drift"] = per_block_stat_flag
+        results["drift"]["by_test"] = by_test
+        results["drift"]["any_stat_drift"] = any(by_test.values())
+
+        # --------- 2) Performance by block (ONLY if current model exists) ----------
+        has_current = os.path.exists(model_path)
+        if not has_current:
+            logger.info("[DRIFT] No current model found → will return 'train' but statistical tests have been computed.")
+            results["decision"] = "train"
+            _save_results(results, drift_path, logger)
+            return "train"
+
+        # load current
         try:
-            prev_model = joblib.load(prev_model_path)
-            perf_results_prev, perf_flags_prev = _run_perf_tests(prev_model, X, y)
-            drift_results["tests"]["Performance_Previous"] = perf_results_prev
-            drift_results["drift"].update({f"previous::{k}": bool(v) for k, v in perf_flags_prev.items()})
-            previous_passes = (sum(perf_flags_prev.values()) == 0)
+            model = joblib.load(model_path)
+            logger.info("[DRIFT] Current model loaded.")
+        except Exception as e:
+            logger.error(f"[DRIFT] Could not load current model: {e}")
+            results["decision"] = "end_error"
+            _save_results(results, drift_path, logger)
+            return "end_error"
 
-            task = "classification" if is_classifier(model) else "regression"
-            comp_drift, comp_results, comp_flags = detector.performance_comparison_suite(
-                X, y, prev_model, model, task=task, decay_ratio=0.30, average="macro"
-            )
-            drift_results["tests"]["Performance_Comparison"] = comp_results
-            drift_results["drift"].update({f"comparison::{k}": bool(v) for k, v in comp_flags.items()})
+        task = _task_from_model(model)
 
-            if previous_passes or bool(comp_drift):
-                reason = "previous_passed_thresholds" if previous_passes else "current_degraded_vs_previous_30pct"
+        def _eval_model_per_block(_model) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, bool]]]:
+            per_metrics: Dict[str, Dict[str, float]] = {}
+            per_flags: Dict[str, Dict[str, bool]] = {}
+            for b in blocks:
+                mask = (X[bc].astype(str) == b)
+                Xb = X.loc[mask]
+                yb = y.loc[Xb.index]
+                flags_b, vals_b = {}, {}
                 try:
-                    tmp_swap = model_path + ".swap"
-                    os.replace(model_path, tmp_swap)
-                    os.replace(prev_model_path, model_path)
-                    os.replace(tmp_swap, prev_model_path)
-                    logger.info(f"Previous model promoted to current (reason: {reason}).")
-                    drift_results["promoted_model"] = True
-                    drift_results["promotion_reason"] = reason
-                    drift_results["decision"] = "previous_promoted"
-                    _save_results()
-                    return "end"
-                except Exception as e:
-                    logger.error(f"Error swapping previous/current models: {e}")
-        except Exception as e:
-            logger.error(f"Error loading/evaluating previous model: {e}")
+                    yhat = getattr(_model, "predict")(Xb)
+                    if task == "classification":
+                        vals_b = _metrics_classification(yb.values, yhat)
+                        if "accuracy" in perf_thresholds:
+                            flags_b["accuracy"] = bool(vals_b["accuracy"] < float(perf_thresholds["accuracy"]))
+                        if "balanced_accuracy" in perf_thresholds:
+                            flags_b["balanced_accuracy"] = bool(vals_b["balanced_accuracy"] < float(perf_thresholds["balanced_accuracy"]))
+                        if "f1" in perf_thresholds:
+                            flags_b["f1"] = bool(vals_b["f1"] < float(perf_thresholds["f1"]))
+                    else:
+                        vals_b = _metrics_regression(yb.values, yhat)
+                        if "rmse" in perf_thresholds:
+                            flags_b["rmse"] = bool(vals_b["rmse"] > float(perf_thresholds["rmse"]))
+                        if "mae" in perf_thresholds:
+                            flags_b["mae"] = bool(vals_b["mae"] > float(perf_thresholds["mae"]))
+                        if "mse" in perf_thresholds:
+                            flags_b["mse"] = bool(vals_b["mse"] > float(perf_thresholds["mse"]))
+                        if "r2" in perf_thresholds:
+                            flags_b["r2"] = bool(vals_b["r2"] < float(perf_thresholds["r2"]))
+                except Exception:
+                    # model might expect a specific feature order/pipeline; keep empty
+                    pass
+                per_metrics[str(b)] = vals_b
+                per_flags[str(b)] = flags_b
+            return per_metrics, per_flags
 
-    # 4) Drift estadístico vs referencia temporal
-    stats_drift_detected = False
-    ref_path = os.path.join(control_dir, "previous_data.csv")
-    if os.path.exists(ref_path):
-        try:
-            df_ref = pd.read_csv(ref_path)
-            X_ref = df_ref.drop(columns=[y.name]) if (y is not None and y.name in df_ref.columns) else df_ref
+        # current perf
+        curr_metrics, curr_flags = _eval_model_per_block(model)
+        results["blockwise"]["performance"]["current"]["per_block"] = curr_metrics
+        results["blockwise"]["performance"]["current"]["flags"] = curr_flags
 
-            ks_drift, ks_res   = detector.kolmogorov_smirnov_test(X_ref, X, alpha=0.05)
-            psi_drift, psi_res = detector.population_stability_index_test(X_ref, X, psi_threshold=0.10, num_bins=10)
-            mw_drift, mw_res   = detector.mann_whitney_test(X_ref, X, alpha=0.05)
-            cvm_drift, cvm_res = detector.cramervonmises_test(X_ref, X, alpha=0.05)
-            hd_drift, hd_res   = detector.hellinger_distance_test(X_ref, X, num_bins=30, threshold=0.10)
-            emd_drift, emd_res = detector.earth_movers_distance_test(X_ref, X, threshold=None)
-            mmd_drift, mmd_res = detector.mmd_test(X_ref, X, kernel="rbf", bandwidth="auto", alpha=0.05)
-            ed_drift, ed_res   = detector.energy_distance_test(X_ref, X, alpha=0.05)
+        # previous perf (if exists)
+        prev_metrics: Dict[str, Dict[str, float]] = {}
+        prev_flags: Dict[str, Dict[str, bool]] = {}
+        has_previous = os.path.exists(prev_model_path)
+        previous_passes = False
 
-            drift_results["tests"].update({
-                "Kolmogorov-Smirnov": ks_res, "PSI": psi_res, "Mann-Whitney": mw_res,
-                "Cramér-von Mises": cvm_res, "Hellinger Distance": hd_res,
-                "Earth Mover's Distance": emd_res, "MMD": mmd_res, "Energy Distance": ed_res,
-            })
-            drift_results["drift"].update({
-                "Kolmogorov-Smirnov": bool(ks_drift), "PSI": bool(psi_drift),
-                "Mann-Whitney": bool(mw_drift), "Cramér-von Mises": bool(cvm_drift),
-                "Hellinger Distance": bool(hd_drift), "Earth Mover's Distance": bool(emd_drift),
-                "MMD": bool(mmd_drift), "Energy Distance": bool(ed_drift),
-            })
-            flags = [bool(ks_drift), bool(psi_drift), bool(mw_drift), bool(cvm_drift),
-                     bool(hd_drift), bool(emd_drift), bool(mmd_drift), bool(ed_drift)]
-            stats_drift_detected = (sum(flags) >= len(flags) / 2)
-        except Exception as e:
-            logger.error(f"Error running statistical tests: {e}")
+        if has_previous:
+            try:
+                prev_model = joblib.load(prev_model_path)
+                prev_metrics, prev_flags = _eval_model_per_block(prev_model)
+                results["blockwise"]["performance"]["previous"]["per_block"] = prev_metrics
+                results["blockwise"]["performance"]["previous"]["flags"] = prev_flags
+                previous_passes = (sum(bool(v) for b in prev_flags.values() for v in b.values()) == 0)
+            except Exception as e:
+                logger.error(f"[DRIFT] Could not load/evaluate previous model: {e}")
+                has_previous = False
 
-    # 5) Drift INTRA-DATASET por bloque
-    block_drift_detected = False
-    if blocks is not None:
-        try:
-            blocks = pd.Series(blocks).loc[X.index]  # alinear
-            unique_blocks = list(blocks.dropna().unique())
-            for bid in unique_blocks:
-                mask = (blocks == bid)
-                X_b, y_b = X.loc[mask], (y.loc[mask] if y is not None else None)
-                X_rest   = X.loc[~mask]
+        # comparison current vs previous
+        comp_flags_total: Dict[str, Dict[str, bool]] = {}
+        comp_detail_total: Dict[str, Dict[str, Dict[str, float]]] = {}
+        comp_majority = False
 
-                # a) Performance del modelo en este bloque
-                perf_b, flags_b = _run_perf_tests(model, X_b, y_b)
-                n = len(flags_b); bad = sum(flags_b.values())
-                perf_block_fail = (n > 0 and bad >= n/2)
+        if has_previous:
+            worse_flags: List[bool] = []
+            for b in blocks:
+                b = str(b)
+                comp_flags_total[b] = {}
+                comp_detail_total[b] = {}
+                prev_b = prev_metrics.get(b, {})
+                curr_b = curr_metrics.get(b, {})
+                for m in set(prev_b.keys()) | set(curr_b.keys()):
+                    if m not in prev_b or m not in curr_b:
+                        continue
+                    prev_val = float(prev_b[m]); curr_val = float(curr_b[m])
+                    rel_deg = _relative_degradation(prev_val, curr_val, m, task)
+                    worse = bool(rel_deg >= decay_ratio)
+                    comp_flags_total[b][m] = worse
+                    comp_detail_total[b][m] = {"prev": prev_val, "curr": curr_val, "rel_degradation": rel_deg}
+                    worse_flags.append(worse)
 
-                # b) Deriva estadística del bloque vs resto
-                ks_d, _   = detector.kolmogorov_smirnov_test(X_rest, X_b, alpha=0.05)
-                psi_d, _  = detector.population_stability_index_test(X_rest, X_b, psi_threshold=0.10, num_bins=10)
-                mw_d, _   = detector.mann_whitney_test(X_rest, X_b, alpha=0.05)
-                cvm_d, _  = detector.cramervonmises_test(X_rest, X_b, alpha=0.05)
-                hd_d, _   = detector.hellinger_distance_test(X_rest, X_b, num_bins=30, threshold=0.10)
-                emd_d, _  = detector.earth_movers_distance_test(X_rest, X_b, threshold=None)
-                mmd_d, _  = detector.mmd_test(X_rest, X_b, kernel="rbf", bandwidth="auto", alpha=0.05)
-                ed_d, _   = detector.energy_distance_test(X_rest, X_b, alpha=0.05)
-                stat_flags = [bool(ks_d), bool(psi_d), bool(mw_d), bool(cvm_d),
-                              bool(hd_d), bool(emd_d), bool(mmd_d), bool(ed_d)]
-                stats_block_fail = (sum(stat_flags) >= len(stat_flags)/2)
+            results["blockwise"]["performance"]["comparison"]["per_block"] = comp_detail_total
+            results["blockwise"]["performance"]["comparison"]["flags"] = comp_flags_total
 
-                drift_results["blockwise"]["by_block"][str(bid)] = {
-                    "size": int(len(X_b)),
-                    "performance": perf_b,
-                    "performance_flags": {k: bool(v) for k, v in flags_b.items()},
-                    "stats_flags": {
-                        "KS": bool(ks_d), "PSI": bool(psi_d), "MW": bool(mw_d),
-                        "CvM": bool(cvm_d), "Hellinger": bool(hd_d),
-                        "EMD": bool(emd_d), "MMD": bool(mmd_d), "ED": bool(ed_d),
-                    },
-                    "block_drift": bool(perf_block_fail or stats_block_fail),
-                }
-                if perf_block_fail or stats_block_fail:
-                    block_drift_detected = True
-        except Exception as e:
-            logger.error(f"Error computing blockwise drift: {e}")
+            if worse_flags:
+                comp_majority = (sum(worse_flags) >= max(1, int(np.ceil(len(worse_flags) / 2))))
 
-    # 6) Decisión
-    drift_detected = bool(current_perf_drift or stats_drift_detected or block_drift_detected)
-    if drift_detected:
-        logger.info("Drift detected → Retrain.")
-        drift_results["decision"] = "retrain"
-    else:
-        logger.info("No drift detected → End.")
-        drift_results["decision"] = "no_drift"
+        # aggregate perf flags (current)
+        all_current_flags = [bool(v) for b in curr_flags.values() for v in b.values()]
+        any_perf_flag = (sum(all_current_flags) >= max(1, int(np.ceil(len(all_current_flags) / 2)))) if all_current_flags else False
+        results["drift"]["any_perf_drift"] = bool(any_perf_flag)
 
-    _save_results()
-    return "retrain" if drift_detected else "end"
+        # optional promotion policy (unchanged)
+        if has_previous and (previous_passes or comp_majority):
+            reason = "previous_passed_thresholds" if previous_passes else "current_degraded_vs_previous_30pct"
+            try:
+                tmp_swap = model_path + ".swap"
+                os.replace(model_path, tmp_swap)
+                os.replace(prev_model_path, model_path)
+                os.replace(tmp_swap, prev_model_path)
+                logger.info(f"[DRIFT] Previous model promoted to CURRENT (reason: {reason}).")
+                results["promoted_model"] = True
+                results["promotion_reason"] = reason
+                results["decision"] = "no_drift"
+                _save_results(results, drift_path, logger)
+                return "no_drift"
+            except Exception as e:
+                logger.error(f"[DRIFT] Error swapping previous/current: {e}")
+
+        # final decision
+        decision = "retrain" if (results["drift"]["any_stat_drift"] or results["drift"]["any_perf_drift"]) else "no_drift"
+        results["decision"] = decision
+        _save_results(results, drift_path, logger)
+        return decision
+
+    except Exception as e:
+        logger.error(f"[DRIFT] Unexpected error: {e}")
+        results["decision"] = "end_error"
+        _save_results(results, drift_path, logger)
+        return "end_error"
+

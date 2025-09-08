@@ -1,3 +1,16 @@
+"""
+Pipeline Stream Module
+
+This module implements a comprehensive ML pipeline orchestrator with the following key features:
+- Circuit breaker pattern to prevent repeated failures
+- Champion/Challenger model promotion strategy
+- Dynamic function loading for custom training/retraining logic
+- Health tracking system for pipeline reliability
+- Comprehensive error handling and logging
+
+Author: CalmOps Team
+"""
+
 import os
 import time
 import json
@@ -16,78 +29,241 @@ from .modules.evaluador import evaluator
 from .modules.default_train_retrain import default_train, default_retrain
 
 
-# -------------------------------
-# Circuit Breaker Utilities
-# -------------------------------
+# ===============================================================================
+# CIRCUIT BREAKER IMPLEMENTATION
+# ===============================================================================
+# 
+# The circuit breaker pattern prevents repeated attempts when the system is 
+# experiencing consecutive failures. It tracks failure counts and implements
+# exponential backoff to give the system time to recover.
+#
+# Key Components:
+# - Health state persistence across pipeline runs
+# - Configurable failure thresholds and backoff periods
+# - Automatic recovery after successful evaluations
+# ===============================================================================
 
 def _health_path(metrics_dir: str) -> str:
+    """
+    Generate the file path for circuit breaker health state persistence.
+    
+    Args:
+        metrics_dir: Directory where metrics and health state are stored
+        
+    Returns:
+        Full path to the health.json file
+    """
     return os.path.join(metrics_dir, "health.json")
 
-def _load_health(metrics_dir: str):
-    """Load health state for circuit breaker."""
+def _load_health(metrics_dir: str) -> dict:
+    """
+    Load circuit breaker health state from persistent storage.
+    
+    The health state tracks:
+    - consecutive_failures: Number of consecutive model evaluation failures
+    - last_failure_ts: Timestamp of the most recent failure
+    - paused_until: Timestamp until which retraining is paused (None if not paused)
+    
+    Args:
+        metrics_dir: Directory containing the health.json file
+        
+    Returns:
+        Dictionary containing health state with default values if file doesn't exist
+    """
     path = _health_path(metrics_dir)
     if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            # If health file is corrupted, return default state
+            return {"consecutive_failures": 0, "last_failure_ts": None, "paused_until": None}
+    
+    # Return default health state for new pipelines
     return {"consecutive_failures": 0, "last_failure_ts": None, "paused_until": None}
 
-def _save_health(metrics_dir: str, data: dict):
-    """Persist health state."""
+def _save_health(metrics_dir: str, data: dict) -> None:
+    """
+    Persist circuit breaker health state to disk.
+    
+    Ensures the metrics directory exists and writes health state as JSON.
+    This allows the circuit breaker to maintain state across pipeline runs.
+    
+    Args:
+        metrics_dir: Directory where health state should be saved
+        data: Health state dictionary to persist
+    """
     path = _health_path(metrics_dir)
     os.makedirs(metrics_dir, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+    except IOError as e:
+        # Log error but don't fail the pipeline
+        logging.warning(f"Failed to save circuit breaker health state: {e}")
 
 def _should_pause(health: dict) -> bool:
-    """Return True if breaker is currently pausing retraining attempts."""
+    """
+    Determine if circuit breaker should prevent retraining attempts.
+    
+    Checks if the current time is still within the pause period established
+    after consecutive failures exceeded the threshold.
+    
+    Args:
+        health: Health state dictionary containing pause timestamp
+        
+    Returns:
+        True if retraining should be paused, False otherwise
+    """
     paused_until = health.get("paused_until")
     if paused_until is None:
         return False
+    
     try:
-        return time.time() < float(paused_until)
-    except Exception:
+        current_time = time.time()
+        return current_time < float(paused_until)
+    except (ValueError, TypeError):
+        # If timestamp is invalid, don't pause
         return False
 
-def _update_on_result(health: dict, approved: bool, backoff_minutes: int, max_failures: int):
+def _update_on_result(health: dict, approved: bool, backoff_minutes: int, max_failures: int) -> dict:
     """
-    Update breaker state after an evaluation result.
-
-    If consecutive failures reach the threshold, engage a pause/backoff period.
+    Update circuit breaker state based on model evaluation result.
+    
+    Implements the core circuit breaker logic:
+    - On success: Reset failure count and clear pause state
+    - On failure: Increment failure count and potentially engage pause period
+    
+    The circuit breaker engages when consecutive failures reach the threshold,
+    implementing exponential backoff to allow system recovery time.
+    
+    Args:
+        health: Current health state dictionary
+        approved: Whether the model evaluation was successful
+        backoff_minutes: Minutes to pause retraining after max failures
+        max_failures: Maximum consecutive failures before engaging circuit breaker
+        
+    Returns:
+        Updated health state dictionary
     """
+    current_time = time.time()
+    
     if approved:
+        # Success: Reset circuit breaker to healthy state
         health["consecutive_failures"] = 0
         health["last_failure_ts"] = None
         health["paused_until"] = None
     else:
+        # Failure: Increment counter and potentially engage breaker
         health["consecutive_failures"] = int(health.get("consecutive_failures", 0)) + 1
-        health["last_failure_ts"] = time.time()
+        health["last_failure_ts"] = current_time
+        
+        # Engage circuit breaker if threshold exceeded
         if health["consecutive_failures"] >= max_failures:
-            health["paused_until"] = time.time() + backoff_minutes * 60
+            health["paused_until"] = current_time + (backoff_minutes * 60)
+    
     return health
 
 
-# -------------------------------
-# Dynamic function loader
-# -------------------------------
+# ===============================================================================
+# DYNAMIC FUNCTION LOADING SYSTEM
+# ===============================================================================
+#
+# This system allows users to provide custom Python files containing specialized
+# training, retraining, and fallback functions. The dynamic loader safely imports
+# and validates these functions at runtime, enabling flexible pipeline customization.
+#
+# Key Features:
+# - Safe module loading with proper error handling
+# - Function existence validation before execution
+# - Detailed error reporting for troubleshooting
+# - Support for custom train/retrain/fallback strategies
+# ===============================================================================
 
 def load_custom_function(py_file: str, func_name: str):
     """
-    Load a function named `func_name` from python file `py_file`.
+    Dynamically load and validate a custom function from a Python file.
+    
+    This function enables users to extend pipeline functionality by providing
+    custom implementations for training, retraining, and fallback strategies.
+    The loaded function is validated to ensure it exists before being returned.
+    
+    Args:
+        py_file: Absolute path to the Python file containing the function
+        func_name: Name of the function to load from the file
+        
+    Returns:
+        The loaded function object, ready for execution
+        
+    Raises:
+        ImportError: If file loading fails or function doesn't exist
+        AttributeError: If the specified function is not found in the module
+        
+    Example:
+        >>> train_func = load_custom_function("/path/to/custom.py", "train")
+        >>> model = train_func(X, y, ...)
     """
+    if not os.path.exists(py_file):
+        raise ImportError(f"Custom function file does not exist: {py_file}")
+    
     try:
+        # Create module specification from file path
         spec = importlib.util.spec_from_file_location("custom_module", py_file)
+        if spec is None:
+            raise ImportError(f"Could not create module specification for: {py_file}")
+        
+        # Create and execute the module
         custom_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(custom_module)
+        
+        # Validate function exists
         if not hasattr(custom_module, func_name):
-            raise AttributeError(f"The file {py_file} does not contain the function {func_name}")
+            available_functions = [attr for attr in dir(custom_module) 
+                                 if callable(getattr(custom_module, attr)) 
+                                 and not attr.startswith('_')]
+            raise AttributeError(
+                f"Function '{func_name}' not found in {py_file}. "
+                f"Available functions: {available_functions}"
+            )
+        
         return getattr(custom_module, func_name)
+        
     except Exception as e:
-        raise ImportError(f"Error loading function '{func_name}' from file '{py_file}': {e}")
+        # Provide detailed error context for debugging
+        raise ImportError(
+            f"Failed to load function '{func_name}' from '{py_file}': {type(e).__name__}: {e}"
+        )
 
 
-# -------------------------------
-# Main pipeline
-# -------------------------------
+# ===============================================================================
+# ML PIPELINE ORCHESTRATOR
+# ===============================================================================
+#
+# This is the main pipeline orchestration function that implements a comprehensive
+# ML operations workflow with the following key patterns:
+#
+# 1. CHAMPION/CHALLENGER PATTERN:
+#    - Current production model serves as the "Champion"
+#    - New models are "Challengers" that must prove themselves
+#    - Only approved Challengers are promoted to Champion status
+#    - Non-approved models are saved as candidates for analysis
+#
+# 2. CIRCUIT BREAKER RELIABILITY:
+#    - Prevents repeated failures from degrading system performance
+#    - Implements configurable backoff periods after consecutive failures
+#    - Automatically recovers when models start performing well again
+#
+# 3. FLEXIBLE TRAINING STRATEGIES:
+#    - Supports custom training, retraining, and fallback functions
+#    - Default implementations available for standard workflows
+#    - Dynamic loading allows for pipeline customization without code changes
+#
+# 4. COMPREHENSIVE ERROR HANDLING:
+#    - Graceful degradation on failures
+#    - Detailed logging for troubleshooting and monitoring
+#    - State persistence for recovery across runs
+# ===============================================================================
 
 def run_pipeline(
     *,
@@ -108,83 +284,196 @@ def run_pipeline(
     delimiter: str = ",",
     target_file: str = None,
     window_size: int = None,
-    # breaker config:
+    # Circuit breaker configuration
     breaker_max_failures: int = 3,
     breaker_backoff_minutes: int = 120,
 ):
     """
-    Orchestrates training/retraining and evaluation with:
-      - Champion/Challenger policy (only promote on approval)
-      - Circuit breaker to pause after repeated failures
-      - Candidate saving for non-approved models
+    Execute the complete ML pipeline with champion/challenger promotion and circuit breaker protection.
+    
+    This function orchestrates the entire machine learning pipeline lifecycle including:
+    - Data loading and preprocessing
+    - Drift detection and decision making
+    - Model training, retraining, and evaluation
+    - Champion/Challenger promotion logic
+    - Circuit breaker failure protection
+    - Comprehensive logging and monitoring
+    
+    Champion/Challenger Strategy:
+        The pipeline maintains a production "Champion" model and evaluates new "Challenger"
+        models against performance thresholds. Only Challengers that meet approval criteria
+        are promoted to Champion status, ensuring production stability.
+    
+    Circuit Breaker Protection:
+        After consecutive evaluation failures, the circuit breaker pauses retraining
+        attempts for a configurable period, preventing system degradation and allowing
+        time for issue resolution.
+    
+    Args:
+        pipeline_name: Unique identifier for this pipeline instance
+        data_dir: Directory containing input data files
+        preprocess_file: Path to Python file containing data_preprocessing function
+        thresholds_drift: Drift detection thresholds for triggering retraining
+        thresholds_perf: Performance thresholds for model approval
+        model_instance: Base model instance for training (scikit-learn compatible)
+        retrain_mode: Strategy for retraining (see default_retrain documentation)
+        fallback_mode: Fallback strategy if primary retraining fails
+        random_state: Random seed for reproducibility
+        param_grid: Hyperparameter grid for model tuning (optional)
+        cv: Cross-validation folds for hyperparameter tuning (optional)
+        custom_train_file: Path to custom training function (optional)
+        custom_retrain_file: Path to custom retraining function (optional)
+        custom_fallback_file: Path to custom fallback function (optional)
+        delimiter: CSV delimiter for data files (default: ",")
+        target_file: Specific target file to process (optional)
+        window_size: Rolling window size for certain retraining modes (optional)
+        breaker_max_failures: Circuit breaker failure threshold (default: 3)
+        breaker_backoff_minutes: Circuit breaker pause duration in minutes (default: 120)
+        
+    Raises:
+        FileNotFoundError: If required files (preprocessing, custom functions) don't exist
+        ValueError: If conflicting thresholds are specified
+        ImportError: If custom functions cannot be loaded
+        
+    Returns:
+        None: Function performs side effects (model saving, logging, metrics)
     """
-    # Directories
+    # ============================================================================
+    # PIPELINE INITIALIZATION AND SETUP
+    # ============================================================================
+    
+    # Create directory structure for pipeline artifacts
     base_dir = os.path.join(os.getcwd(), "pipelines", pipeline_name)
-    output_dir = os.path.join(base_dir, "modelos")
-    control_dir = os.path.join(base_dir, "control")
-    logs_dir = os.path.join(base_dir, "logs")
-    metrics_dir = os.path.join(base_dir, "metrics")
-    candidates_dir = os.path.join(base_dir, "candidates")
+    output_dir = os.path.join(base_dir, "modelos")        # Champion model storage
+    control_dir = os.path.join(base_dir, "control")       # Processing state tracking
+    logs_dir = os.path.join(base_dir, "logs")             # Pipeline execution logs
+    metrics_dir = os.path.join(base_dir, "metrics")       # Performance metrics and health
+    candidates_dir = os.path.join(base_dir, "candidates") # Non-approved model storage
 
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(control_dir, exist_ok=True)
-    os.makedirs(logs_dir, exist_ok=True)
-    os.makedirs(metrics_dir, exist_ok=True)
-    os.makedirs(candidates_dir, exist_ok=True)
+    # Ensure all required directories exist
+    for directory in [output_dir, control_dir, logs_dir, metrics_dir, candidates_dir]:
+        os.makedirs(directory, exist_ok=True)
 
     model_path = os.path.join(output_dir, f"{pipeline_name}.pkl")
 
-    # Logger
+    # Initialize logging system
     logger = PipelineLogger(pipeline_name, log_dir=logs_dir).get_logger()
     logging.basicConfig()
-    logger.info("Pipeline started")
+    logger.info(f"Pipeline '{pipeline_name}' execution started")
 
-    # Circuit breaker check
+    # ============================================================================
+    # CIRCUIT BREAKER PROTECTION CHECK
+    # ============================================================================
+    
+    # Load circuit breaker health state and check if retraining should be paused
     health = _load_health(metrics_dir)
     if _should_pause(health):
-        logger.warning("⚠️ Retraining paused by circuit breaker. Skipping this run.")
+        failures = health.get("consecutive_failures", 0)
+        pause_until_ts = health.get("paused_until", 0)
+        
+        logger.warning(
+            f"Circuit breaker engaged: Retraining paused after {failures} consecutive failures. "
+            f"Will resume after {time.ctime(pause_until_ts)} (backoff: {breaker_backoff_minutes}min)"
+        )
         return
 
-    # Validate thresholds (avoid mixing classification/regression)
-    if {"accuracy", "f1", "balanced_accuracy"} & set(thresholds_perf.keys()) and \
-       {"rmse", "mae", "mse", "r2"} & set(thresholds_perf.keys()):
-        raise ValueError("Cannot define both classification and regression thresholds at the same time.")
+    # ============================================================================
+    # CONFIGURATION VALIDATION
+    # ============================================================================
+    
+    # Prevent mixing classification and regression metrics in the same pipeline
+    classification_metrics = {"accuracy", "f1", "balanced_accuracy", "precision", "recall"}
+    regression_metrics = {"rmse", "mae", "mse", "r2"}
+    
+    has_classification = bool(classification_metrics & set(thresholds_perf.keys()))
+    has_regression = bool(regression_metrics & set(thresholds_perf.keys()))
+    
+    if has_classification and has_regression:
+        raise ValueError(
+            "Configuration error: Cannot mix classification metrics "
+            f"({classification_metrics & set(thresholds_perf.keys())}) "
+            f"with regression metrics ({regression_metrics & set(thresholds_perf.keys())}) "
+            "in the same pipeline"
+        )
 
-    # Preprocess function
+    # ============================================================================
+    # CUSTOM FUNCTION LOADING
+    # ============================================================================
+    
+    # Load and validate the required preprocessing function
     if not os.path.exists(preprocess_file):
-        raise FileNotFoundError(f"Please provide a valid preprocessing file: {preprocess_file}")
-    preprocess_func = load_custom_function(preprocess_file, "data_preprocessing")
+        raise FileNotFoundError(f"Preprocessing file not found: {preprocess_file}")
+    
+    try:
+        preprocess_func = load_custom_function(preprocess_file, "data_preprocessing")
+        logger.info(f"Loaded preprocessing function from: {preprocess_file}")
+    except ImportError as e:
+        logger.error(f"Failed to load preprocessing function: {e}")
+        raise
 
-    # Drift detector
+    # ============================================================================
+    # DATA LOADING AND PREPROCESSING
+    # ============================================================================
+    
+    # Initialize drift detection system
     detector = DriftDetector()
+    logger.info("Drift detector initialized")
 
-    # Load and preprocess data
+    # Load new data using the data loader module
+    logger.info(f"Loading data from directory: {data_dir}")
     df, last_processed_file, last_mtime = data_loader(
         logger, data_dir, control_dir, delimiter=delimiter, target_file=target_file
     )
 
+    # Check if new data is available for processing
     if df.empty:
-        logger.warning("No new data to process.")
+        logger.info("No new data available for processing - pipeline execution complete")
         return
 
-    X, y = preprocess_func(df)
-    logger.info(f"Data preprocessed: {X.shape[0]} rows, {X.shape[1]} columns")
-    df = pd.concat([X, y], axis=1)
+    # Apply preprocessing to prepare data for model operations
+    try:
+        X, y = preprocess_func(df)
+        logger.info(
+            f"Data preprocessing complete: {X.shape[0]} samples, {X.shape[1]} features. "
+            f"Source file: {last_processed_file}"
+        )
+        df = pd.concat([X, y], axis=1)
+    except Exception as e:
+        logger.error(f"Data preprocessing failed: {e}")
+        raise
 
-    # Drift decision
+    # ============================================================================
+    # DRIFT DETECTION AND DECISION MAKING
+    # ============================================================================
+    
+    # Analyze data drift to determine if retraining is necessary
+    logger.info("Performing drift analysis to determine pipeline action")
     decision = check_drift(
         X, y, detector, logger, thresholds_drift,
         f"{pipeline_name}.pkl", data_dir, metrics_dir, control_dir, model_dir=output_dir
     )
+    logger.info(f"Drift analysis decision: {decision.upper()}")
 
-    # TRAIN / RETRAIN / NO-ACTION
+    # ============================================================================
+    # PIPELINE EXECUTION: TRAINING, RETRAINING, OR MONITORING
+    # ============================================================================
+    
     try:
         if decision == "train":
-            logger.info("Starting TRAIN phase")
+            # ========================================================================
+            # INITIAL TRAINING PHASE
+            # ========================================================================
+            # This phase occurs when no existing model is found or when starting fresh.
+            # The trained model becomes the initial "Champion" if it passes evaluation.
+            
+            logger.info("Initiating TRAIN phase - creating initial model")
+            
             if custom_train_file:
+                logger.info(f"Using custom training function from: {custom_train_file}")
                 train_func = load_custom_function(custom_train_file, "train")
                 model, X_test, y_test, _ = train_func(X, y, last_processed_file, logger, metrics_dir)
             else:
+                logger.info("Using default training implementation")
                 model, X_test, y_test, _ = default_train(
                     X, y, last_processed_file,
                     model_instance=model_instance,
@@ -195,7 +484,10 @@ def run_pipeline(
                     output_dir=metrics_dir
                 )
 
-            # Evaluate (no fallback after TRAIN by request)
+            # Champion/Challenger Evaluation for Initial Training
+            # Note: For initial training, there is no fallback - the model either
+            # becomes the first Champion or is saved as a candidate for analysis
+            logger.info("Evaluating trained model for Champion promotion")
             approved = evaluator(
                 model=model,
                 X_test=X_test,
@@ -214,16 +506,31 @@ def run_pipeline(
                 save_candidates=True
             )
 
-            # Update breaker
+            if approved:
+                logger.info("Model approved - promoted to Champion status")
+            else:
+                logger.warning("Model did not meet approval thresholds - saved as candidate")
+
+            # Update circuit breaker health state
             health = _update_on_result(health, approved, breaker_backoff_minutes, breaker_max_failures)
             _save_health(metrics_dir, health)
 
         elif decision == "retrain":
-            logger.info("Starting RETRAIN phase")
+            # ========================================================================
+            # CHALLENGER RETRAINING PHASE
+            # ========================================================================
+            # This phase creates a new "Challenger" model to potentially replace
+            # the current "Champion". The Challenger must prove superior performance
+            # to be promoted. If it fails, fallback strategies may be attempted.
+            
+            logger.info("Initiating RETRAIN phase - creating Challenger model")
+            
             if custom_retrain_file:
+                logger.info(f"Using custom retraining function from: {custom_retrain_file}")
                 retrain_func = load_custom_function(custom_retrain_file, "retrain")
                 model, X_test, y_test, _ = retrain_func(X, y, last_processed_file, logger, metrics_dir)
             else:
+                logger.info(f"Using default retraining implementation (mode: {retrain_mode})")
                 model, X_test, y_test, _ = default_retrain(
                     X, y, last_processed_file,
                     model_path,
@@ -236,6 +543,9 @@ def run_pipeline(
                     window_size=window_size
                 )
 
+            # Champion/Challenger Evaluation for Retraining
+            # The new model competes against the current Champion for promotion
+            logger.info("Evaluating Challenger model against Champion thresholds")
             approved = evaluator(
                 model=model,
                 X_test=X_test,
@@ -254,13 +564,20 @@ def run_pipeline(
                 save_candidates=True
             )
 
-            # If not approved, try fallback (RETRAIN only)
+            # Fallback Strategy Implementation
+            # If the primary Challenger fails evaluation and fallback is configured,
+            # attempt alternative retraining approach before giving up
             if not approved and fallback_mode is not None:
-                logger.info(f"Attempting fallback with mode {fallback_mode}...")
+                logger.info(
+                    f"Challenger model failed evaluation - attempting fallback strategy (mode: {fallback_mode})"
+                )
+                
                 if custom_fallback_file:
+                    logger.info(f"Using custom fallback function from: {custom_fallback_file}")
                     fallback_func = load_custom_function(custom_fallback_file, "fallback")
                     model, X_test, y_test, _ = fallback_func(X, y, last_processed_file, logger, metrics_dir)
                 else:
+                    logger.info("Using default fallback implementation")
                     model, X_test, y_test, _ = default_retrain(
                         X, y, last_processed_file,
                         model_path,
@@ -273,6 +590,8 @@ def run_pipeline(
                         window_size=window_size
                     )
 
+                # Evaluate fallback Challenger model
+                logger.info("Evaluating fallback Challenger model")
                 approved = evaluator(
                     model=model,
                     X_test=X_test,
@@ -290,19 +609,43 @@ def run_pipeline(
                     candidates_dir=candidates_dir,
                     save_candidates=True
                 )
+                
+                if approved:
+                    logger.info("Fallback Challenger approved - promoted to Champion status")
+                else:
+                    logger.warning("Both primary and fallback Challengers failed - Champion remains unchanged")
+            elif approved:
+                logger.info("Challenger approved - promoted to Champion status")
+            else:
+                logger.warning("Challenger failed evaluation - Champion remains unchanged")
 
-            # Update breaker after retrain (and possible fallback)
+            # Update circuit breaker state after retraining attempt
             health = _update_on_result(health, approved, breaker_backoff_minutes, breaker_max_failures)
             _save_health(metrics_dir, health)
 
         else:
-            logger.info("Model already trained, no retraining needed.")
-            # Optional: periodic re-eval of current champion
+            # ========================================================================
+            # CHAMPION MONITORING PHASE
+            # ========================================================================
+            # This phase occurs when no drift is detected but we still want to
+            # monitor the current Champion's performance on new data. This helps
+            # ensure the Champion continues to perform well in production.
+            
+            logger.info("No retraining required - performing Champion health monitoring")
+            
             if os.path.exists(model_path):
+                # Load current Champion model for health evaluation
+                logger.info("Loading current Champion model for performance monitoring")
                 model = joblib.load(model_path)
+                
+                # Create test split for Champion evaluation
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y, test_size=0.2, random_state=random_state
                 )
+                
+                # Evaluate Champion performance on new data
+                # Note: This is monitoring only - Champion is not saved as a candidate
+                logger.info("Evaluating Champion performance on new data")
                 approved = evaluator(
                     model=model,
                     X_test=X_test,
@@ -317,13 +660,41 @@ def run_pipeline(
                     control_dir=control_dir,
                     df=df,
                     output_dir=metrics_dir,
-                    candidates_dir=None,        # do not save champion as candidate
-                    save_candidates=False
+                    candidates_dir=None,        # Champion not saved as candidate
+                    save_candidates=False       # Disable candidate saving for monitoring
                 )
-                # Re-eval shouldn't typically affect breaker, but we keep parity:
+                
+                if approved:
+                    logger.info("Champion model continues to perform within acceptable thresholds")
+                else:
+                    logger.warning("Champion model performance degraded - consider manual investigation")
+                
+                # Update circuit breaker state
+                # Note: Champion monitoring results may indicate systemic issues
+                # that warrant circuit breaker consideration
                 health = _update_on_result(health, approved, breaker_backoff_minutes, breaker_max_failures)
                 _save_health(metrics_dir, health)
+            else:
+                logger.warning("No Champion model found - pipeline may need initialization")
 
     except Exception as e:
-        logger.error(f"[CRITICAL] Critical error in run_pipeline: {e}")
+        # ========================================================================
+        # COMPREHENSIVE ERROR HANDLING
+        # ========================================================================
+        # Critical errors in the pipeline are logged with full context and
+        # re-raised to ensure proper error propagation to calling systems.
+        # This ensures pipeline failures are visible and actionable.
+        
+        logger.error(
+            f"Critical pipeline failure in '{pipeline_name}': {type(e).__name__}: {e}. "
+            f"Data file: {last_processed_file if 'last_processed_file' in locals() else 'unknown'}"
+        )
+        
+        # Log additional context for debugging if available
+        if 'decision' in locals():
+            logger.error(f"Pipeline failed during {decision.upper()} phase")
+        
+        # Re-raise to ensure calling code can handle the error appropriately
         raise
+    
+    logger.info(f"Pipeline '{pipeline_name}' execution completed successfully")

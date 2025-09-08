@@ -14,11 +14,11 @@ sdmetrics==0.22.0
 rdt==1.17.1
 ctgan==0.11.0
 copulas==0.12.3
-deepecho==0.7.0
-pyarrow==21.0.0      
+deepecho==0.7.1 
 river==0.22.0
 streamlit==1.47.1
 plotly==6.2.0
 tensorflow==2.19.0
 keras==3.11.1
-scikeras=0.13.0
+scikeras==0.13.0
+nbformat>=4.2.0

@@ -21,10 +21,22 @@ class SyntheticGenerator(SyntheticReporter):
         """
         Generates synthetic data with optional drift (concept, data, or both).
         """
+        # Validate parameters
+        self.validate_params(generator_instance,
+                     output_path,
+                     filename,
+                     n_samples,
+                     generator_instance_drift,
+                     position_of_drift,
+                     ratio_before,
+                     ratio_after,
+                     target_col,
+                     balance,
+                     drift_type)
+
         # Validate drift-related parameters
         self._validate_drift_params(drift_type, generator_instance_drift, ratio_before, ratio_after)
         
-        os.makedirs(output_path, exist_ok=True)
         full_path = os.path.join(output_path, filename)
 
         data = []
@@ -40,7 +52,9 @@ class SyntheticGenerator(SyntheticReporter):
             data = self._generate_both_drift(generator_instance, generator_instance_drift, n_samples, position_of_drift, ratio_before, ratio_after)
         
         # Create DataFrame
-        columns = list(generator_instance.take(1)[0].keys()) + [target_col]  # Get column names from the first sample
+        # Get column names from the first sample
+        first_sample = next(iter(generator_instance.take(1)))
+        columns = list(first_sample[0].keys()) + [target_col]
         df = pd.DataFrame(data, columns=columns)
 
         # Save CSV and report generation
@@ -57,7 +71,7 @@ class SyntheticGenerator(SyntheticReporter):
         class_samples = defaultdict(list)
         
         # Generate enough samples to balance
-        for x, y in generator_instance.take(n_samples * 5):  # Generate more to have enough options
+        for x, y in generator_instance.take(n_samples * 10):  # Generate more to have enough options
             row = list(x.values()) + [y]
             class_samples[y].append(row)
             
@@ -174,6 +188,61 @@ class SyntheticGenerator(SyntheticReporter):
             final_data.extend(class_samples[cls][:target_count])
         
         return final_data
+    
+    def validate_params(self,
+                        generator_instance,
+                        output_path: str,
+                        filename: str,
+                        n_samples: int,
+                        generator_instance_drift=None,
+                        position_of_drift: int = None,
+                        ratio_before: dict = None,
+                        ratio_after: dict = None,
+                        target_col: str = "target",
+                        balance: bool = False,
+                        drift_type: str = "none"):
+        """
+        General validation for parameters passed to the generator.
+        """
+        # Validate n_samples
+        if not isinstance(n_samples, int) or n_samples <= 0:
+            raise ValueError(f"n_samples must be a positive integer, got {n_samples}")
+
+        # Validate output_path
+               
+        if not isinstance(output_path, str) or not output_path.strip():
+            raise ValueError("output_path must be a non-empty string")
+
+        if not os.path.isdir(output_path):
+            raise ValueError(f"output_path does not exist or is not a directory: {output_path}")
+
+
+        # Validate filename
+        if not isinstance(filename, str) or not filename.strip():
+            raise ValueError("filename must be a non-empty string")
+
+        # Validate drift_type
+        valid_drift_types = ["none", "concept", "data", "both"]
+        if drift_type not in valid_drift_types:
+            raise ValueError(f"Invalid drift_type '{drift_type}'. Must be one of {valid_drift_types}")
+
+        # Validate position_of_drift
+        if drift_type in ["concept", "data", "both"]:
+            if position_of_drift is None or not (0 < position_of_drift < n_samples):
+                raise ValueError(f"position_of_drift must be between 0 and n_samples ({n_samples}) when drift is applied")
+
+        # Validate balance
+        if not isinstance(balance, bool):
+            raise ValueError(f"balance must be a boolean, got {type(balance)}")
+
+        # Delegate to drift-specific validator
+        self._validate_drift_params(drift_type, generator_instance_drift, ratio_before, ratio_after)
+
+        # Validate generator_instance
+        if generator_instance is None:
+            raise ValueError("generator_instance must be provided")
+
+        return True
 
     def _validate_drift_params(self, drift_type, generator_instance_drift, ratio_before, ratio_after):
         """

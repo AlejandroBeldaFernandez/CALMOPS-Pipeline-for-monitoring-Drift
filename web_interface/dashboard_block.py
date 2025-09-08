@@ -1,69 +1,203 @@
+# monitor_dashboard.py
 import os
 import sys
 import json
 import re
 import argparse
 from pathlib import Path
+from typing import Optional, Tuple, Any, Dict, List
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 from utils import (
     _load_any_dataset,
-    leer_metrics,
-    load_csv,
-    load_json,
-    load_log,
-    leer_registros,
-    dashboard_data_loader,
-    actualizar_registro,
+    dashboard_data_loader
 )
 
 # =========================
-# Helpers (Bloques)
+# Anti-delta sanitizers
 # =========================
+_DELTA_KEY_RE = re.compile(r"(?:\bdelta\b|Δ|δ|∆)", flags=re.IGNORECASE)
+_DELTA_TOKEN_RE = re.compile(r"(?:\bdelta\b\s*:?\s*|Δ\s*:?\s*|δ\s*:?\s*|∆\s*:?\s*)", flags=re.IGNORECASE)
 
+def _sanitize_text(val: Any) -> str:
+    try:
+        s = str(val)
+    except Exception:
+        return ""
+    s = _DELTA_TOKEN_RE.sub("", s)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+def _contains_delta_token(name: str) -> bool:
+    try:
+        return bool(_DELTA_KEY_RE.search(str(name)))
+    except Exception:
+        return False
+
+def _drop_delta_columns(df: pd.DataFrame) -> pd.DataFrame:
+    drop = [c for c in df.columns if _contains_delta_token(c)]
+    if drop:
+        df = df.drop(columns=drop, errors="ignore")
+    return df
+
+def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    df = _drop_delta_columns(df)
+    df = df.rename(columns=lambda c: _sanitize_text(c))
+    try:
+        if isinstance(df.index, pd.MultiIndex):
+            df.index = df.index.set_names([_sanitize_text(n) for n in df.index.names])
+        else:
+            df.index = df.index.rename(_sanitize_text(df.index.name))
+    except Exception:
+        pass
+    for c in df.columns:
+        if pd.api.types.is_object_dtype(df[c]) or pd.api.types.is_string_dtype(df[c]):
+            try:
+                df[c] = df[c].astype(str).map(_sanitize_text)
+            except Exception:
+                pass
+    return df
+
+def _sanitize_figure(fig: go.Figure) -> go.Figure:
+    if fig is None:
+        return fig
+    try:
+        if fig.layout.title and fig.layout.title.text:
+            fig.layout.title.text = _sanitize_text(fig.layout.title.text)
+    except Exception:
+        pass
+    for ax in ["xaxis", "yaxis", "xaxis2", "yaxis2", "xaxis3", "yaxis3"]:
+        try:
+            axis = getattr(fig.layout, ax)
+            if axis and axis.title and axis.title.text:
+                axis.title.text = _sanitize_text(axis.title.text)
+        except Exception:
+            pass
+    try:
+        if fig.layout.legend and fig.layout.legend.title and fig.layout.legend.title.text:
+            fig.layout.legend.title.text = _sanitize_text(fig.layout.legend.title.text)
+    except Exception:
+        pass
+    try:
+        if hasattr(fig.layout, "coloraxis") and fig.layout.coloraxis and fig.layout.coloraxis.colorbar:
+            cb = fig.layout.coloraxis.colorbar
+            if cb.title and cb.title.text:
+                cb.title.text = _sanitize_text(cb.title.text)
+    except Exception:
+        pass
+    try:
+        if fig.layout.annotations:
+            for ann in fig.layout.annotations:
+                if hasattr(ann, "text") and ann.text:
+                    ann.text = _sanitize_text(ann.text)
+    except Exception:
+        pass
+    try:
+        for tr in fig.data:
+            if hasattr(tr, "name") and tr.name:
+                tr.name = _sanitize_text(tr.name)
+            if hasattr(tr, "text") and isinstance(tr.text, (list, tuple)):
+                tr.text = [_sanitize_text(t) for t in tr.text]
+            elif hasattr(tr, "text") and tr.text:
+                tr.text = _sanitize_text(tr.text)
+            if hasattr(tr, "hovertext") and isinstance(tr.hovertext, (list, tuple)):
+                tr.hovertext = [_sanitize_text(t) for t in tr.hovertext]
+            elif hasattr(tr, "hovertext") and tr.hovertext:
+                tr.hovertext = _sanitize_text(tr.hovertext)
+            if hasattr(tr, "hovertemplate") and tr.hovertemplate:
+                tr.hovertemplate = _sanitize_text(tr.hovertemplate)
+            try:
+                if hasattr(tr, "marker") and hasattr(tr.marker, "colorbar") and tr.marker.colorbar:
+                    cbt = tr.marker.colorbar.title
+                    if cbt and cbt.text:
+                        cbt.text = _sanitize_text(cbt.text)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return fig
+
+def _safe_table(df: pd.DataFrame, *, use_container_width: bool = True):
+    st.dataframe(_sanitize_df(df), use_container_width=use_container_width)
+
+def _safe_table_static(df: pd.DataFrame):
+    st.table(_sanitize_df(df))
+
+def _safe_markdown(text: str):
+    st.markdown(_sanitize_text(text))
+
+def _safe_write(text: str):
+    st.write(_sanitize_text(text))
+
+def _safe_caption(text: str):
+    st.caption(_sanitize_text(text))
+
+def _safe_plot(fig: go.Figure, *, use_container_width: bool = True):
+    st.plotly_chart(_sanitize_figure(fig), use_container_width=use_container_width)
+
+def _safe_json_display(obj: Any):
+    def _json_sanitize(o: Any):
+        if isinstance(o, dict):
+            return {_sanitize_text(k): _json_sanitize(v) for k, v in o.items() if not _contains_delta_token(k)}
+        elif isinstance(o, list):
+            return [_json_sanitize(x) for x in o]
+        elif isinstance(o, str):
+            return _sanitize_text(o)
+        return o
+    st.json(_json_sanitize(obj))
+
+# =========================
+# Performance helpers (cache & utils)
+# =========================
+def _mtime(path: str | Path) -> float:
+    try:
+        return Path(path).stat().st_mtime
+    except Exception:
+        return 0.0
+
+@st.cache_data(show_spinner=False)
+def _read_json_cached(path: str, stamp: float) -> Optional[dict]:
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+@st.cache_data(show_spinner=False)
+def _read_text_cached(path: str, stamp: float) -> str:
+    try:
+        with open(path, "r", errors="ignore") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+@st.cache_data(show_spinner=False)
+def _read_csv_cached(path: str, stamp: float) -> pd.DataFrame:
+    return pd.read_csv(path)
+
+@st.cache_data(show_spinner=False)
+def _load_any_dataset_cached(path: str, stamp: float) -> pd.DataFrame:
+    return _load_any_dataset(path)
+
+# =========================
+# Block helpers
+# =========================
 def _detect_block_col(pipeline_name: str, df: pd.DataFrame, default: str = "block_id") -> str | None:
-    """
-    Detección de columna de bloque:
-      1) pipelines/<pipeline>/config/config.json -> block_col
-      2) pipelines/<pipeline>/control/blocks_snapshot.json -> última entrada de control_file
-      3) Heurística: 'block_id' o columnas que contengan 'block'
-    """
-    # 1) config.json
     cfg_path = os.path.join("pipelines", pipeline_name, "config", "config.json")
     try:
         if os.path.exists(cfg_path):
-            with open(cfg_path, "r") as f:
-                cfg = json.load(f)
+            cfg = _read_json_cached(cfg_path, _mtime(cfg_path)) or {}
             if cfg.get("block_col") and cfg["block_col"] in df.columns:
                 return cfg["block_col"]
     except Exception:
         pass
-
-    # 2) blocks_snapshot.json
-    snap_path = os.path.join("pipelines", pipeline_name, "control", "blocks_snapshot.json")
-    try:
-        if os.path.exists(snap_path):
-            with open(snap_path, "r") as f:
-                snap = json.load(f)
-            control_file = os.path.join("pipelines", pipeline_name, "control", "control_file.txt")
-            file_key = None
-            if os.path.exists(control_file):
-                with open(control_file, "r") as f:
-                    lines = [l.strip() for l in f.readlines() if l.strip()]
-                if lines:
-                    file_key = lines[-1].split(",")[0]
-            if file_key and snap.get(file_key, {}).get("block_col") in df.columns:
-                return snap[file_key]["block_col"]
-    except Exception:
-        pass
-
-    # 3) heurística
     if default in df.columns:
         return default
     for c in df.columns:
@@ -71,133 +205,105 @@ def _detect_block_col(pipeline_name: str, df: pd.DataFrame, default: str = "bloc
             return c
     return None
 
-
 def _sorted_blocks(series: pd.Series):
-    """Orden estable: intenta numérico, luego datetime, luego lexicográfico."""
     vals = series.dropna().unique().tolist()
-    # numeric
     try:
         nums = [float(v) for v in vals]
         return [x for _, x in sorted(zip(nums, vals))]
     except Exception:
         pass
-    # datetime
     try:
         dt = pd.to_datetime(vals, errors="raise")
         return [x for _, x in sorted(zip(dt, vals))]
     except Exception:
         pass
-    # lexicographic
     return sorted(vals, key=lambda x: str(x))
 
-
 # =========================
-# Dataset Section
+# Dataset Tab
 # =========================
-
 def show_dataset_section(data_dir, pipeline_name):
-    """Displays dataset preview, info, stats, and top categorical values — ahora por bloque."""
-    st.subheader("📊 Dataset Information")
+    st.subheader("Dataset (block_wise)")
     control_dir = os.path.join("pipelines", pipeline_name, "control")
     df, last_file = dashboard_data_loader(data_dir, control_dir)
 
     if df.empty or not last_file:
-        st.warning("⚠️ No processed dataset found yet.")
+        st.warning("⚠ No processed dataset found yet.")
         return
 
-    st.write(f"**Last processed dataset:** `{last_file}`")
+    _safe_write(f"*Last processed dataset:* {_sanitize_text(last_file)}")
 
-    # >>> BLOQUES: detectar columna de bloque y resumir
     block_col = _detect_block_col(pipeline_name, df)
     if block_col and block_col in df.columns:
-        st.info(f"🔢 Block column detected: **`{block_col}`**")
+        _safe_markdown(f"🔢 Block column detected: **{_sanitize_text(block_col)}**")
         blocks = _sorted_blocks(df[block_col])
-        counts = df[block_col].value_counts(dropna=False)
-        # Reindexar counts con el orden de blocks
-        counts = counts.reindex(blocks, fill_value=0)
+        counts = df[block_col].value_counts(dropna=False).reindex(blocks, fill_value=0)
 
-        st.markdown("### 🧱 Blocks overview")
+        _safe_markdown("### 🧱 Blocks overview")
         c1, c2 = st.columns([2, 1])
         with c1:
-            st.dataframe(pd.DataFrame({"block": [str(b) for b in counts.index], "rows": counts.values}))
+            _safe_table(pd.DataFrame({"block": [str(b) for b in counts.index], "rows": counts.values}))
         with c2:
             fig = px.bar(
-                x=[str(b) for b in counts.index],
+                x=[_sanitize_text(str(b)) for b in counts.index],
                 y=counts.values,
                 labels={"x": "Block", "y": "Rows"},
-                title="Rows per block",
+                title=_sanitize_text("Rows per block"),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            _safe_plot(fig)
 
-        # Selector de bloque (incluye opción 'All')
-        sel = st.selectbox("Focus block", options=["(All)"] + [str(b) for b in blocks], index=0)
-        if sel != "(All)":
-            df_view = df[df[block_col].astype(str) == sel]
-        else:
-            df_view = df
+        sel = st.selectbox("Preview block", options=["(All)"] + [str(b) for b in blocks], index=0, key="ds_focus_block")
+        df_view = df if sel == "(All)" else df[df[block_col].astype(str) == sel]
     else:
-        st.info("No block column detected. Showing global info.")
+        _safe_markdown("No block column detected. Showing global info.")
         df_view = df
         block_col = None
 
-    # Preview
-    st.markdown("### 👀 Preview (head)")
-    st.dataframe(df_view.head(10))
+    _safe_markdown("### 👀 Preview (head)")
+    _safe_table(df_view.head(10))
 
-    # Dataset info table
-    st.markdown("### 🗂️ Dataset Info")
-    info_dict = {
-        "Column": df_view.columns,
-        "Non-Null Count": [df_view[col].notnull().sum() for col in df_view.columns],
-        "Unique Values": [df_view[col].nunique(dropna=True) for col in df_view.columns],
-        "Dtype": df_view.dtypes.values,
-    }
-    info_df = pd.DataFrame(info_dict)
-    st.dataframe(info_df)
-
-    # General summary
-    st.markdown(
-        f"""
-    **Total Rows (view):** {df_view.shape[0]}  
-    **Total Columns:** {df_view.shape[1]}  
-    **Memory Usage (view):** {df_view.memory_usage().sum() / 1024**2:.2f} MB
-    """
-    )
-
-    # Descriptive stats
-    st.markdown("### 📈 Descriptive Statistics (view)")
-    st.dataframe(df_view.describe(include="all").transpose())
-
-    # Top categorical value counts (view)
-    st.markdown("### 🔎 Top 5 Most Frequent Values in Categorical Columns (view)")
-    cat_cols = df_view.select_dtypes(include="object").columns
-    if len(cat_cols) > 0:
-        for col in cat_cols:
-            st.markdown(f"**{col}**")
-            freq = df_view[col].value_counts().head(5).reset_index()
-            freq.columns = [col, "Frequency"]
-            fig = px.bar(
-                freq,
-                x=col,
-                y="Frequency",
-                text="Frequency",
-                title=f"Top 5 in {col}",
-                labels={col: "Values", "Frequency": "Frequency"},
+    # Missingness quick view
+    _safe_markdown("### 🕳 Missingness (fraction by column)")
+    try:
+        nan_frac = df_view.isna().mean().sort_values(ascending=False)
+        if not nan_frac.empty:
+            fig_nan = px.bar(
+                x=nan_frac.index.map(_sanitize_text),
+                y=nan_frac.values,
+                labels={"x": "Column", "y": "NaN fraction"},
+                title=_sanitize_text("NaN fraction by column"),
             )
-            fig.update_traces(textposition="outside", marker=dict(color="skyblue", line=dict(color="black", width=1)))
-            fig.update_layout(xaxis_tickangle=-30, height=400, width=500)
-            st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No categorical columns to show frequencies (in current view).")
+            _safe_plot(fig_nan)
+        else:
+            _safe_markdown("No missing values detected.")
+    except Exception as e:
+        _safe_markdown(_sanitize_text(f"Could not compute missingness: {e}"))
 
+    # Download preview CSV
+    try:
+        st.download_button(
+            "⬇ Download preview (CSV)",
+            data=df_view.to_csv(index=False).encode("utf-8"),
+            file_name="preview.csv",
+            mime="text/csv",
+        )
+    except Exception:
+        pass
+
+    _safe_markdown("### Dataset Info")
+    info_df = pd.DataFrame({
+        "Column": df_view.columns,
+        "Non-Null Count": df_view.notnull().sum().values,
+        "Unique Values": df_view.nunique(dropna=True).values,
+        "Dtype": df_view.dtypes.astype(str).values,
+    })
+    _safe_table(info_df)
 
 # =========================
-# Evaluator Section
+# Evaluator Tab
 # =========================
-
 def show_evaluator_section(pipeline_name):
-    """Displays evaluation metrics, thresholds, circuit breaker status, and candidates overview (ahora block-aware)."""
-    st.subheader("🧪 Evaluation Results")
+    _ = st.subheader("🧪 Evaluation Results (block_wise)")
 
     base_dir = os.path.join("pipelines", pipeline_name)
     metrics_dir = os.path.join(base_dir, "metrics")
@@ -206,709 +312,730 @@ def show_evaluator_section(pipeline_name):
     health_path = os.path.join(metrics_dir, "health.json")
 
     if not os.path.exists(eval_path):
-        st.info("No evaluation results found yet.")
-        return
+        _safe_markdown("No evaluation results found yet.")
+        return None
 
-    with open(eval_path, "r") as f:
-        results = json.load(f)
-
+    results = _read_json_cached(eval_path, _mtime(eval_path)) or {}
     if not results:
-        st.warning("Empty evaluation results.")
-        return
+        _safe_markdown("Empty evaluation results.")
+        return None
 
-    # Approval flag
     if results.get("approved", False):
-        st.success("✅ Model approved. Meets the established thresholds.")
+        st.success(_sanitize_text("Model approved."))
     else:
-        st.error("❌ Model NOT approved. Does not meet the established thresholds.")
+        st.error(_sanitize_text("Model NOT approved."))
 
-    # >>> BLOQUES: sección de bloques si existe
+    # Download eval JSON
+    try:
+        st.download_button(
+            "⬇ Download eval_results.json",
+            data=json.dumps(results, indent=2),
+            file_name="eval_results.json",
+            mime="application/json",
+        )
+    except Exception:
+        pass
+
     blocks_info = results.get("blocks", {}) or {}
+    per_blk_full = blocks_info.get("per_block_metrics_full") or {}
+    evaluated_blocks = [str(b) for b in (blocks_info.get("evaluated_blocks") or [])]
+    block_keys = [str(k) for k in per_blk_full.keys()]
+
     if blocks_info:
-        st.markdown("## 🧱 Blocks (from evaluator)")
+        _safe_markdown("## 🧱 Blocks (from evaluator)")
         cols = st.columns(3)
-        cols[0].metric("Block column", str(blocks_info.get("block_col")))
-        cols[1].metric("Evaluated block", str(blocks_info.get("evaluated_block_id")))
-        ref_blocks = blocks_info.get("reference_blocks") or []
-        cols[2].metric("Reference blocks", len(ref_blocks))
-        if ref_blocks:
-            st.caption(f"Reference blocks: {', '.join(map(str, ref_blocks))}")
+        cols[0].metric("Block column", _sanitize_text(str(blocks_info.get("block_col"))))
+        cols[1].metric("Evaluated blocks", len(blocks_info.get("evaluated_blocks", [])))
+        cols[2].metric("Reference (train) blocks", len(blocks_info.get("reference_blocks", [])))
 
-        per_blk = blocks_info.get("per_block_metrics") or {}
-        if per_blk:
-            st.markdown("### 📊 Per-block metrics (test)")
-            df_blk = pd.DataFrame.from_dict(per_blk, orient="index").reset_index().rename(columns={"index": "block"})
-            st.dataframe(df_blk)
-            # quick chart: primer métrico disponible
-            for m in ["accuracy", "f1", "balanced_accuracy", "r2", "rmse"]:
-                if m in df_blk.columns:
-                    st.plotly_chart(px.bar(df_blk, x="block", y=m, title=f"{m} by block"), use_container_width=True)
-                    break
+        # Novelty KPIs
+        new_blocks = blocks_info.get("new_blocks_detected", []) or []
+        missing_blocks = blocks_info.get("missing_reference_blocks", []) or []
+        k1, k2 = st.columns(2)
+        k1.metric("New blocks (not in train)", len(new_blocks))
+        k2.metric("Missing reference blocks", len(missing_blocks))
+        if new_blocks:
+            _safe_markdown("**New blocks detected:** " + ", ".join(map(_sanitize_text, new_blocks)))
+        if missing_blocks:
+            _safe_markdown("**Reference blocks missing in eval:** " + ", ".join(map(_sanitize_text, missing_blocks)))
 
-    # Thresholds
-    st.markdown("## 📏 Used Thresholds")
+        # Evaluator-specific selector (only evaluated_blocks)
+        if evaluated_blocks:
+            sel_eval = st.selectbox(
+                "Filter block (Evaluator)",
+                options=["(All)"] + evaluated_blocks,
+                index=0,
+                key="eval_block_selector"
+            )
+        else:
+            sel_eval = "(All)"
+
+        if per_blk_full:
+            _safe_markdown("### Per-block test metrics")
+            df_blk = pd.DataFrame.from_dict(per_blk_full, orient="index").reset_index().rename(columns={"index": "block"})
+            if sel_eval != "(All)":
+                df_blk = df_blk[df_blk["block"].astype(str) == sel_eval]
+            _safe_table(df_blk)
+
+            # Metric chart with threshold line
+            candidate_metrics = [m for m in ["accuracy", "f1", "balanced_accuracy", "r2", "rmse", "mae", "mse"] if m in df_blk.columns]
+            if candidate_metrics:
+                metric_to_plot = st.selectbox("Metric to plot", options=candidate_metrics, index=0, key="eval_metric_sel")
+
+                df_line = _sanitize_df(df_blk.copy())
+                try:
+                    order = _sorted_blocks(df_line["block"])
+                    df_line["block"] = pd.Categorical(df_line["block"].astype(str), categories=[str(o) for o in order], ordered=True)
+                    df_line = df_line.sort_values("block")
+                except Exception:
+                    df_line["block"] = df_line["block"].astype(str)
+
+                if df_line.shape[0] <= 1:
+                    fig = px.bar(df_line, x="block", y=metric_to_plot,
+                                 title=_sanitize_text(f"{metric_to_plot} (selected blocks)"),
+                                 labels={"block": _sanitize_text("Block"), metric_to_plot: _sanitize_text(metric_to_plot)})
+                else:
+                    fig = px.line(df_line, x="block", y=metric_to_plot, markers=True,
+                                  title=_sanitize_text(f"{metric_to_plot} by block"),
+                                  labels={"block": _sanitize_text("Block"), metric_to_plot: _sanitize_text(metric_to_plot)})
+
+                thr = results.get("thresholds", {}).get(metric_to_plot)
+                if thr is not None:
+                    fig.add_hline(
+                        y=float(thr),
+                        line_dash="dash",
+                        annotation_text=_sanitize_text(f"threshold = {thr}"),
+                        annotation_position="top left",
+                    )
+                _safe_plot(fig)
+
+            # Optional per-block confusion matrix if present
+            cm_dict = blocks_info.get("per_block_confusion_matrix")
+            if cm_dict:
+                _safe_markdown("### 🧩 Confusion matrix (per block)")
+                blocks_with_cm = [b for b, cm in cm_dict.items() if cm]
+                if blocks_with_cm:
+                    bsel_cm = st.selectbox("Block (confusion matrix)", options=blocks_with_cm, index=0, key="cm_block")
+                    try:
+                        cm = np.array(cm_dict[bsel_cm], dtype=float)
+                        fig_cm = px.imshow(
+                            cm,
+                            text_auto=True,
+                            aspect="auto",
+                            labels=dict(x="Predicted", y="True", color="Count"),
+                            title=_sanitize_text(f"Confusion matrix – {bsel_cm}"),
+                        )
+                        _safe_plot(fig_cm)
+                    except Exception as e:
+                        _safe_markdown(_sanitize_text(f"Could not render confusion matrix: {e}"))
+
+    _safe_markdown("## Used Thresholds")
     thresholds = results.get("thresholds", {})
     if thresholds:
-        thresholds_df = pd.DataFrame(list(thresholds.items()), columns=["Metric", "Threshold"])
-        st.table(thresholds_df)
+        _safe_table_static(pd.DataFrame(list(thresholds.items()), columns=["Metric", "Threshold"]))
     else:
-        st.info("No thresholds found in the evaluation results.")
+        _safe_markdown("No thresholds found in the evaluation results.")
 
-    # Prediction examples
     if "predictions" in results and results["predictions"]:
-        st.markdown("## 🔍 Prediction Examples")
+        _safe_markdown("## Prediction Examples")
         preds_df = pd.DataFrame(results["predictions"])
-        st.table(preds_df)
+        if "eval_block_selector" in st.session_state:
+            bsel = st.session_state["eval_block_selector"]
+            if bsel != "(All)" and "block" in preds_df.columns:
+                preds_df = preds_df[preds_df["block"].astype(str) == bsel]
+        _safe_table_static(preds_df)
 
-    # Metrics
-    st.markdown("## 📊 Test Metrics")
+    _safe_markdown("## Test Metrics (global)")
     metrics = results.get("metrics", {})
     if "classification_report" in metrics:
-        st.write(f"**Accuracy:** {round(metrics.get('accuracy', 0), 4)}")
-        st.write(f"**Balanced Accuracy:** {round(metrics.get('balanced_accuracy', 0), 4)}")
-        st.write(f"**F1 (macro):** {round(metrics.get('f1', 0), 4)}")
-
+        _safe_write(f"*Accuracy:* {round(metrics.get('accuracy', 0), 4)}")
+        _safe_write(f"*Balanced Accuracy:* {round(metrics.get('balanced_accuracy', 0), 4)}")
+        _safe_write(f"*F1 (macro):* {round(metrics.get('f1', 0), 4)}")
         report_df = pd.DataFrame(metrics["classification_report"])
         if set(["precision", "recall", "f1-score", "support"]).issubset(report_df.index):
-            st.table(report_df.transpose())
+            _safe_table_static(report_df.transpose())
         else:
-            st.table(report_df)
-    elif "r2" in metrics:
-        st.write(f"**R²:** {round(metrics.get('r2', 0), 4)}")
-        st.write(f"**RMSE:** {round(metrics.get('rmse', 0), 4)}")
-        st.write(f"**MAE:** {round(metrics.get('mae', 0), 4)}")
-        st.write(f"**MSE:** {round(metrics.get('mse', 0), 4)}")
+            _safe_table_static(report_df)
+    elif "r2" in metrics or "rmse" in metrics:
+        if "r2" in metrics:
+            _safe_write(f"*R²:* {round(metrics.get('r2', 0), 4)}")
+        if "rmse" in metrics:
+            _safe_write(f"*RMSE:* {round(metrics.get('rmse', 0), 4)}")
+        if "mae" in metrics:
+            _safe_write(f"*MAE:* {round(metrics.get('mae', 0), 4)}")
+        if "mse" in metrics:
+            _safe_write(f"*MSE:* {round(metrics.get('mse', 0), 4)}")
     else:
-        st.info("No evaluation metrics found.")
+        _safe_markdown("No evaluation metrics found.")
 
-    # Circuit Breaker
-    st.markdown("## 🛑 Circuit Breaker Status")
+    _safe_markdown("## 🛑 Circuit Breaker Status")
     if os.path.exists(health_path):
         try:
-            with open(health_path, "r") as f:
-                health = json.load(f)
-
+            health = _read_json_cached(health_path, _mtime(health_path)) or {}
             consecutive = int(health.get("consecutive_failures", 0) or 0)
             paused_until = health.get("paused_until")
             last_failure_ts = health.get("last_failure_ts")
-
             cols = st.columns(3)
             cols[0].metric("Consecutive Failures", consecutive)
 
             def _fmt_ts(ts):
                 try:
-                    import time as _t, datetime as _dt
+                    import datetime as _dt
                     return _dt.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
                 except Exception:
                     return str(ts)
 
-            cols[1].metric("Paused Until", _fmt_ts(paused_until) if paused_until else "—")
-            cols[2].metric("Last Failure", _fmt_ts(last_failure_ts) if last_failure_ts else "—")
+            cols[1].metric("Paused Until", _sanitize_text(_fmt_ts(paused_until) if paused_until else "—"))
+            cols[2].metric("Last Failure", _sanitize_text(_fmt_ts(last_failure_ts) if last_failure_ts else "—"))
 
             import time as _t
             paused = bool(paused_until and _t.time() < float(paused_until))
-            st.warning("⏸️ Retraining is currently **paused** by the circuit breaker.") if paused else st.success("▶️ Retraining is **active** (not paused).")
+            if paused:
+                st.warning(_sanitize_text("⏸ Retraining is currently paused by the circuit breaker."))
+            else:
+                st.success(_sanitize_text("▶ Retraining is active (not paused)."))
         except Exception as e:
-            st.warning(f"Could not read health.json: {e}")
+            st.warning(_sanitize_text(f"Could not read health.json: {e}"))
     else:
-        st.info("No circuit breaker state found yet (health.json).")
+        _safe_markdown("No circuit breaker state found yet (health.json).")
 
-    # Candidates overview
-    st.markdown("## 🗂️ Candidates (Non-Approved Models)")
-    if not os.path.exists(candidates_dir):
-        st.info("No candidates directory yet.")
-        return
-
-    candidates = []
-    try:
-        for entry in sorted(
-            [os.path.join(candidates_dir, d) for d in os.listdir(candidates_dir) if os.path.isdir(os.path.join(candidates_dir, d))],
-            key=lambda p: os.path.getmtime(p),
-            reverse=True,
-        )[:10]:
-            meta_path = os.path.join(entry, "meta.json")
-            eval_p = os.path.join(entry, "eval_results.json")
-            row = {"path": entry, "timestamp": None, "file": None, "approved": False, "key_metric": None, "metric_value": None}
-            try:
-                if os.path.exists(meta_path):
-                    with open(meta_path, "r") as f:
-                        meta = json.load(f)
-                    row["approved"] = bool(meta.get("approved", False))
-                    row["file"] = meta.get("file")
-                    row["timestamp"] = meta.get("timestamp")
-                if os.path.exists(eval_p):
-                    with open(eval_p, "r") as f:
-                        ev = json.load(f)
-                    m = ev.get("metrics", {})
-                    if "accuracy" in m:
-                        row["key_metric"] = "accuracy"
-                        row["metric_value"] = m.get("accuracy")
-                    elif "f1" in m:
-                        row["key_metric"] = "f1"
-                        row["metric_value"] = m.get("f1")
-                    elif "r2" in m:
-                        row["key_metric"] = "r2"
-                        row["metric_value"] = m.get("r2")
-            except Exception:
-                pass
-            candidates.append(row)
-
-        if candidates:
-            df_cand = pd.DataFrame(candidates)
-            if "timestamp" in df_cand.columns:
-                df_cand = df_cand.sort_values(by="timestamp", ascending=False, na_position="last")
-            show_cols = ["timestamp", "file", "approved", "key_metric", "metric_value", "path"]
-            st.dataframe(df_cand[show_cols])
-            st.caption("Showing up to 10 latest candidates. Each folder contains `model.pkl` and `eval_results.json`.")
-        else:
-            st.info("No candidates have been saved yet.")
-    except Exception as e:
-        st.warning(f"Could not enumerate candidates: {e}")
-
-
-# =========================
-# Drift Section (block-aware)
-# =========================
+    return None
 
 def show_drift_section(pipeline_name):
-    """
-    Visual drift dashboard — con selector de bloque:
-      - Decision badge + resumen
-      - Performance checks (current/previous/comparison)
-      - Multivariate tests
-      - Feature explorer: reference (previous_data.csv) vs bloque seleccionado del último dataset
-      - Drift heatmap por feature
-      - Timeline de decisiones por bloque (si existe)
-    """
-    st.subheader("🌊 Drift Results")
+    st.subheader("🌊 Drift Results (block_wise, pairwise)")
+
     base_dir = os.path.join("pipelines", pipeline_name)
     metrics_dir = os.path.join(base_dir, "metrics")
-    control_dir = os.path.join(base_dir, "control")
-    config_path = os.path.join(base_dir, "config", "config.json")
+    drift_path = os.path.join(metrics_dir, "drift_results.json")
 
-    # Load config for data_dir
+    if not os.path.exists(drift_path):
+        _safe_markdown("No drift results saved yet.")
+        return
+
+    results = _read_json_cached(drift_path, _mtime(drift_path)) or {}
+    if not results:
+        _safe_markdown("Drift results are empty.")
+        return
+
+    # --- Decision banner
+    decision = results.get("decision")
+    if decision == "no_drift":
+        st.success(_sanitize_text("🟢 No drift detected – current model maintained"))
+    elif decision == "retrain":
+        st.error(_sanitize_text("Retraining triggered due to drift"))
+    elif decision == "train":
+        st.info(_sanitize_text("🆕 First run: training from scratch"))
+    elif decision == "end_error":
+        st.warning(_sanitize_text("⚠ Ended with error while checking drift"))
+
+    if results.get("promoted_model"):
+        st.info(_sanitize_text(f"⤴ Previous model was promoted (reason: {results.get('promotion_reason','-')})."))
+
+    # --- Basic payload
+    blk = results.get("blockwise", {}) or {}
+    blocks_all = [str(b) for b in (blk.get("blocks", []) or [])]
+    block_col = blk.get("block_col")
+    pairwise = blk.get("pairwise", {}) or {}
+    by_test = results.get("drift", {}).get("by_test", {}) or {}
+
+    # --- Header KPIs
+    cols = st.columns(3)
+    cols[0].metric("Block column", _sanitize_text(str(block_col)))
+    cols[1].metric("Num blocks", len(blocks_all))
+    cols[2].metric("Tests with drift", sum(1 for v in by_test.values() if v))
+
+    # --- Block selector (like Train)
+    if blocks_all:
+        block_filter = st.selectbox(
+            "Filter block (Drift)",
+            options=["(All)"] + blocks_all,
+            index=0,
+            key="drift_block_selector"
+        )
+    else:
+        block_filter = "(All)"
+
+    # Scope blocks (ordering tries numeric/datetime first)
+    def _sorted_blocks_natural(vals: List[str]) -> List[str]:
+        try:
+            nums = [float(v) for v in vals]
+            return [x for _, x in sorted(zip(nums, vals))]
+        except Exception:
+            try:
+                dt = pd.to_datetime(vals, errors="raise")
+                return [x for _, x in sorted(zip(dt, vals))]
+            except Exception:
+                return sorted(vals, key=lambda x: str(x))
+
+    scope_blocks = blocks_all if block_filter == "(All)" else [block_filter] + [b for b in blocks_all if b != block_filter]
+    scope_blocks = _sorted_blocks_natural(scope_blocks)
+
+    # Summary box
+    _safe_markdown("## Summary")
+    if by_test:
+        df_sum = pd.DataFrame(
+            [{"Test": k, "Drift": "YES" if bool(v) else "NO"} for k, v in by_test.items()]
+        )
+        _safe_table_static(df_sum)
+    else:
+        _safe_markdown("No statistical tests found.")
+
+    # ===== Helpers for matrices =====
+    def _value_key_and_label(test_name: str) -> tuple[str | None, str, str]:
+        if test_name in ("KS", "MWU", "CVM"):
+            return "p_min", "p-value (min) — lower is worse", "Viridis_r"
+        if test_name == "PSI":
+            return "psi_max", "PSI (max) — higher is worse", "Inferno"
+        if test_name in ("Hellinger", "EMD"):
+            return "distance_max", "Distance (max) — higher is worse", "Inferno"
+        return None, "value", "Plasma"
+
+    def _make_matrix_for_test(test_name: str, scope: List[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Return (values matrix M, flags matrix F) for a given test and block scope."""
+        value_key, _, _ = _value_key_and_label(test_name)
+        matrix = pairwise.get(test_name, {}) or {}
+        blocks = [b for b in scope if b in blocks_all]
+        M = pd.DataFrame(index=blocks, columns=blocks, dtype=float)
+        F = pd.DataFrame(index=blocks, columns=blocks, dtype=bool)
+        for i in range(len(blocks)):
+            M.iloc[i, i] = np.nan
+            F.iloc[i, i] = False
+        for k, payload in matrix.items():
+            try:
+                bi, bj = k.split("|", 1)
+            except Exception:
+                continue
+            if bi not in blocks or bj not in blocks:
+                continue
+            # value
+            val = None
+            if value_key is None:
+                if "p_value" in payload and payload["p_value"] is not None:
+                    val = float(payload["p_value"])
+                elif "distance" in payload and payload["distance"] is not None:
+                    val = float(payload["distance"])
+            else:
+                v = payload.get(value_key)
+                if v is not None:
+                    val = float(v)
+            if val is not None:
+                M.loc[bi, bj] = val
+                M.loc[bj, bi] = val
+            # flag
+            fl = bool(payload.get("drift", False))
+            F.loc[bi, bj] = fl
+            F.loc[bj, bi] = fl
+
+        # If a specific block was chosen, blank out pairs that don't involve it (for clarity)
+        if block_filter != "(All)":
+            for r in list(M.index):
+                for c in list(M.columns):
+                    if r != block_filter and c != block_filter:
+                        M.loc[r, c] = np.nan
+                        F.loc[r, c] = False
+        return M, F
+
+    # ===== Per-test bar: #pairs with drift (in scope) =====
+    if pairwise:
+        rows = []
+        for t in pairwise.keys():
+            _, F_t = _make_matrix_for_test(t, scope_blocks)
+            if F_t is not None and not F_t.empty:
+                # count upper triangle True
+                n = len(F_t.index)
+                num = int(np.triu(F_t.values, k=1).sum()) if n >= 2 else 0
+                tot = n * (n - 1) // 2
+                rows.append({"test": t, "pairs_with_drift": num, "pairs_total": tot})
+        if rows:
+            _safe_markdown("### 🧮 Drift pairs per test (in scope)")
+            df_counts = pd.DataFrame(rows)
+            df_counts["ratio"] = df_counts.apply(
+                lambda r: 0.0 if r["pairs_total"] == 0 else r["pairs_with_drift"] / r["pairs_total"], axis=1
+            )
+            _safe_table_static(df_counts)
+
+            fig_cnt = px.bar(
+                df_counts, x="test", y="pairs_with_drift",
+                title=_sanitize_text("Pairs with drift by test"),
+                labels={"test": "Test", "pairs_with_drift": "Pairs with drift"}
+            )
+            _safe_plot(fig_cnt)
+
+    # ===== Pairwise heatmaps and details for a chosen test =====
+    if pairwise and scope_blocks:
+        _safe_markdown("## 🗺 Pairwise matrices")
+        tests_available = list(pairwise.keys())
+        tsel = st.selectbox("Select test", options=tests_available, index=0, key="drift_test_select")
+        show_only_drift = st.checkbox("Show only pairs with drift", value=False, key="drift_only_pairs")
+
+        value_key, label, colorscale = _value_key_and_label(tsel)
+        M, F = _make_matrix_for_test(tsel, scope_blocks)
+
+        # Optional: show only drift pairs
+        if show_only_drift and not F.empty and not M.empty:
+            mask = F.values.copy()
+            for i in range(mask.shape[0]):
+                mask[i, i] = False
+            M = M.where(pd.DataFrame(mask, index=M.index, columns=M.columns))
+
+        if M is not None and not M.empty:
+            # KPIs for this view
+            n_sc = len([b for b in scope_blocks if b in M.index])
+            tot_pairs = n_sc * (n_sc - 1) // 2
+            flagged_pairs = int(np.triu(F.values, k=1).sum()) if n_sc >= 2 else 0
+            k1, k2 = st.columns(2)
+            k1.metric("Pairs in scope", tot_pairs)
+            k2.metric("Pairs with drift (selected test)", flagged_pairs)
+
+            heat = go.Heatmap(
+                z=M.values,
+                x=[_sanitize_text(str(c)) for c in M.columns],
+                y=[_sanitize_text(str(r)) for r in M.index],
+                coloraxis="coloraxis",
+                hoverongaps=False
+            )
+            heat_fig = go.Figure(data=[heat])
+            heat_fig.update_layout(
+                title=_sanitize_text(f"{tsel} pairwise matrix – {label}"),
+                xaxis=dict(title="Block"),
+                yaxis=dict(title="Block"),
+                coloraxis=dict(colorscale=colorscale, colorbar=dict(title=_sanitize_text(label))),
+                height=520,
+                margin=dict(l=40, r=20, t=60, b=40),
+            )
+            # mark drift cells
+            anns = []
+            for i, r in enumerate(M.index):
+                for j, c in enumerate(M.columns):
+                    if i == j:
+                        continue
+                    try:
+                        if bool(F.loc[r, c]):
+                            anns.append(dict(
+                                x=_sanitize_text(str(c)), y=_sanitize_text(str(r)),
+                                text="⚠", showarrow=False, font=dict(size=14),
+                                xanchor="center", yanchor="middle"
+                            ))
+                    except Exception:
+                        pass
+            if anns:
+                heat_fig.update_layout(annotations=anns)
+            _safe_plot(heat_fig)
+
+            # Drift partners per block (selected test)
+            _safe_markdown("### 🔢 Drift partners per block (selected test)")
+            drift_counts = {b: int(F.loc[b].sum(skipna=True)) if b in F.index else 0 for b in M.index}
+            df_dc = pd.DataFrame({"block": list(drift_counts.keys()), "pairs_with_drift": list(drift_counts.values())})
+            fig_dc = px.bar(
+                df_dc, x="block", y="pairs_with_drift",
+                title=_sanitize_text(f"Blocks with drift pairs – {tsel}"),
+                labels={"block": _sanitize_text("Block"), "pairs_with_drift": _sanitize_text("Pairs with drift")},
+            )
+            _safe_plot(fig_dc)
+
+            # Distribution of pairwise values
+            vals = []
+            for (i, r) in enumerate(M.index):
+                for (j, c) in enumerate(M.columns):
+                    if j <= i:  # upper triangle only
+                        continue
+                    v = M.loc[r, c]
+                    if v is not None and not np.isnan(v):
+                        vals.append(float(v))
+            if vals:
+                _safe_markdown("### Pairwise values distribution")
+                df_vals = pd.DataFrame({label.split("—")[0].strip(): vals})
+                fig_hist = px.histogram(
+                    df_vals, x=df_vals.columns[0], nbins=30,
+                    title=_sanitize_text(f"Distribution – {tsel} ({label.split('—')[0].strip()})"),
+                    histnorm="probability density"
+                )
+                _safe_plot(fig_hist)
+
+            # Top worst pairs table
+            top_rows = []
+            def _worse_key(v: float) -> float:
+                if tsel in ("KS", "MWU", "CVM"):
+                    return (v if v is not None else 1.0)   # smaller p worse (asc)
+                else:
+                    return (-(v if v is not None else 0.0))  # larger distance worse (desc)
+
+            for (i, r) in enumerate(M.index):
+                for (j, c) in enumerate(M.columns):
+                    if j <= i:
+                        continue
+                    v = M.loc[r, c]
+                    if v is None or np.isnan(v):
+                        continue
+                    top_rows.append((r, c, float(v), bool(F.loc[r, c])))
+
+            if top_rows:
+                top_sorted = sorted(top_rows, key=lambda x: _worse_key(x[2]))[:20]
+                df_top = pd.DataFrame(top_sorted, columns=["block_A", "block_B", "value", "drift"])
+                df_top["drift"] = df_top["drift"].map(lambda z: "YES" if z else "NO")
+                _safe_markdown("### 🏁 Top pairs (worst first)")
+                _safe_table_static(df_top)
+
+            # Thresholds / alpha used (if present in payloads)
+            _safe_markdown("### 🎚 Thresholds / α used (selected test)")
+            # Try to infer thresholds from any payload in the matrix
+            thr_alpha, thr_generic = None, None
+            for payload in (pairwise.get(tsel, {}) or {}).values():
+                if "alpha" in payload and payload["alpha"] is not None:
+                    thr_alpha = payload["alpha"]
+                    break
+            for payload in (pairwise.get(tsel, {}) or {}).values():
+                if "threshold" in payload and payload["threshold"] is not None:
+                    thr_generic = payload["threshold"]
+                    break
+            rows_thr = []
+            if thr_alpha is not None:
+                rows_thr.append({"key": "alpha", "value": thr_alpha})
+            if thr_generic is not None:
+                rows_thr.append({"key": "threshold", "value": thr_generic})
+            if rows_thr:
+                _safe_table_static(pd.DataFrame(rows_thr))
+            else:
+                _safe_markdown("No thresholds found in payloads for this test.")
+        else:
+            _safe_markdown("No values available for this test.")
+
+    # ---- Any-test flags per block
+    by_block_stat = blk.get("by_block_stat_drift", {}) or {}
+    if by_block_stat:
+        _safe_markdown("## 🚩 Stat-drift flags by block (any test)")
+        # Respect block filter
+        rows = [{"block": b, "flag": int(bool(v))}
+                for b, v in by_block_stat.items()
+                if (block_filter == "(All)" or str(b) == block_filter)]
+        if rows:
+            df_flags = pd.DataFrame(rows)
+            fig_flags = px.bar(
+                df_flags, x="block", y="flag",
+                title=_sanitize_text("Blocks flagged in any pairwise test"),
+                labels={"block": _sanitize_text("Block"), "flag": _sanitize_text("Flag")}
+            )
+            _safe_plot(fig_flags)
+
+    # ---- Feature Explorer
+    _safe_markdown("## 🔎 Feature Explorer (Block vs Block)")
+    cfg_path = os.path.join("pipelines", pipeline_name, "config", "config.json")
     data_dir = None
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            cfg = json.load(f)
+    if os.path.exists(cfg_path):
+        cfg = _read_json_cached(cfg_path, _mtime(cfg_path)) or {}
         data_dir = cfg.get("data_dir")
 
-    # Blocks timeline (if exists)
-    blocks_report_path = os.path.join(metrics_dir, "blocks_training_report.json")
-    if os.path.exists(blocks_report_path):
-        try:
-            with open(blocks_report_path, "r") as f:
-                rpt = json.load(f)
-            st.markdown("## 🧭 Blocks decisions timeline")
-            if isinstance(rpt.get("decisions"), list) and rpt["decisions"]:
-                df_dec = pd.DataFrame(rpt["decisions"])
-                st.dataframe(df_dec)
-                cnt = df_dec["decision"].value_counts()
-                st.plotly_chart(px.bar(x=cnt.index, y=cnt.values, title="Decisions count"), use_container_width=True)
-        except Exception as e:
-            st.info(f"(optional) Could not load blocks_training_report.json: {e}")
-
-    # Load drift JSON
-    drift_path = os.path.join(metrics_dir, "drift_results.json")
-    if not os.path.exists(drift_path):
-        st.info("No drift results saved yet.")
+    control_file = os.path.join("pipelines", pipeline_name, "control", "control_file.txt")
+    if not (data_dir and os.path.exists(control_file)):
+        _safe_markdown("Dataset not available for feature explorer.")
+        return
+    with open(control_file, "r") as f:
+        lines = [x.strip() for x in f.readlines() if x.strip()]
+    if not lines:
+        _safe_markdown("Dataset not available for feature explorer.")
+        return
+    last_file = lines[-1].split(",")[0]
+    curr_path = os.path.join(data_dir, last_file)
+    if not os.path.exists(curr_path):
+        _safe_markdown("Dataset not available for feature explorer.")
+        return
+    df = _load_any_dataset_cached(curr_path, _mtime(curr_path))
+    if df is None or df.empty:
+        _safe_markdown("Dataset not available for feature explorer.")
+        return
+    bc = _detect_block_col(pipeline_name, df)
+    if bc is None or bc not in df.columns:
+        _safe_markdown("No block column in dataset.")
         return
 
-    with open(drift_path, "r") as f:
-        results = json.load(f)
-    if not results:
-        st.warning("Drift results are empty.")
+    blocks = [str(b) for b in _sorted_blocks(df[bc])]
+    if len(blocks) < 2:
+        _safe_markdown("Need at least two blocks to compare.")
         return
 
-    tests = results.get("tests", {})
-    drift_flags = results.get("drift", {})
-
-    # Decision Badge
-    decision = results.get("decision")
-    if decision:
-        if decision == "no_drift":
-            st.success("🟢 No drift detected – current model maintained")
-        elif decision == "previous_promoted":
-            reason = results.get("promotion_reason")
-            msg = "🔄 Previous model promoted due to better performance"
-            if reason:
-                msg += f" (reason: `{reason}`)"
-            st.warning(msg)
-        elif decision == "retrain":
-            st.error("🛠 Retraining triggered due to drift")
-        elif decision == "train":
-            st.info("🆕 First run: training from scratch")
-        elif decision == "end_error":
-            st.warning("⚠️ Ended with error while loading current model")
-        else:
-            st.info(f"ℹ️ Decision: {decision}")
-
-    # Summary
-    has_drift_section = isinstance(drift_flags, dict) and len(drift_flags) > 0
-    if has_drift_section:
-        st.markdown("## 📌 Drift Summary")
-        promoted_key = "promoted_model" if "promoted_model" in results else ("modelo_promovido" if "modelo_promovido" in results else None)
-        if promoted_key is not None:
-            val = results.get(promoted_key)
-            if val is True:
-                st.success("📌 The previous model was promoted to the current one.")
-                reason = results.get("promotion_reason")
-                if reason:
-                    st.info(f"**Promotion reason:** `{reason}`")
-            elif val is False:
-                st.info("ℹ️ The previous model was NOT promoted.")
-            elif val == "error":
-                st.warning("⚠️ Error comparing with the previous model.")
-
-        summary_data = [
-            {"Test": k, "Result": "⚠️ Drift detected" if bool(v) else "✅ No drift detected"} for k, v in drift_flags.items()
-        ]
-        summary_df = pd.DataFrame(summary_data)
-        total = len(summary_df)
-        detected = (summary_df["Result"] == "⚠️ Drift detected").sum()
-        st.success(f"✅ Tests without drift: {total - detected} of {total}")
-        st.error(f"⚠️ Tests with drift: {detected} of {total}")
-
-        def _color_rows(val: str):
-            return (
-                "background-color: #ff4d4d; color: white; font-weight: bold;"
-                if "Drift detected" in val
-                else "background-color: #33cc33; color: white; font-weight: bold;"
-            )
-
-        st.dataframe(summary_df.style.map(_color_rows, subset=["Result"]))
-    else:
-        st.info("No drift results found.")
-        return
-
-    # Performance tables
-    st.markdown("## 🧪 Performance Checks")
-
-    def _style_bool(val: bool):
-        return "background-color: #ff4d4d; color: white; font-weight: 600;" if val else "background-color: #33cc33; color: white; font-weight: 600;"
-
-    def _render_perf_table(perf_dict: dict, title: str):
-        if not isinstance(perf_dict, dict) or len(perf_dict) == 0:
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        b1 = st.selectbox("Block A", options=blocks, index=0, key="fx_b1")
+    with c2:
+        b2 = st.selectbox("Block B", options=[b for b in blocks if b != b1], index=0, key="fx_b2")
+    with c3:
+        num_cols = [c for c in df.select_dtypes(include=np.number).columns if c != bc]
+        if not num_cols:
+            _safe_markdown("No numeric columns.")
             return
-        rows = []
-        for metric_name, payload in perf_dict.items():
-            value = (
-                payload.get(metric_name.lower())
-                or payload.get("accuracy")
-                or payload.get("balanced_accuracy")
-                or payload.get("F1")
-                or payload.get("RMSE")
-                or payload.get("R2")
-                or payload.get("MAE")
-                or payload.get("MSE")
-                or payload.get("value")
-            )
-            rows.append(
-                {
-                    "Metric": metric_name,
-                    "Value": value,
-                    "Threshold": payload.get("threshold"),
-                    "Drift": bool(payload.get("drift", False)),
-                }
-            )
-        df = pd.DataFrame(rows)
-        st.markdown(f"### {title}")
-        st.dataframe(df.style.map(lambda v: _style_bool(v) if isinstance(v, bool) else "", subset=["Drift"]))
+        col = st.selectbox("Variable", options=num_cols, index=0, key="fx_col")
 
-    if "Performance_Current" in tests:
-        _render_perf_table(tests["Performance_Current"], "Current Model vs thresholds")
-    if "Performance_Previous" in tests:
-        _render_perf_table(tests["Performance_Previous"], "Previous Model vs thresholds")
-    if "Performance_Comparison" in tests and isinstance(tests["Performance_Comparison"], dict):
-        comp_rows = []
-        for mname, payload in tests["Performance_Comparison"].items():
-            metric = payload.get("metric", mname)
-            prev_v = payload.get("prev")
-            curr_v = payload.get("current")
-            thr = payload.get("threshold")
-            change = payload.get("relative_drop", payload.get("relative_increase"))
-            # drift key: prueba exacta y prefijo como fallback
-            dk_exact = f"comparison::{metric}"
-            dk_prefix = f"comparison::{metric.split('_')[0]}"
-            comp_rows.append(
-                {
-                    "Metric": metric,
-                    "Previous": prev_v,
-                    "Current": curr_v,
-                    "Relative change": change if change is None else f"{float(change) * 100:.2f}%",
-                    "Threshold": thr,
-                    "Drift": bool(drift_flags.get(dk_exact, drift_flags.get(dk_prefix, False))),
-                }
-            )
-        if comp_rows:
-            st.markdown("### 🔁 Previous vs Current (Relative change)")
-            st.dataframe(pd.DataFrame(comp_rows).style.map(lambda v: _style_bool(v) if isinstance(v, bool) else "", subset=["Drift"]))
+    bins = st.slider("Bins", min_value=10, max_value=100, value=40, step=5, key="fx_bins")
+    norm = st.checkbox("Normalize to density", value=True, key="fx_norm")
+    mode = st.radio("Plot", ["Histogram", "ECDF", "Violin/Box"], horizontal=True, key="fx_plot_mode")
 
-    # Multivariate tests
-    if ("MMD" in tests) or ("Energy Distance" in tests):
-        st.markdown("## 🧭 Multivariate Tests")
-        cols = st.columns(2)
-        if "MMD" in tests:
-            m = tests["MMD"]
-            with cols[0]:
-                st.markdown("**MMD**")
-                st.write(f"Statistic: `{m.get('statistic')}`")
-                pv = m.get("p_value", m.get("pvalue", m.get("p")))
-                if pv is not None:
-                    st.write(f"p-value: `{pv}`")
-                if m.get("kernel"):
-                    st.write(f"Kernel: `{m.get('kernel')}`")
-                if m.get("bandwidth") is not None:
-                    st.write(f"Bandwidth: `{m.get('bandwidth')}`")
-                st.markdown("Drift: " + ("**⚠️ YES**" if bool(m.get("drift")) else "**✅ NO**"))
-        if "Energy Distance" in tests:
-            e = tests["Energy Distance"]
-            with cols[1]:
-                st.markdown("**Energy Distance**")
-                dist = e.get("distance", e.get("emd_distance", e.get("emd_norm")))
-                st.write(f"Distance: `{dist}`")
-                pv = e.get("p_value", e.get("pvalue", e.get("p")))
-                if pv is not None:
-                    st.write(f"p-value: `{pv}`")
-                st.markdown("Drift: " + ("**⚠️ YES**" if bool(e.get("drift")) else "**✅ NO**"))
+    s1 = pd.to_numeric(df.loc[df[bc].astype(str) == b1, col], errors="coerce").dropna().to_numpy()
+    s2 = pd.to_numeric(df.loc[df[bc].astype(str) == b2, col], errors="coerce").dropna().to_numpy()
 
-    # Load reference and current dataset
-    prev_path = os.path.join(control_dir, "previous_data.csv")
-    df_prev = pd.read_csv(prev_path) if os.path.exists(prev_path) else None
+    def _stats(arr):
+        if arr.size == 0:
+            return {"n": 0, "mean": None, "std": None, "min": None, "max": None, "median": None}
+        return {"n": int(arr.size), "mean": float(np.mean(arr)), "std": float(np.std(arr)),
+                "min": float(np.min(arr)), "max": float(np.max(arr)), "median": float(np.median(arr))}
 
-    df_current = None
-    last_file = None
-    control_file = os.path.join(control_dir, "control_file.txt")
-    if os.path.exists(control_file) and data_dir:
-        try:
-            with open(control_file, "r") as f:
-                lines = [x.strip() for x in f.readlines() if x.strip()]
-            if lines:
-                last_file = lines[-1].split(",")[0]
-                cand = os.path.join(data_dir, last_file)
-                if os.path.exists(cand):
-                    df_current = _load_any_dataset(cand)
-        except Exception as e:
-            st.error(f"Error loading latest dataset: {e}")
-            df_current = None
+    _safe_markdown("### Summary stats")
+    _safe_table_static(pd.DataFrame([
+        {"block": b1, **_stats(s1)},
+        {"block": b2, **_stats(s2)},
+    ]))
 
-    st.markdown("## 🔎 Feature Explorer (Reference vs Block)")
-    if df_prev is None or df_current is None:
-        st.info("I need both: `previous_data.csv` and the latest dataset. Skipping plots.")
-        return
-
-    # >>> BLOQUES: selector de bloque del dataset actual
-    block_col = _detect_block_col(pipeline_name, df_current)
-    if block_col and block_col in df_current.columns:
-        block_options = _sorted_blocks(df_current[block_col])
-        sel_block = st.selectbox("Select block to compare against reference window", options=[str(b) for b in block_options])
-        df_curr_view = df_current[df_current[block_col].astype(str) == sel_block]
+    if mode == "Histogram":
+        histnorm = "probability density" if norm else None
+        fig = go.Figure()
+        if s1.size:
+            fig.add_trace(go.Histogram(x=s1, name=_sanitize_text(f"B{b1}"), nbinsx=bins, histnorm=histnorm, opacity=0.55))
+        if s2.size:
+            fig.add_trace(go.Histogram(x=s2, name=_sanitize_text(f"B{b2}"), nbinsx=bins, histnorm=histnorm, opacity=0.55))
+        fig.update_layout(
+            barmode="overlay",
+            title=_sanitize_text(f"Histogram – {col}"),
+            xaxis_title=_sanitize_text(col),
+            yaxis_title=_sanitize_text("Density" if norm else "Count"),
+        )
+        _safe_plot(fig)
+    elif mode == "ECDF":
+        df_ecdf = pd.DataFrame({col: np.concatenate([s1, s2]), "block": [f"B{b1}"] * len(s1) + [f"B{b2}"] * len(s2)})
+        fig = px.ecdf(df_ecdf, x=col, color="block", title=_sanitize_text(f"ECDF – {col}"))
+        _safe_plot(fig)
     else:
-        st.info("No block column detected in current dataset — using full dataset as 'current'.")
-        df_curr_view = df_current
+        df_v = pd.DataFrame({col: np.concatenate([s1, s2]), "block": [f"B{b1}"] * len(s1) + [f"B{b2}"] * len(s2)})
+        fig = go.Figure()
+        for b in [f"B{b1}", f"B{b2}"]:
+            fig.add_trace(go.Violin(
+                y=df_v[df_v["block"] == b][col],
+                x=[b] * len(df_v[df_v["block"] == b]),
+                name=_sanitize_text(b),
+                box_visible=True,
+                meanline_visible=True
+            ))
+        fig.update_layout(title=_sanitize_text(f"Violin/Box – {col}"), xaxis_title="Block", yaxis_title=_sanitize_text(col))
+        _safe_plot(fig)
 
-    # Keep only common numeric columns (quita target típicos si están)
-    common_cols = [c for c in df_prev.columns if c in df_curr_view.columns]
-    num_cols = [
-        c
-        for c in common_cols
-        if pd.api.types.is_numeric_dtype(df_prev[c]) and pd.api.types.is_numeric_dtype(df_curr_view[c])
-    ]
-    for cand in ("class", "target", "y"):
-        if cand in num_cols:
-            num_cols.remove(cand)
-
-    if not num_cols:
-        st.info("No common numeric columns found for distribution plots.")
-        return
-
-    left, right = st.columns([2, 1])
-    with right:
-        col = st.selectbox("Variable", options=num_cols, index=0)
-        bins = st.slider("Bins", min_value=10, max_value=100, value=40, step=5)
-        show_logx = st.checkbox("Log X-axis", value=False)
-        show_norm = st.checkbox("Normalize histograms", value=True)
-
-    s_prev = df_prev[col].dropna().astype(float)
-    s_curr = df_curr_view[col].dropna().astype(float)
-
-    with left:
-        st.markdown(f"### {col}")
-
-    # Histogram overlay
-    hist_fig = go.Figure()
-    hist_fig.add_trace(
-        go.Histogram(
-            x=s_prev, name="Reference", opacity=0.55, nbinsx=bins, histnorm="probability" if show_norm else ""
-        )
-    )
-    hist_fig.add_trace(
-        go.Histogram(
-            x=s_curr,
-            name="Selected block" if (block_col and block_col in df_current.columns) else "Current",
-            opacity=0.55,
-            nbinsx=bins,
-            histnorm="probability" if show_norm else "",
-        )
-    )
-    hist_fig.update_layout(
-        barmode="overlay", title=f"Histogram – {col}", xaxis_title=col, yaxis_title="Density" if show_norm else "Count"
-    )
-    if show_logx:
-        hist_fig.update_xaxes(type="log")
-    st.plotly_chart(hist_fig, use_container_width=True)
-
-    # ECDF overlay
-    def _ecdf(x):
-        x_sorted = np.sort(x)
-        y = np.arange(1, len(x_sorted) + 1) / len(x_sorted)
-        return x_sorted, y
-
-    x1, y1 = _ecdf(s_prev.values)
-    x2, y2 = _ecdf(s_curr.values)
-    ecdf_fig = go.Figure()
-    ecdf_fig.add_trace(go.Scatter(x=x1, y=y1, mode="lines", name="Reference"))
-    ecdf_fig.add_trace(
-        go.Scatter(
-            x=x2, y=y2, mode="lines", name="Selected block" if (block_col and block_col in df_current.columns) else "Current"
-        )
-    )
-    ecdf_fig.update_layout(title=f"ECDF – {col}", xaxis_title=col, yaxis_title="Cumulative probability")
-    if show_logx:
-        ecdf_fig.update_xaxes(type="log")
-    st.plotly_chart(ecdf_fig, use_container_width=True)
-
-    # Q–Q plot
-    q = np.linspace(0.01, 0.99, 99)
-    q_prev = np.quantile(s_prev, q)
-    q_curr = np.quantile(s_curr, q)
-    qq_fig = go.Figure()
-    qq_fig.add_trace(go.Scatter(x=q_prev, y=q_curr, mode="markers", name="Q–Q"))
-    minv = float(np.nanmin([q_prev.min(), q_curr.min()]))
-    maxv = float(np.nanmax([q_prev.max(), q_curr.max()]))
-    qq_fig.add_trace(go.Scatter(x=[minv, maxv], y=[minv, maxv], mode="lines", name="y=x", line=dict(dash="dash")))
-    qq_fig.update_layout(title=f"Q–Q Plot – {col}", xaxis_title="Reference quantiles", yaxis_title="Block quantiles")
-    if show_logx:
-        qq_fig.update_xaxes(type="log")
-        qq_fig.update_yaxes(type="log")
-    st.plotly_chart(qq_fig, use_container_width=True)
-
-    # Violin + Box
-    vb_fig = go.Figure()
-    vb_fig.add_trace(go.Violin(y=s_prev, name="Reference", box_visible=True, meanline_visible=True, points="all", jitter=0.1))
-    vb_fig.add_trace(
-        go.Violin(
-            y=s_curr,
-            name="Selected block" if (block_col and block_col in df_current.columns) else "Current",
-            box_visible=True,
-            meanline_visible=True,
-            points="all",
-            jitter=0.1,
-        )
-    )
-    vb_fig.update_layout(title=f"Violin + Box – {col}", yaxis_title=col)
-    st.plotly_chart(vb_fig, use_container_width=True)
-
-    # Drift Heatmap
-    st.markdown("## 🗺️ Drift Heatmap")
-    metric_options = []
-    if "Kolmogorov-Smirnov" in tests:
-        metric_options.append("KS p-value")
-    if "PSI" in tests:
-        metric_options.append("PSI")
-    if "Hellinger Distance" in tests:
-        metric_options.append("Hellinger")
-    if "Earth Mover's Distance" in tests:
-        metric_options.append("EMD")
-    if not metric_options:
-        st.info("No per-feature drift metrics found to build a heatmap.")
-        return
-
-    msel = st.selectbox("Heatmap metric", options=metric_options, index=0)
-    feat_vals = {}
-
-    if msel == "KS p-value" and "Kolmogorov-Smirnov" in tests:
-        for feat, payload in tests["Kolmogorov-Smirnov"].items():
-            val = payload.get("p_value", payload.get("pvalue", payload.get("p")))
-            feat_vals[feat] = float(val) if val is not None else None
-    elif msel == "PSI" and "PSI" in tests:
-        for feat, payload in tests["PSI"].items():
-            if "psi" in payload and payload["psi"] is not None:
-                feat_vals[feat] = float(payload["psi"])
-    elif msel == "Hellinger" and "Hellinger Distance" in tests:
-        for feat, payload in tests["Hellinger Distance"].items():
-            v = payload.get("hellinger") or payload.get("hellinger_distance")
-            feat_vals[feat] = float(v) if v is not None else None
-    elif msel == "EMD" and "Earth Mover's Distance" in tests:
-        for feat, payload in tests["Earth Mover's Distance"].items():
-            v = payload.get("emd_norm") or payload.get("emd_distance") or payload.get("emd") or payload.get("distance")
-            feat_vals[feat] = float(v) if v is not None else None
-
-    if not feat_vals:
-        st.info("No values available for the selected metric.")
-        return
-
-    heat_df = pd.DataFrame({"feature": list(feat_vals.keys()), "value": list(feat_vals.values())}).dropna()
-    if heat_df.empty:
-        st.info("No numeric values available for heatmap.")
-        return
-
-    heat_fig = go.Figure(
-        data=go.Heatmap(
-            z=heat_df["value"].values.reshape(1, -1),
-            x=heat_df["feature"].tolist(),
-            y=[msel],
-            coloraxis="coloraxis",
-        )
-    )
-    heat_fig.update_layout(
-        title=f"Drift heatmap by feature – {msel}",
-        xaxis=dict(title="Feature", tickangle=-45),
-        yaxis=dict(title=""),
-        coloraxis=dict(colorbar=dict(title=msel)),
-    )
-    st.plotly_chart(heat_fig, use_container_width=True)
-
-
-# =========================
-# Train / Retrain Section
-# =========================
 
 def show_train_section(pipeline_name):
-    """Displays training or retraining metrics (ahora muestra bloques si hay)."""
-    st.subheader("🤖 Training / Retraining Results")
+    st.subheader("🤖 Training / Retraining Results (block_wise)")
     train_path = os.path.join("pipelines", pipeline_name, "metrics", "train_results.json")
 
     if not os.path.exists(train_path):
-        st.info("No training results found yet.")
+        _safe_markdown("No training results found yet.")
         return
 
-    with open(train_path, "r") as f:
-        results = json.load(f)
-
+    results = _read_json_cached(train_path, _mtime(train_path)) or {}
     if not results:
-        st.warning("Empty training results.")
+        _safe_markdown("Empty training results.")
         return
 
-    MODE_LABELS = {
-        0: "Full retraining",
-        1: "Incremental (partial_fit)",
-        2: "Windowed retraining (rolling)",
-        3: "Ensemble old + new (stacking)",
-        4: "Stacking old + cloned(old)",
-        5: "Replay mix (prev + current)",
-        6: "Recalibration (Platt/Isotonic)",
-    }
+    # Download JSON
+    try:
+        st.download_button(
+            "⬇ Download train_results.json",
+            data=json.dumps(results, indent=2),
+            file_name="train_results.json",
+            mime="application/json",
+        )
+    except Exception:
+        pass
 
-    st.markdown("## 📌 General Information")
-    _type = results.get("tipo", results.get("type", "-"))
-    _file = results.get("archivo", results.get("file", "-"))
+    _safe_markdown("## General Information")
+    _type = str(results.get("type", results.get("tipo", "-"))).lower()  # "tipo" is Spanish for "type"
     _date = results.get("timestamp", "-")
-    _model = results.get("modelo", results.get("model", "-"))
+    _model = results.get("model", results.get("modelo", "-"))  # "modelo" is Spanish for "model"
+    _safe_write(f"*Type:* {_sanitize_text(_type)}")
+    _safe_write(f"*Date:* {_sanitize_text(_date)}")
+    _safe_write(f"*Model:* {_sanitize_text(_model)}")
 
-    cols = st.columns(2)
-    with cols[0]:
-        st.write(f"**Type:** {_type}")
-        st.write(f"**File:** {_file}")
-        st.write(f"**Date:** {_date}")
-    with cols[1]:
-        st.write(f"**Model:** {_model}")
-        _strategy = results.get("strategy")
-        if _strategy:
-            st.write(f"**Strategy:** {_strategy}")
+    train_blocks = [str(b) for b in (results.get("train_blocks") or [])]
+    retrained_blocks = [str(b) for b in (results.get("retrained_blocks") or [])]
+    is_retrain = (_type == "retrain" and len(retrained_blocks) > 0)
 
-        if _type == "retrain":
-            mode = results.get("mode", None)
-            fallback = results.get("fallback", None)
+    # KPIs
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Train size", int(results.get("train_size", 0)))
+    k2.metric("Eval size", int(results.get("eval_size", 0)))
+    k3.metric("Retrained blocks", len(retrained_blocks) if is_retrain else 0)
 
-            if mode is not None:
-                label = MODE_LABELS.get(mode, f"Unknown ({mode})")
-                st.write(f"**Mode:** {mode} — {label}")
-            if fallback is not None:
-                st.markdown("**Fallback:** " + ("🟠 Enabled (used)" if bool(fallback) else "🟢 Not used"))
+    # Toggle to focus only retrained blocks
+    show_only_retrained = False
+    if is_retrain:
+        show_only_retrained = st.checkbox(
+            "Show only retrained blocks",
+            value=True,
+            help="When enabled, the selector and tables will only include the blocks retrained in this run.",
+            key="show_only_retrained_blocks",
+        )
 
-            gs = results.get("gridsearch", None)
-            if isinstance(gs, dict) and gs:
-                st.markdown("**GridSearchCV:**")
-                if "best_params" in gs:
-                    bp = gs["best_params"]
-                    if isinstance(bp, dict) and bp:
-                        st.table(pd.DataFrame([bp]).transpose().rename(columns={0: "best_params"}))
-                    else:
-                        st.write(bp)
-                if "cv" in gs and gs["cv"] is not None:
-                    st.write(f"**CV folds:** {gs['cv']}")
-            elif isinstance(gs, str):
-                st.write(f"**GridSearchCV:** {gs}")
-
-            extra_rows = []
-            for k in ["window_size_used", "window_size"]:
-                if k in results:
-                    extra_rows.append(("Window size", results[k]))
-                    break
-            if "calibration" in results:
-                extra_rows.append(("Calibration", results["calibration"]))
-            if "replay_frac_old" in results:
-                extra_rows.append(("Replay frac (old)", results["replay_frac_old"]))
-            if "meta" in results:
-                extra_rows.append(("Meta", results["meta"]))
-            if "components" in results:
-                extra_rows.append(("Ensemble components", results["components"]))
-            for k, nice in [
-                ("train_size", "Train size"),
-                ("eval_size", "Eval size"),
-                ("epochs", "Epochs"),
-                ("learning_rate", "Learning rate"),
-                ("early_stopping", "Early stopping"),
-            ]:
-                if k in results:
-                    extra_rows.append((nice, results[k]))
-            if extra_rows:
-                st.markdown("**Extra retrain details:**")
-                st.table(pd.DataFrame(extra_rows, columns=["Key", "Value"]))
-
-    st.markdown("## 📊 Metrics")
-    if "classification_report" in results:
-        st.markdown("### 📈 Classification Metrics")
-        bal_acc = results.get("balanced_accuracy", results.get("balanced_accuracy_score"))
-        if bal_acc is not None:
-            try:
-                st.write(f"**Balanced Accuracy:** {float(bal_acc):.4f}")
-            except Exception:
-                st.write(f"**Balanced Accuracy:** {bal_acc}")
-        clf_report = results["classification_report"]
-        st.markdown("#### 📋 Classification Report")
-        clf_report_df = pd.DataFrame(clf_report)
-        if set(["precision", "recall", "f1-score", "support"]).issubset(clf_report_df.index):
-            st.dataframe(clf_report_df.transpose())
-        else:
-            st.dataframe(clf_report_df)
-    elif all(k in results for k in ["r2", "rmse", "mae", "mse"]):
-        st.markdown("### 📈 Regression Metrics")
-        try:
-            st.write(f"**R2:** {float(results['r2']):.4f}")
-            st.write(f"**RMSE:** {float(results['rmse']):.4f}")
-            st.write(f"**MAE:** {float(results['mae']):.4f}")
-            st.write(f"**MSE:** {float(results['mse']):.4f}")
-        except Exception:
-            st.write(f"**R2:** {results['r2']}")
-            st.write(f"**RMSE:** {results['rmse']}")
-            st.write(f"**MAE:** {results['mae']}")
-            st.write(f"**MSE:** {results['mse']}")
+    # Block selector: All + list depending on the toggle
+    selector_pool = retrained_blocks if (is_retrain and show_only_retrained) else train_blocks
+    if selector_pool:
+        sel_label = "Filter block (Retrained only)" if (is_retrain and show_only_retrained) \
+                    else "Filter block (Train blocks only)"
+        sel_train = st.selectbox(
+            sel_label,
+            options=["(All)"] + selector_pool,
+            index=0,
+            key="train_block_selector"
+        )
     else:
-        st.warning("No valid metrics found in the training results.")
+        sel_train = "(All)"
 
-    if "error" in results:
-        st.error(f"Error: {results['error']}")
+    # Per-block table (in-sample)
+    per_blk = results.get("per_block_train", {}) or {}
+    if per_blk:
+        _safe_markdown("### 🧱 Per-block (in-sample)")
+        df_blk = pd.DataFrame.from_dict(per_blk, orient="index").reset_index().rename(columns={"index": "block"})
 
-    with st.expander("🔎 Raw training JSON"):
-        st.json(results)
+        # Filter by block (All / one)
+        if sel_train != "(All)":
+            df_blk = df_blk[df_blk["block"].astype(str) == sel_train]
+        # Filter by "only retrained"
+        elif is_retrain and show_only_retrained and retrained_blocks:
+            df_blk = df_blk[df_blk["block"].astype(str).isin(retrained_blocks)]
+
+        if df_blk.empty:
+            _safe_markdown("No per-block metrics to display for the selected filter.")
+        else:
+            _safe_table(df_blk)
+
+            # Chart by block
+            metric_for_line = None
+            for m in ["accuracy", "balanced_accuracy", "f1", "r2", "rmse"]:
+                if m in df_blk.columns:
+                    metric_for_line = m
+                    break
+            if metric_for_line:
+                df_line = _sanitize_df(df_blk.copy())
+                try:
+                    order = _sorted_blocks(df_line["block"])
+                    df_line["block"] = pd.Categorical(
+                        df_line["block"].astype(str),
+                        categories=[str(o) for o in order],
+                        ordered=True
+                    )
+                    df_line = df_line.sort_values("block")
+                except Exception:
+                    df_line["block"] = df_line["block"].astype(str)
+                fig = px.line(
+                    df_line, x="block", y=metric_for_line, markers=True,
+                    title=_sanitize_text(f"{metric_for_line} by block (Train subset)"),
+                    labels={"block": _sanitize_text("Block"), metric_for_line: _sanitize_text(metric_for_line)}
+                )
+                _safe_plot(fig)
+    else:
+        _safe_markdown("No per-block training metrics found in the report.")
+
+    # Raw JSON (useful for debugging)
+    with st.expander(_sanitize_text("🔎 Raw training JSON")):
+        _safe_json_display(results)
 
 
 # =========================
-# Logs Section
+# Logs Tab
 # =========================
-
 def parse_logs_to_df(log_text: str) -> pd.DataFrame:
     log_pattern = re.compile(
         r"(?P<date>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - "
@@ -924,51 +1051,62 @@ def parse_logs_to_df(log_text: str) -> pd.DataFrame:
             rows.append({"date": None, "pipeline": None, "level": None, "message": line})
     return pd.DataFrame(rows)
 
-
 def show_logs_section(pipeline_name):
     st.subheader("📜 Pipeline Logs")
     logs_path = os.path.join("pipelines", pipeline_name, "logs", "pipeline.log")
     error_logs_path = os.path.join("pipelines", pipeline_name, "logs", "pipeline_errors.log")
     warning_logs_path = os.path.join("pipelines", pipeline_name, "logs", "pipeline_warnings.log")
 
-    st.markdown("### 📘 General Log")
-    general_log_text = load_log(logs_path)
-    df_general = parse_logs_to_df(general_log_text)
-    if not df_general.empty:
-        st.dataframe(
-            df_general.style.map(
-                lambda v: "color: red;"
-                if v == "ERROR"
-                else "color: orange;"
-                if v == "WARNING"
-                else "color: green;",
-                subset=["level"],
+    _safe_markdown("### 📘 General Log")
+    general_log_text = _read_text_cached(logs_path, _mtime(logs_path))
+    if general_log_text and general_log_text.strip():
+        df_general = parse_logs_to_df(general_log_text)
+        if not df_general.empty:
+            df_general["message"] = df_general["message"].map(_sanitize_text)
+
+            # Filters: level + search query
+            lcol, qcol = st.columns([1, 3])
+            level_sel = lcol.selectbox("Level", options=["ALL", "INFO", "WARNING", "ERROR"], index=0, key="log_level")
+            query = qcol.text_input("Search text", value="", key="log_query")
+
+            df_f = df_general.copy()
+            if level_sel != "ALL":
+                df_f = df_f[df_f["level"] == level_sel]
+            if query:
+                df_f = df_f[df_f["message"].str.contains(query, case=False, na=False)]
+
+            st.dataframe(
+                df_f.style.map(
+                    lambda v: "color: red;" if v == "ERROR"
+                    else ("color: orange;" if v == "WARNING" else "color: green;"),
+                    subset=["level"],
+                ),
+                use_container_width=True
             )
-        )
+        else:
+            _safe_markdown("No general logs found.")
     else:
-        st.info("No general logs found.")
+        _safe_markdown("No general logs found.")
 
-    st.markdown("### ❌ Error Log")
-    error_log_text = load_log(error_logs_path)
-    if error_log_text.strip():
-        st.code(error_log_text, language="bash")
+    _safe_markdown("### Error Log")
+    error_log_text = _read_text_cached(error_logs_path, _mtime(error_logs_path))
+    if error_log_text and error_log_text.strip():
+        st.code(_sanitize_text(error_log_text), language="bash")
     else:
-        st.success("✅ No errors found.")
+        st.success(_sanitize_text("No errors found."))
 
-    st.markdown("### ⚠️ Warning Log")
-    warning_log_text = load_log(warning_logs_path)
-    if warning_log_text.strip():
-        st.code(warning_log_text, language="bash")
+    _safe_markdown("### ⚠ Warning Log")
+    warning_log_text = _read_text_cached(warning_logs_path, _mtime(warning_logs_path))
+    if warning_log_text and warning_log_text.strip():
+        st.code(_sanitize_text(warning_log_text), language="bash")
     else:
-        st.success("✅ No warnings found.")
-
+        st.success(_sanitize_text("No warnings found."))
 
 # =========================
-# Main App (Page Layout)
+# Main App
 # =========================
-
-st.set_page_config(page_title="Monitor ML Pipeline (Blocks)", layout="wide")
-st.title("📌 Monitor (Blocks)")
+st.set_page_config(page_title="Monitor ML Pipeline (Block-wise)", layout="wide")
+st.title("Monitor (Block-wise)")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--pipeline_name", type=str, required=True)
@@ -977,20 +1115,32 @@ pipeline_name = args.pipeline_name
 
 config_path = os.path.join("pipelines", pipeline_name, "config", "config.json")
 if os.path.exists(config_path):
-    with open(config_path, "r") as f:
-        config = json.load(f)
+    config = _read_json_cached(config_path, _mtime(config_path)) or {}
     pipeline_name = config.get("pipeline_name", pipeline_name)
     data_dir = config.get("data_dir")
 else:
-    st.error("config.json not found. Please start the monitor with a valid pipeline.")
+    st.error(_sanitize_text("config.json not found. Please start the monitor with a valid pipeline."))
     st.stop()
 
 if not data_dir:
-    st.error("`data_dir` missing in config.json.")
+    st.error(_sanitize_text("data_dir missing in config.json."))
     st.stop()
 
-tabs = st.tabs(["📊 Dataset", "📈 Evaluator", "🔍 Drift", "🤖 Train/Retrain", "📜 Logs"])
+tabs = st.tabs(["Dataset", "Evaluator", "Drift", "Train/Retrain", "Logs"])
+# =========================
+# Auto-refresh on control_file change
+# =========================
+control_file = os.path.join("pipelines", pipeline_name, "control", "control_file.txt")
 
+# Inicializa timestamp en session_state si no existe
+if "control_file_mtime" not in st.session_state:
+    st.session_state.control_file_mtime = os.path.getmtime(control_file) if os.path.exists(control_file) else 0.0
+
+# Revisa si ha cambiado
+current_mtime = os.path.getmtime(control_file) if os.path.exists(control_file) else 0.0
+if current_mtime != st.session_state.control_file_mtime:
+    st.session_state.control_file_mtime = current_mtime
+    st.experimental_rerun()
 with tabs[0]:
     show_dataset_section(data_dir, pipeline_name)
 

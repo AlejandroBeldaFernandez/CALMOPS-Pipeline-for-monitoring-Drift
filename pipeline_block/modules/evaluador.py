@@ -1,290 +1,343 @@
-# modules/evaluador.py
+# pipeline/modules/evaluador.py
+from __future__ import annotations
+
 import os
 import json
-import joblib
+from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from datetime import datetime
+import joblib
+
+from sklearn.base import is_classifier
 from sklearn.metrics import (
-    accuracy_score, balanced_accuracy_score, f1_score, classification_report,
-    mean_squared_error, mean_absolute_error, r2_score
+    classification_report, confusion_matrix,
+    accuracy_score, balanced_accuracy_score, f1_score,
+    r2_score, mean_squared_error, mean_absolute_error
 )
 
-def save_eval_results(results: dict, output_dir: str, logger=None):
-    """
-    Persist evaluation results into <output_dir>/eval_results.json.
-    """
-    eval_path = os.path.join(output_dir, "eval_results.json")
+# ------------------------------- utils -------------------------------
 
-    def make_serializable(obj):
-        if isinstance(obj, (np.bool_, bool)): return bool(obj)
-        if isinstance(obj, (np.integer,)): return int(obj)
-        if isinstance(obj, (np.floating,)): return float(obj)
-        if isinstance(obj, np.ndarray): return obj.tolist()
-        if isinstance(obj, list): return [make_serializable(x) for x in obj]
-        if isinstance(obj, dict): return {kk: make_serializable(vv) for kk, vv in obj.items()}
-        return obj
+def _jsonable(obj):
+    if isinstance(obj, (np.bool_, bool)): return bool(obj)
+    if isinstance(obj, (np.integer,)):   return int(obj)
+    if isinstance(obj, (np.floating,)):  return float(obj)
+    if isinstance(obj, (np.ndarray, list, tuple)):
+        return [_jsonable(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _jsonable(v) for k, v in obj.items()}
+    return obj
 
-    serializable_results = make_serializable(results)
-    os.makedirs(output_dir, exist_ok=True)
-    with open(eval_path, "w") as f:
-        json.dump(serializable_results, f, indent=4)
+def _save_json(payload: Dict[str, Any], out_dir: str, name: str = "eval_results.json") -> str:
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, name)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_jsonable(payload), f, indent=4)
+    return path
 
-    if logger:
-        logger.info(f"[EVAL] Results saved at {eval_path}")
+def _detect_block_col(block_col: Optional[str], X: pd.DataFrame) -> Optional[str]:
+    if block_col and block_col in X.columns:
+        return block_col
+    for c in X.columns:
+        lc = str(c).lower()
+        if "block" in lc or lc in ("block_id", "chunk"):
+            return c
+    return None
 
-def calculate_metrics(model, X_test, y_test, is_classification: bool):
-    """
-    Compute global metrics for classification or regression models.
-    Returns:
-        metrics: dict
-        y_pred: np.ndarray
-    """
-    y_pred = model.predict(X_test)
-
-    if is_classification:
-        metrics = {
-            "accuracy": accuracy_score(y_test, y_pred),
-            "balanced_accuracy": balanced_accuracy_score(y_test, y_pred),
-            "f1": f1_score(y_test, y_pred, average="macro"),
-            "classification_report": classification_report(y_test, y_pred, output_dict=True)
-        }
-    else:
-        metrics = {
-            "r2": r2_score(y_test, y_pred),
-            "rmse": mean_squared_error(y_test, y_pred, squared=False),
-            "mae": mean_absolute_error(y_test, y_pred),
-            "mse": mean_squared_error(y_test, y_pred)
-        }
-    return metrics, y_pred
-
-def _metrics_from_preds(y_true, y_pred, is_classification: bool) -> dict:
-    """Compute metrics using precomputed predictions (per-block summaries)."""
-    if is_classification:
-        return {
-            "accuracy": accuracy_score(y_true, y_pred),
-            "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
-            "f1": f1_score(y_true, y_pred, average="macro"),
-        }
-    else:
-        return {
-            "r2": r2_score(y_true, y_pred),
-            "rmse": mean_squared_error(y_true, y_pred, squared=False),
-            "mae": mean_absolute_error(y_true, y_pred),
-            "mse": mean_squared_error(y_true, y_pred),
-        }
-
-def _save_candidate(model, results: dict, candidates_dir: str, base_name: str, logger=None):
-    """
-    Persist a non-approved model and its evaluation results for offline analysis.
-    """
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cand_root = os.path.join(candidates_dir, f"{base_name}__{ts}")
-    os.makedirs(cand_root, exist_ok=True)
-
-    # Save model
-    model_path = os.path.join(cand_root, "model.pkl")
-    joblib.dump(model, model_path)
-
-    # Save eval results (copy)
-    eval_path = os.path.join(cand_root, "eval_results.json")
-    with open(eval_path, "w") as f:
-        json.dump(results, f, indent=4)
-
-    # Minimal meta summary
-    meta = {
-        "approved": results.get("approved", False),
-        "file": results.get("file"),
-        "timestamp": results.get("timestamp"),
-        "metrics_keys": list(results.get("metrics", {}).keys()) if isinstance(results.get("metrics"), dict) else [],
-        "evaluated_block_id": (results.get("blocks") or {}).get("evaluated_block_id"),
-        "reference_blocks": (results.get("blocks") or {}).get("reference_blocks"),
-    }
-    with open(os.path.join(cand_root, "meta.json"), "w") as f:
-        json.dump(meta, f, indent=4)
-
-    if logger:
-        logger.info(f"[CANDIDATE] Saved non-approved model at {cand_root}")
-
-def evaluator(
-    *,
-    model,
-    X_test,
-    y_test,
-    last_processed_file,
-    last_mtime,
-    logger,
-    is_first_model: bool,
-    thresholds_perf: dict,
-    model_dir: str,
-    model_filename: str,
-    control_dir: str,
-    output_dir: str,
-    df: pd.DataFrame,
-    # ---- bloques / reporting ----
-    block_col: str = None,
-    evaluated_block_id: str = None,
-    test_blocks: pd.Series = None,
-    reference_df: pd.DataFrame = None,
-    reference_blocks: list = None,
-    # ---- per-block FULL dataset ----
-    X_all: pd.DataFrame | None = None,
-    y_all: pd.Series | None = None,
-    all_blocks: pd.Series | None = None,
-    # ---- candidates ----
-    candidates_dir: str = None,
-    save_candidates: bool = True,
-):
-    """
-    Evalúa y (si aprueba) promueve el modelo. Reporta métricas globales y por bloque:
-      - per_block_metrics : sobre el test split
-      - per_block_metrics_full : sobre TODO el dataset (si se proporcionan X_all,y_all,all_blocks)
-    """
-    logger.info(">>> Starting model evaluation")
-
-    approved = True
-    results = {}
-    sample_predictions = []
-
-    is_classification = hasattr(model, "predict_proba") or (len(set(y_test)) <= 20)
-    classification_metrics = {"accuracy", "balanced_accuracy", "f1"}
-    regression_metrics = {"rmse", "mae", "mse", "r2"}
-
-    user_keys = set(thresholds_perf.keys())
-    user_type = "classification" if (user_keys & classification_metrics) else \
-                "regression" if (user_keys & regression_metrics) else None
-
-    # guardrails
-    if user_type == "classification" and (user_keys & regression_metrics):
-        raise ValueError("Do not mix classification and regression metrics in thresholds_perf.")
-    if user_type == "regression" and (user_keys & classification_metrics):
-        raise ValueError("Do not mix regression and classification metrics in thresholds_perf.")
-    if is_classification and user_type == "regression":
-        raise ValueError("Classification model but thresholds_perf contains regression metrics.")
-    if (not is_classification) and user_type == "classification":
-        raise ValueError("Regression model but thresholds_perf contains classification metrics.")
-
+def _sorted_blocks(vals: pd.Series | List[Any]) -> List[str]:
+    series = pd.Series(pd.unique(pd.Series(vals).astype(str))).dropna()
+    v = series.astype(str).tolist()
+    # numeric order if possible
     try:
-        # Global test metrics
-        metrics, y_pred = calculate_metrics(model, X_test, y_test, is_classification)
+        num = [float(x) for x in v]
+        return [x for _, x in sorted(zip(num, v))]
+    except Exception:
+        pass
+    # datetime order if possible
+    try:
+        dt = pd.to_datetime(v, errors="raise")
+        return [x for _, x in sorted(zip(dt, v))]
+    except Exception:
+        pass
+    # lexicographic fallback
+    return sorted(v, key=lambda x: str(x))
 
-        sample_df = pd.DataFrame({"y_true": y_test, "y_pred": y_pred}).sample(
-            n=min(10, len(y_test)), random_state=42
-        )
-        sample_predictions = sample_df.to_dict(orient="records")
+# ------------------------------- metrics & approval -------------------------------
 
-        # Threshold checks
-        for metric, threshold in thresholds_perf.items():
-            value = metrics.get(metric)
-            if value is None:
-                logger.warning(f"Metric '{metric}' not calculated.")
-                continue
-            if metric in {"rmse", "mae", "mse"} and value > threshold:
-                approved = False
-            elif metric == "r2" and value < threshold:
-                approved = False
-            elif metric in {"accuracy", "balanced_accuracy", "f1"} and value < threshold:
-                approved = False
+_HIGHER_BETTER = {"accuracy", "balanced_accuracy", "f1", "r2"}
+_LOWER_BETTER  = {"rmse", "mae", "mse"}
 
-        # per-block (test split)
-        per_block_metrics = {}
-        if test_blocks is not None:
-            try:
-                if len(test_blocks) == len(y_test):
-                    tb = pd.Series(test_blocks).reset_index(drop=True)
-                    y_true_s = pd.Series(y_test).reset_index(drop=True)
-                    y_pred_s = pd.Series(y_pred).reset_index(drop=True)
-                    for bid, idxs in tb.groupby(tb).groups.items():
-                        per_block_metrics[str(bid)] = _metrics_from_preds(
-                            y_true_s.loc[idxs], y_pred_s.loc[idxs], is_classification
-                        )
-                else:
-                    logger.warning("test_blocks length mismatch with y_test; skipping per-block test metrics.")
-            except Exception as e:
-                logger.warning(f"Per-block test metrics failed: {e}")
+def _metrics_cls(y_true, y_pred) -> Dict[str, float]:
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "f1": float(f1_score(y_true, y_pred, average="macro")),
+    }
 
-        # per-block (FULL dataset)
-        per_block_metrics_full = {}
-        if X_all is not None and y_all is not None and all_blocks is not None:
-            try:
-                common = X_all.index.intersection(y_all.index).intersection(all_blocks.index)
-                X_all = X_all.loc[common]; y_all = y_all.loc[common]; all_blocks = all_blocks.loc[common]
-                y_all_pred = model.predict(X_all)
+def _metrics_reg(y_true, y_pred) -> Dict[str, float]:
+    return {
+        "r2": float(r2_score(y_true, y_pred)),
+        "rmse": float(mean_squared_error(y_true, y_pred, squared=False)),
+        "mae": float(mean_absolute_error(y_true, y_pred)),
+        "mse": float(mean_squared_error(y_true, y_pred)),
+    }
 
-                y_true_s = pd.Series(y_all).reset_index(drop=True)
-                y_pred_s = pd.Series(y_all_pred).reset_index(drop=True)
-                blk_s    = pd.Series(all_blocks).reset_index(drop=True)
-                for bid, idxs in blk_s.groupby(blk_s).groups.items():
-                    per_block_metrics_full[str(bid)] = _metrics_from_preds(
-                        y_true_s.loc[idxs], y_pred_s.loc[idxs], is_classification
-                    )
-            except Exception as e:
-                logger.warning(f"Per-block FULL metrics failed: {e}")
+def _approved(metrics: Dict[str, float], thresholds: Optional[Dict[str, float]]) -> bool:
+    """
+    Global approval using the same thresholds semantics as training:
+    - For 'higher is better' metrics: metric >= threshold -> pass
+    - For 'lower is better' metrics: metric <= threshold -> pass
+    If thresholds is None/empty, approval is True.
+    """
+    if not thresholds:
+        return True
+    ok = True
+    for k, thr in thresholds.items():
+        if k in _HIGHER_BETTER:
+            ok = ok and (metrics.get(k) is not None and float(metrics[k]) >= float(thr))
+        elif k in _LOWER_BETTER:
+            ok = ok and (metrics.get(k) is not None and float(metrics[k]) <= float(thr))
+        else:
+            ok = ok and True
+    return bool(ok)
 
-        # results payload
-        results = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "file": last_processed_file,
-            "approved": approved,
-            "metrics": metrics,
-            "thresholds": thresholds_perf,
-            "predictions": sample_predictions,
-            "blocks": {
-                "block_col": block_col,
-                "evaluated_block_id": evaluated_block_id,
-                "per_block_metrics": per_block_metrics if per_block_metrics else None,
-                "per_block_metrics_full": per_block_metrics_full if per_block_metrics_full else None,
-                "reference_blocks": reference_blocks if reference_blocks else None,
-            },
-        }
-
-    except Exception as e:
-        logger.error(f"Error during evaluation: {e}")
-        approved = False
-        results = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "file": last_processed_file,
-            "approved": False,
-            "blocks": {
-                "block_col": block_col,
-                "evaluated_block_id": evaluated_block_id,
-                "reference_blocks": reference_blocks if reference_blocks else None,
-            },
-        }
-
-    save_eval_results(results, output_dir, logger=logger)
-
-    if approved:
-        try:
-            model_current_path = os.path.join(model_dir, model_filename)
-            if os.path.exists(model_current_path):
-                previous_model = model_current_path.replace(".pkl", "_previous.pkl")
-                os.replace(model_current_path, previous_model)
-                logger.info(f"Previous model backed up at {previous_model}")
-
-            joblib.dump(model, model_current_path)
-            logger.info("✅ Model approved and saved successfully")
-
-            # Append control file (file,mtime)
-            control_file = Path(control_dir) / "control_file.txt"
-            control_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(control_file, "a") as f:
-                f.write(f"{last_processed_file},{last_mtime}\n")
-
-            # Guardar referencia para próximos drift tests (por defecto TODO el dataset)
-            to_persist = reference_df if reference_df is not None else df
-            prev_path = Path(control_dir) / "previous_data.csv"
-            to_persist.to_csv(prev_path, index=False)
-            logger.info(f"Reference data saved to {prev_path} ({len(to_persist)} rows)")
-
-        except Exception as e:
-            logger.error(f"Error saving model/control/reference: {e}")
-
+def _pick_rank_metric(task: str, thresholds: Optional[Dict[str, float]], rank_by: Optional[str]) -> Tuple[str, int]:
+    """
+    Returns (metric_name, sign) used to rank worst blocks.
+    sign = +1 means higher is worse (e.g., errors); sign = -1 means lower is worse (e.g., accuracy).
+    """
+    if rank_by:
+        m = rank_by
     else:
-        logger.warning("Model did not pass thresholds. Champion model not updated.")
-        if save_candidates and candidates_dir:
-            base_name = os.path.splitext(os.path.basename(model_filename))[0]
-            _save_candidate(model, results, candidates_dir, base_name, logger=logger)
+        m = "balanced_accuracy" if task == "classification" else "r2"
+    if m in _LOWER_BETTER:
+        # lower better -> higher is worse, so sign=+1
+        return m, +1
+    # higher better -> lower is worse, so sign=-1
+    return m, -1
 
-    return approved
+# ------------------------------- main API -------------------------------
+
+def evaluate_model(
+    model_or_path,
+    X_eval: pd.DataFrame,
+    y_eval: pd.Series,
+    *,
+    logger=None,
+    metrics_dir: str,
+    control_dir: str,
+    data_file: Optional[str] = None,
+    thresholds: Optional[Dict[str, float]] = None,
+    block_col: Optional[str] = None,
+    evaluated_blocks: Optional[List[str]] = None,   # restrict eval to these blocks
+    reference_blocks: Optional[List[str]] = None,   # blocks used for training (for reporting / new-blocks detection)
+    include_predictions: bool = True,
+    max_pred_examples: int = 100,
+    mtime: Optional[float] = None,
+    # new options
+    include_confusion_by_block: bool = False,
+    rank_by: Optional[str] = None,                  # metric to rank worst blocks
+    top_k_worst: int = 5,
+) -> bool:
+    """
+    Evaluate a model (router or plain sklearn) in block-wise mode.
+
+    - If a block column is present (or provided), compute per-block metrics.
+    - `evaluated_blocks` restricts the evaluation subset.
+    - `reference_blocks` are used to flag brand-new blocks in evaluation.
+    - Global approval is computed over the entire evaluation subset using `thresholds`.
+    - Per-block approval is also reported using the same thresholds (helps triage).
+    - Saves eval_results.json in `metrics_dir`. If approved and `data_file` is given,
+      append "<file>,<mtime_float>\\n" to control/control_file.txt.
+
+    Returns:
+        bool -> global approved flag
+    """
+    # Load model
+    model = joblib.load(model_or_path) if isinstance(model_or_path, (str, os.PathLike)) else model_or_path
+    base_model = getattr(model, "global_model", model)
+    is_cls = is_classifier(base_model)
+    task = "classification" if is_cls else "regression"
+
+    # Block handling
+    bc = _detect_block_col(block_col, X_eval)
+    X_in = X_eval.copy()
+    y_in = y_eval.copy()
+
+    if bc and evaluated_blocks:
+        mask = X_in[bc].astype(str).isin([str(x) for x in evaluated_blocks])
+        X_in = X_in.loc[mask]
+        y_in = y_in.loc[X_in.index]
+
+    # Empty subset guard
+    if len(X_in) == 0 or len(y_in) == 0:
+        if logger:
+            logger.warning("[evaluator] Empty evaluation subset (no rows in selected blocks).")
+        results = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "task": task,
+            "approved": False,
+            "reason": "empty_evaluation_subset",
+            "metrics": {},
+            "thresholds": thresholds or {},
+            "blocks": {
+                "block_col": bc,
+                "evaluated_blocks": list(map(str, evaluated_blocks)) if evaluated_blocks else [],
+                "reference_blocks": list(map(str, reference_blocks)) if reference_blocks else [],
+                "new_blocks_detected": [],
+                "missing_reference_blocks": [],
+                "per_block_metrics_full": {},
+                "per_block_approved": {},
+                "approved_blocks_count": 0,
+                "rejected_blocks_count": 0,
+                "top_worst_blocks": [],
+            },
+            "predictions": []
+        }
+        _save_json(results, metrics_dir, "eval_results.json")
+        return False
+
+    # Predict
+    if not hasattr(model, "predict"):
+        raise RuntimeError("Model does not implement predict().")
+
+    # Route-aware: let the router handle block-wise prediction; otherwise drop block column
+    if hasattr(model, "route_by_block") or hasattr(model, "per_block_models") or hasattr(model, "global_model"):
+        y_pred = model.predict(X_in)
+    else:
+        X_drop = X_in.drop(columns=[bc], errors="ignore") if bc else X_in
+        y_pred = base_model.predict(X_drop)
+
+    # Global metrics
+    if is_cls:
+        metrics_global: Dict[str, Any] = _metrics_cls(y_in, y_pred)
+        try:
+            metrics_global["classification_report"] = classification_report(
+                y_in, y_pred, output_dict=True, zero_division=0
+            )
+        except Exception:
+            pass
+    else:
+        metrics_global = _metrics_reg(y_in, y_pred)
+
+    # Per-block metrics + approvals
+    blocks_payload: Dict[str, Any] = {
+        "block_col": bc,
+        "evaluated_blocks": [],
+        "reference_blocks": list(map(str, reference_blocks)) if reference_blocks else [],
+        "new_blocks_detected": [],
+        "missing_reference_blocks": [],
+        "per_block_metrics_full": {},
+        "per_block_approved": {},
+        "approved_blocks_count": 0,
+        "rejected_blocks_count": 0,
+        "top_worst_blocks": [],
+    }
+
+    # Compute block lists / novelty if block column exists
+    if bc:
+        eval_block_ids = _sorted_blocks(X_in[bc].astype(str))
+        blocks_payload["evaluated_blocks"] = eval_block_ids
+
+        ref_set = set(map(str, reference_blocks)) if reference_blocks else set()
+        eval_set = set(eval_block_ids)
+        # New blocks present in eval that were not in reference
+        blocks_payload["new_blocks_detected"] = sorted(list(eval_set - ref_set)) if ref_set else []
+        # Reference blocks not present in the current eval subset
+        blocks_payload["missing_reference_blocks"] = sorted(list(ref_set - eval_set)) if ref_set else []
+
+        # Align indexes to avoid mismatches
+        y_pred_s = pd.Series(y_pred, index=y_in.index)
+
+        # Compute per-block metrics
+        for b, idx in X_in[bc].groupby(X_in[bc]).groups.items():
+            idx = pd.Index(idx)
+            yb_true = y_in.loc[idx]
+            yb_pred = y_pred_s.loc[idx].values
+            m = _metrics_cls(yb_true, yb_pred) if is_cls else _metrics_reg(yb_true, yb_pred)
+            blocks_payload["per_block_metrics_full"][str(b)] = m
+            blocks_payload["per_block_approved"][str(b)] = _approved(m, thresholds)
+
+        # Counts
+        blocks_payload["approved_blocks_count"] = sum(1 for v in blocks_payload["per_block_approved"].values() if v)
+        blocks_payload["rejected_blocks_count"] = sum(1 for v in blocks_payload["per_block_approved"].values() if not v)
+
+        # Optional confusion matrices by block (classification only)
+        if include_confusion_by_block and is_cls:
+            cm_dict: Dict[str, Any] = {}
+            for b, idx in X_in[bc].groupby(X_in[bc]).groups.items():
+                idx = pd.Index(idx)
+                yb_true = y_in.loc[idx]
+                yb_pred = y_pred_s.loc[idx].values
+                try:
+                    cm = confusion_matrix(yb_true, yb_pred)
+                    cm_dict[str(b)] = cm.tolist()
+                except Exception:
+                    cm_dict[str(b)] = None
+            blocks_payload["per_block_confusion_matrix"] = cm_dict
+
+        # Rank worst blocks
+        metric_to_rank, sign = _pick_rank_metric(task, thresholds, rank_by)
+        worst_rows = []
+        for b, m in blocks_payload["per_block_metrics_full"].items():
+            if metric_to_rank in m and m[metric_to_rank] is not None:
+                val = float(m[metric_to_rank])
+                # score = val if higher is worse, else -val (we chose sign above)
+                score = sign * val
+                worst_rows.append((b, val, score))
+        if worst_rows:
+            worst_rows.sort(key=lambda x: x[2], reverse=True)  # higher score = worse
+            blocks_payload["top_worst_blocks"] = [
+                {"block": b, metric_to_rank: v} for b, v, _ in worst_rows[:int(max(1, top_k_worst))]
+            ]
+
+    # Global approval
+    approved_flag = _approved(metrics_global, thresholds)
+
+    # Prediction examples
+    predictions = None
+    if include_predictions:
+        try:
+            dfp = pd.DataFrame({"y_true": y_in.values, "y_pred": y_pred}, index=y_in.index)
+            if bc and bc in X_in.columns:
+                dfp["block"] = X_in[bc].astype(str)
+            predictions = dfp.head(int(max_pred_examples)).reset_index(drop=True).to_dict(orient="records")
+        except Exception:
+            predictions = None
+
+    results = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "task": task,
+        "approved": bool(approved_flag),
+        "metrics": metrics_global,
+        "thresholds": thresholds or {},
+        "blocks": blocks_payload,
+        "predictions": predictions or [],
+        "model_info": {
+            "type": type(base_model).__name__,
+            "is_router": bool(hasattr(model, "per_block_models") or hasattr(model, "route_by_block")),
+        }
+    }
+    _save_json(results, metrics_dir, "eval_results.json")
+    if logger:
+        logger.info("[evaluator] eval_results.json saved.")
+
+    # Update control_file.txt if globally approved
+    if approved_flag and data_file:
+        try:
+            os.makedirs(control_dir, exist_ok=True)
+            control_file = os.path.join(control_dir, "control_file.txt")
+            with open(control_file, "a", encoding="utf-8") as f:
+                if mtime is not None:
+                    f.write(f"{data_file},{float(mtime)}\n")
+                else:
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    f.write(f"{data_file},{ts}\n")
+            if logger:
+                logger.info("[evaluator] control_file.txt updated (approved).")
+        except Exception as e:
+            if logger:
+                logger.warning(f"[evaluator] Could not update control_file.txt: {e}")
+
+    return bool(approved_flag)

@@ -1,109 +1,212 @@
+#!/usr/bin/env python3
+"""
+Drift Injector for Real Data - Injects various types of drift into real datasets
+"""
+
 import pandas as pd
 import numpy as np
-import logging
-from typing import Dict, Any
-
-# Setup logger for tracking events and errors
-logger = logging.getLogger('DriftInjectorLogger')
-logger.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
-logger.addHandler(ch)
+from typing import Dict, List, Tuple, Optional, Union
+from sklearn.preprocessing import LabelEncoder
+import warnings
 
 class DriftInjector:
-    def __init__(self, df: pd.DataFrame, target_col: str = "target"):
+    """
+    Injects various types of drift into real datasets
+    """
+    
+    def __init__(self, random_state: Optional[int] = None):
         """
-        Initializes the DriftInjector with a DataFrame and target column.
+        Initialize the DriftInjector
+        
+        Args:
+            random_state: Random seed for reproducibility
         """
-        self.df = df.copy()
-        self.target_col = target_col
-        self.events = []
-
-    def add_event(self, start_idx: int, affected_col: str, change: Dict[str, Any]):
+        self.random_state = random_state
+        if random_state is not None:
+            np.random.seed(random_state)
+    
+    def inject_feature_drift(self, 
+                           df: pd.DataFrame,
+                           feature_cols: List[str],
+                           drift_magnitude: float = 0.2,
+                           drift_type: str = "gaussian_noise") -> pd.DataFrame:
         """
-        Adds a drift event to be applied at a specified index on a given column.
+        Inject feature drift by modifying feature distributions
+        
+        Args:
+            df: Input dataframe
+            feature_cols: List of feature columns to modify
+            drift_magnitude: Magnitude of drift (0.1 = 10% change)
+            drift_type: Type of drift ('gaussian_noise', 'shift', 'scale')
+            
+        Returns:
+            Modified dataframe with feature drift
         """
-        self.events.append({"start_idx": start_idx, "col": affected_col, "change": change})
-
-    def apply(self) -> pd.DataFrame:
+        df_drift = df.copy()
+        
+        for col in feature_cols:
+            if col not in df.columns:
+                warnings.warn(f"Column '{col}' not found in dataframe")
+                continue
+                
+            if pd.api.types.is_numeric_dtype(df[col]):
+                original_values = df_drift[col].values
+                
+                if drift_type == "gaussian_noise":
+                    # Add Gaussian noise
+                    noise = np.random.normal(0, drift_magnitude * np.std(original_values), len(original_values))
+                    df_drift[col] = original_values + noise
+                    
+                elif drift_type == "shift":
+                    # Shift mean
+                    shift_amount = drift_magnitude * np.mean(original_values)
+                    df_drift[col] = original_values + shift_amount
+                    
+                elif drift_type == "scale":
+                    # Scale variance
+                    mean_val = np.mean(original_values)
+                    df_drift[col] = mean_val + (original_values - mean_val) * (1 + drift_magnitude)
+                    
+            else:
+                # For categorical features, introduce label noise
+                unique_vals = df_drift[col].unique()
+                if len(unique_vals) > 1:
+                    n_changes = int(len(df_drift) * drift_magnitude)
+                    indices_to_change = np.random.choice(len(df_drift), n_changes, replace=False)
+                    
+                    for idx in indices_to_change:
+                        current_val = df_drift.iloc[idx][col]
+                        other_vals = [v for v in unique_vals if v != current_val]
+                        if other_vals:
+                            df_drift.iloc[idx, df_drift.columns.get_loc(col)] = np.random.choice(other_vals)
+        
+        return df_drift
+    
+    def inject_label_drift(self,
+                          df: pd.DataFrame,
+                          target_col: str,
+                          drift_magnitude: float = 0.1) -> pd.DataFrame:
         """
-        Applies all drift events to the DataFrame and returns the modified DataFrame.
+        Inject label drift by flipping some labels
+        
+        Args:
+            df: Input dataframe
+            target_col: Name of target column
+            drift_magnitude: Fraction of labels to flip (0.1 = 10%)
+            
+        Returns:
+            Modified dataframe with label drift
         """
-        result = self.df.copy()
-
-        logger.info("\n📊 === DriftInjector Report ===")
-        for event in self.events:
-            mask = result.index >= event["start_idx"]
-            col = event["col"]
-            change = event["change"]
-
-            logger.info(f"🔀 Applying drift on column '{col}' starting at index {event['start_idx']}")
-            logger.info(f"   Change details: {change}")
-
-            # Apply drift based on the type of change specified
-            if np.issubdtype(result[col].dtype, np.number) and "operation" in change:
-                self._apply_numeric_drift(result, mask, col, change)
-
-            elif "distribution" in change:  # Categorical drift
-                self._apply_categorical_drift(result, mask, col, change)
-
-            elif "conditional_on" in change:  # Conditional drift
-                self._apply_conditional_drift(result, mask, col, change)
-
-        logger.info("✅ Drift events applied successfully.")
-        logger.info("=== END OF REPORT ===\n")
-
-        return result
-
-    def _apply_numeric_drift(self, result: pd.DataFrame, mask: pd.Series, col: str, change: Dict[str, Any]):
+        df_drift = df.copy()
+        
+        if target_col not in df.columns:
+            raise ValueError(f"Target column '{target_col}' not found in dataframe")
+        
+        unique_labels = df_drift[target_col].unique()
+        
+        if len(unique_labels) < 2:
+            warnings.warn("Cannot inject label drift with less than 2 unique labels")
+            return df_drift
+        
+        # Flip labels for a fraction of samples
+        n_flips = int(len(df_drift) * drift_magnitude)
+        indices_to_flip = np.random.choice(len(df_drift), n_flips, replace=False)
+        
+        for idx in indices_to_flip:
+            current_label = df_drift.iloc[idx][target_col]
+            other_labels = [l for l in unique_labels if l != current_label]
+            df_drift.iloc[idx, df_drift.columns.get_loc(target_col)] = np.random.choice(other_labels)
+        
+        return df_drift
+    
+    def inject_covariate_shift(self,
+                              df: pd.DataFrame,
+                              feature_cols: List[str],
+                              shift_strength: float = 0.3) -> pd.DataFrame:
         """
-        Applies numeric drift to a column based on the specified operation and value.
+        Inject covariate shift by changing feature correlations
+        
+        Args:
+            df: Input dataframe
+            feature_cols: List of numeric feature columns
+            shift_strength: Strength of covariate shift
+            
+        Returns:
+            Modified dataframe with covariate shift
         """
-        op = change["operation"]
-        if op == "shift":
-            result.loc[mask, col] += change["value"]
-        elif op == "scale":
-            result.loc[mask, col] *= change["value"]
-        elif op == "noise":
-            sigma = change.get("value", 1)
-            result.loc[mask, col] += np.random.normal(0, sigma, mask.sum())
-        elif op == "clip":
-            min_val, max_val = change["value"]
-            result.loc[mask, col] = np.clip(result.loc[mask, col], min_val, max_val)
-        elif op == "replace":
-            mu, sigma = change["value"]
-            result.loc[mask, col] = np.random.normal(mu, sigma, mask.sum())
-        else:
-            logger.warning(f"Unknown numeric operation: {op}")
-
-    def _apply_categorical_drift(self, result: pd.DataFrame, mask: pd.Series, col: str, change: Dict[str, Any]):
+        df_drift = df.copy()
+        
+        numeric_cols = [col for col in feature_cols if pd.api.types.is_numeric_dtype(df[col])]
+        
+        if len(numeric_cols) < 2:
+            warnings.warn("Need at least 2 numeric columns for covariate shift")
+            return df_drift
+        
+        # Create correlation shift between first two numeric columns
+        col1, col2 = numeric_cols[0], numeric_cols[1]
+        
+        # Normalize features
+        mean1, std1 = df_drift[col1].mean(), df_drift[col1].std()
+        mean2, std2 = df_drift[col2].mean(), df_drift[col2].std()
+        
+        norm1 = (df_drift[col1] - mean1) / std1
+        norm2 = (df_drift[col2] - mean2) / std2
+        
+        # Apply covariate shift transformation
+        shifted_norm2 = norm2 + shift_strength * norm1
+        
+        # Denormalize
+        df_drift[col2] = shifted_norm2 * std2 + mean2
+        
+        return df_drift
+    
+    def inject_temporal_drift(self,
+                             df: pd.DataFrame,
+                             n_segments: int = 3,
+                             drift_cols: Optional[List[str]] = None) -> pd.DataFrame:
         """
-        Applies categorical drift by adjusting the distribution of values in a column.
+        Inject temporal drift by creating segments with different characteristics
+        
+        Args:
+            df: Input dataframe
+            n_segments: Number of temporal segments
+            drift_cols: Columns to apply drift to (if None, use all numeric)
+            
+        Returns:
+            Modified dataframe with temporal drift and segment information
         """
-        dist = change["distribution"]
-        values, probs = list(dist.keys()), list(dist.values())
-        n = mask.sum()
-        counts = [int(p * n) for p in probs]
-        while sum(counts) < n:
-            counts[np.argmin(counts)] += 1
-        samples = []
-        for val, count in zip(values, counts):
-            samples.extend([val] * count)
-        np.random.shuffle(samples)
-        result.loc[mask, col] = samples
-
-    def _apply_conditional_drift(self, result: pd.DataFrame, mask: pd.Series, col: str, change: Dict[str, Any]):
-        """
-        Applies conditional drift, where the drift is applied based on a condition in another column.
-        """
-        cond_col = change["conditional_on"]
-        probs = change["probs"]
-        for cat_val, prob in probs.items():
-            submask = mask & (result[cond_col] == cat_val)
-            n = submask.sum()
-            n_ones = int(prob * n)
-            values = [1] * n_ones + [0] * (n - n_ones)
-            np.random.shuffle(values)
-            result.loc[submask, self.target_col] = values
+        df_drift = df.copy()
+        
+        if drift_cols is None:
+            drift_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        # Create segment column
+        segment_size = len(df) // n_segments
+        segments = []
+        
+        for i in range(n_segments):
+            start_idx = i * segment_size
+            if i == n_segments - 1:  # Last segment gets remaining rows
+                end_idx = len(df)
+            else:
+                end_idx = (i + 1) * segment_size
+            
+            segments.extend([i + 1] * (end_idx - start_idx))
+        
+        df_drift['segment'] = segments
+        
+        # Apply increasing drift to each segment
+        for segment_id in range(1, n_segments + 1):
+            segment_mask = df_drift['segment'] == segment_id
+            drift_strength = (segment_id - 1) * 0.2  # Increasing drift
+            
+            segment_df = df_drift[segment_mask].copy()
+            
+            # Apply feature drift to this segment
+            for col in drift_cols:
+                if col in df_drift.columns and pd.api.types.is_numeric_dtype(df_drift[col]):
+                    original_values = segment_df[col].values
+                    noise = np.random.normal(0, drift_strength * np.std(original_values), len(original_values))
+                    df_drift.loc[segment_mask, col] = original_values + noise
+        
+        return df_drift

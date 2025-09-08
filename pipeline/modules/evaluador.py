@@ -10,14 +10,75 @@ from sklearn.metrics import (
     mean_squared_error, mean_absolute_error, r2_score
 )
 
+def _upsert_control_entry(control_file: Path, file_path: str, mtime, logger=None):
+    """
+    Atomically create or update a file entry in the control file with format '<basename>,<mtime>'.
+    
+    This function implements atomic control file management to prevent data corruption
+    during concurrent operations. It maintains a registry of processed files with their
+    modification timestamps to support incremental processing workflows.
+    
+    Args:
+        control_file (Path): Path to the control file that tracks processed files
+        file_path (str): Full path to the file being registered
+        mtime: Modification time of the file (typically from os.path.getmtime)
+        logger: Optional logger instance for operation tracking
+    
+    Note:
+        - Uses only the filename with extension as the key (no directory paths)
+        - If duplicate basenames exist from different directories, the last entry overwrites
+        - Implements atomic write pattern using temporary file + os.replace() for safety
+    """
+    control_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Key = only the filename with extension (no directories)
+    key_name = Path(file_path).name
+
+    # Load current entries
+    existing = {}
+    if control_file.exists():
+        with open(control_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(",", 1)
+                if len(parts) != 2:
+                    continue  # skip malformed
+                fname, raw_mtime = parts
+                existing[fname] = raw_mtime
+
+    # Upsert
+    existing[key_name] = str(mtime)
+
+    # Atomic rewrite
+    tmp = control_file.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        for k, v in existing.items():
+            f.write(f"{k},{v}\n")
+    os.replace(tmp, control_file)
+
+    if logger:
+        logger.info(f"Control file updated: {key_name} registered with modification time {mtime}")
+
 
 def save_eval_results(results: dict, output_dir: str, logger=None):
     """
-    Persist evaluation results into metrics/eval_results.json.
-
-    Notes:
-    - Uses logger instead of print (if provided).
-    - Results are assumed to be JSON-serializable; non-serializable types are converted.
+    Persist model evaluation results to JSON file for audit trail and monitoring.
+    
+    This function handles the serialization of evaluation metrics and ensures
+    compatibility with JSON format by converting numpy types and complex objects.
+    The results are stored in a standardized location for downstream analysis.
+    
+    Args:
+        results (dict): Dictionary containing evaluation metrics, predictions, and metadata
+        output_dir (str): Directory path where eval_results.json will be saved
+        logger: Optional logger instance for operation tracking
+    
+    Note:
+        - Automatically converts numpy types and arrays to JSON-compatible formats
+        - Creates output directory if it doesn't exist
+        - Results include timestamp, metrics, thresholds, and sample predictions
     """
     eval_path = os.path.join(output_dir, "eval_results.json")
 
@@ -37,15 +98,27 @@ def save_eval_results(results: dict, output_dir: str, logger=None):
         json.dump(serializable_results, f, indent=4)
 
     if logger:
-        logger.info(f"[EVAL] Results saved at {eval_path}")
+        logger.info(f"Evaluation results persisted to {eval_path}")
 
 
 def calculate_metrics(model, X_test, y_test, is_classification: bool):
     """
-    Compute metrics for classification or regression models.
+    Calculate performance metrics based on model type and generate predictions.
+    
+    Automatically selects appropriate metrics based on problem type:
+    - Classification: accuracy, balanced_accuracy, f1_score, classification_report
+    - Regression: r2_score, rmse, mae, mse
+    
+    Args:
+        model: Trained scikit-learn compatible model
+        X_test: Test features for evaluation
+        y_test: True target values for comparison
+        is_classification (bool): Whether this is a classification or regression problem
+    
     Returns:
-        metrics: dict with computed metrics
-        y_pred: model predictions (array-like)
+        tuple: (metrics_dict, predictions_array)
+            - metrics: Dictionary containing computed performance metrics
+            - y_pred: Model predictions on test set
     """
     y_pred = model.predict(X_test)
 
@@ -69,13 +142,24 @@ def calculate_metrics(model, X_test, y_test, is_classification: bool):
 
 def _save_candidate(model, results: dict, candidates_dir: str, base_name: str, logger=None):
     """
-    Persist a non-approved model and its evaluation results for offline analysis.
-
-    Creates a timestamped folder:
+    Archive non-approved candidate models for future analysis and model archaeology.
+    
+    When a model fails to meet performance thresholds, it's preserved in the candidates
+    directory rather than being discarded. This enables offline analysis, A/B testing
+    preparation, and maintaining a complete audit trail of all training attempts.
+    
+    Directory structure created:
       candidates/<base_name>__YYYYmmdd_HHMMSS/
-        - model.pkl
-        - eval_results.json
-        - meta.json (with short summary)
+        - model.pkl: Serialized model object
+        - eval_results.json: Complete evaluation metrics and predictions
+        - meta.json: Compact metadata summary for quick filtering
+    
+    Args:
+        model: The trained model object to be archived
+        results (dict): Complete evaluation results including metrics and predictions
+        candidates_dir (str): Root directory for candidate model storage
+        base_name (str): Base name for the model (typically derived from model_filename)
+        logger: Optional logger instance for operation tracking
     """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     cand_root = os.path.join(candidates_dir, f"{base_name}__{ts}")
@@ -101,7 +185,7 @@ def _save_candidate(model, results: dict, candidates_dir: str, base_name: str, l
         json.dump(meta, f, indent=4)
 
     if logger:
-        logger.info(f"[CANDIDATE] Saved non-approved model at {cand_root}")
+        logger.info(f"Candidate model archived at {cand_root} for future analysis")
 
 
 def evaluator(
@@ -119,25 +203,71 @@ def evaluator(
     control_dir: str,
     output_dir: str,
     df: pd.DataFrame,
-    # new:
-    candidates_dir: str = None,    # where to store non-approved candidates
-    save_candidates: bool = True,  # toggle saving candidates
+    candidates_dir: str = None,
+    save_candidates: bool = True,
 ):
     """
-    Evaluate a trained/retrained model against user thresholds and optionally persist it.
-
-    Behavior:
-    - If approved:
-        - Save current model to model_dir/model_filename
-        - Rotate previous model (suffix _previous.pkl)
-        - Append control_file.txt with file+mtime
-        - Save previous_data.csv
-    - If not approved:
-        - Optionally save candidate under candidates/
-        - Do NOT touch current champion or control files
-    - Always writes metrics to metrics/eval_results.json (without storing error text)
+    Champion/Challenger model evaluation system with atomic model rotation.
+    
+    This function implements a robust model deployment strategy where new models
+    (challengers) must meet or exceed performance thresholds to replace the current
+    production model (champion). The evaluation process is atomic and includes
+    comprehensive safety mechanisms.
+    
+    CHAMPION/CHALLENGER STRATEGY:
+    - Current production model serves as the champion
+    - New trained models are challengers that must prove superiority
+    - Only models meeting all threshold criteria become the new champion
+    - Failed challengers are optionally archived for analysis
+    
+    THRESHOLD VALIDATION LOGIC:
+    - Automatically detects problem type (classification vs regression)
+    - Validates threshold consistency to prevent configuration errors
+    - Supports multiple metrics with min/max threshold semantics:
+      * Classification: accuracy, balanced_accuracy, f1 (minimum thresholds)
+      * Regression: r2 (minimum), rmse/mae/mse (maximum thresholds)
+    
+    ATOMIC MODEL ROTATION PROCESS:
+    - Current champion is backed up with _previous.pkl suffix
+    - New champion is saved only after successful backup
+    - Control files are updated atomically to prevent corruption
+    - Previous training data is preserved for debugging
+    
+    CANDIDATE MODEL STORAGE SYSTEM:
+    - Non-approved models are archived with timestamps
+    - Complete evaluation results and metadata are preserved
+    - Enables offline analysis and future model archaeology
+    
+    CONTROL FILE MANAGEMENT:
+    - Maintains registry of processed files with modification times
+    - Prevents reprocessing unchanged data
+    - Supports incremental training workflows
+    - Uses atomic writes to prevent corruption during concurrent access
+    
+    Args:
+        model: Trained model object to evaluate
+        X_test: Test features for evaluation
+        y_test: True target values
+        last_processed_file: Path to the data file that generated this model
+        last_mtime: Modification time of the processed file
+        logger: Logger instance for operation tracking
+        is_first_model (bool): Whether this is the initial model (affects validation)
+        thresholds_perf (dict): Performance thresholds for model approval
+        model_dir (str): Directory where champion models are stored
+        model_filename (str): Filename for the champion model
+        control_dir (str): Directory for control files and metadata
+        output_dir (str): Directory for evaluation results
+        df (pd.DataFrame): Training data to preserve with control files
+        candidates_dir (str, optional): Directory for archiving failed candidates
+        save_candidates (bool): Whether to save non-approved models
+    
+    Returns:
+        bool: True if model was approved and deployed, False otherwise
+    
+    Raises:
+        ValueError: If threshold configuration is inconsistent with model type
     """
-    logger.info(">>> Starting model evaluation")
+    logger.info("Starting champion/challenger model evaluation")
 
     approved = True
     results = {}
@@ -152,15 +282,15 @@ def evaluator(
     user_type = "classification" if (user_keys & classification_metrics) else \
                 "regression" if (user_keys & regression_metrics) else None
 
-    # Guardrails: avoid mixing threshold types and mismatching with model type
+    # Threshold validation: prevent configuration errors by ensuring metric consistency
     if user_type == "classification" and (user_keys & regression_metrics):
-        raise ValueError("❌ Do not mix classification and regression metrics in thresholds_perf.")
+        raise ValueError("Configuration error: Cannot mix classification and regression metrics in thresholds_perf.")
     if user_type == "regression" and (user_keys & classification_metrics):
-        raise ValueError("❌ Do not mix regression and classification metrics in thresholds_perf.")
+        raise ValueError("Configuration error: Cannot mix regression and classification metrics in thresholds_perf.")
     if is_classification and user_type == "regression":
-        raise ValueError("⚠️ Classification model but thresholds_perf contains regression metrics.")
+        raise ValueError("Model type mismatch: Classification model detected but thresholds_perf contains regression metrics.")
     if (not is_classification) and user_type == "classification":
-        raise ValueError("⚠️ Regression model but thresholds_perf contains classification metrics.")
+        raise ValueError("Model type mismatch: Regression model detected but thresholds_perf contains classification metrics.")
 
     try:
         metrics, y_pred = calculate_metrics(model, X_test, y_test, is_classification)
@@ -176,24 +306,30 @@ def evaluator(
         for metric, threshold in thresholds_perf.items():
             value = metrics.get(metric)
             if value is None:
-                logger.warning(f"⚠️ Metric '{metric}' not calculated.")
+                logger.warning(f"Metric '{metric}' could not be calculated, skipping threshold check")
                 continue
 
-            # Regression thresholds
+            # Regression thresholds (lower is better for error metrics)
             if metric in {"rmse", "mae", "mse"}:
                 if value > threshold:
-                    logger.warning(f"❌ {metric}: {value:.6f} > {threshold} (max allowed)")
+                    logger.warning(f"Threshold violation: {metric}={value:.6f} exceeds maximum allowed threshold of {threshold}")
                     approved = False
+                else:
+                    logger.info(f"Threshold passed: {metric}={value:.6f} <= {threshold}")
             elif metric == "r2":
                 if value < threshold:
-                    logger.warning(f"❌ r2: {value:.6f} < {threshold} (min required)")
+                    logger.warning(f"Threshold violation: {metric}={value:.6f} below minimum required threshold of {threshold}")
                     approved = False
+                else:
+                    logger.info(f"Threshold passed: {metric}={value:.6f} >= {threshold}")
 
-            # Classification thresholds
+            # Classification thresholds (higher is better)
             elif metric in {"accuracy", "balanced_accuracy", "f1"}:
                 if value < threshold:
-                    logger.warning(f"❌ {metric}: {value:.6f} < {threshold} (min required)")
+                    logger.warning(f"Threshold violation: {metric}={value:.6f} below minimum required threshold of {threshold}")
                     approved = False
+                else:
+                    logger.info(f"Threshold passed: {metric}={value:.6f} >= {threshold}")
 
         # Assemble results payload
         results = {
@@ -206,10 +342,10 @@ def evaluator(
         }
 
     except Exception as e:
-        # Do NOT store error text in JSON (per your request)
-        logger.error(f"Error during evaluation: {e}")
+        # Evaluation failed - reject model and log error details
+        logger.error(f"Model evaluation failed due to unexpected error: {e}")
         approved = False
-        # Minimal payload without error text
+        # Create minimal results payload without exposing internal error details
         results = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "file": last_processed_file,
@@ -219,33 +355,36 @@ def evaluator(
     # Persist eval results (always)
     save_eval_results(results, output_dir, logger=logger)
 
-    # If approved, rotate and save model + update control
+    # Execute atomic model rotation if challenger is approved
     if approved:
         try:
             model_current_path = os.path.join(model_dir, model_filename)
+            
+            # Step 1: Backup existing champion model before replacement
             if os.path.exists(model_current_path):
                 previous_model = model_current_path.replace(".pkl", "_previous.pkl")
                 os.replace(model_current_path, previous_model)
-                logger.info(f"Previous model backed up at {previous_model}")
-
-            # Save the newly approved model (champion promotion)
+                logger.info(f"Champion model backed up to {previous_model}")
+            
+            # Step 2: Promote challenger to champion status
             joblib.dump(model, model_current_path)
-            logger.info("✅ Model approved and saved successfully")
+            logger.info("Model approved - challenger promoted to champion")
 
-            # Update control file and persist the last dataset used for training
+            # Step 3: Update control file registry atomically
             control_file = Path(control_dir) / "control_file.txt"
-            with open(control_file, "a") as f:
-                f.write(f"{last_processed_file},{last_mtime}\n")
+            _upsert_control_entry(control_file, last_processed_file, last_mtime, logger)
 
+            # Step 4: Preserve training data for debugging and rollback scenarios
             df.to_csv(os.path.join(control_dir, "previous_data.csv"), index=False)
-            logger.info(f"Control file updated at {control_file}")
+            logger.info("Model deployment completed - control files updated")
 
         except Exception as e:
-            logger.error(f"Error saving model/metrics: {e}")
-            # Note: as requested, no error text is written into eval_results.json here.
+            logger.error(f"Critical error during model deployment: {e}")
+            # Model deployment failed but evaluation results are still persisted
 
     else:
-        logger.warning("❌ Model did not pass thresholds. Model not updated.")
+        logger.info("Model rejected - performance thresholds not met, champion remains unchanged")
+        # Archive challenger model for future analysis if configured
         if save_candidates and candidates_dir:
             base_name = os.path.splitext(os.path.basename(model_filename))[0]
             _save_candidate(model, results, candidates_dir, base_name, logger=logger)

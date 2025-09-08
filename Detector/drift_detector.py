@@ -1,18 +1,14 @@
 import numpy as np
 import pandas as pd
-from scipy import stats
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, mean_squared_error, r2_score
 
 # pip install frouros
 import numpy as np
 import pandas as pd
 
-# Quita: from frouros.detectors.data_drift.batch.multivariate import ( MMD, EnergyDistance )
-from functools import partial
 
 from frouros.detectors.data_drift import MMD  # batch MMD
 from frouros.detectors.data_drift.batch.distance_based import (
-    EnergyDistance,            # dist multivariante
     PSI as PSI_Detector,       # univariante
     HellingerDistance as HellingerDet,
     EMD as EMD_Detector,
@@ -20,8 +16,6 @@ from frouros.detectors.data_drift.batch.distance_based import (
 from frouros.detectors.data_drift.batch.statistical_test import (
     KSTest, MannWhitneyUTest, CVMTest,
 )
-from frouros.callbacks.batch import PermutationTestDistanceBased
-from frouros.utils.kernels import rbf_kernel
 
 
 def _to_float_array(x: pd.Series | np.ndarray) -> np.ndarray:
@@ -30,16 +24,6 @@ def _to_float_array(x: pd.Series | np.ndarray) -> np.ndarray:
         x = x.dropna().values
     x = np.asarray(x)
     return x[~np.isnan(x)].astype(float)
-
-
-def _to_float_matrix(df: pd.DataFrame) -> np.ndarray:
-    """Return a 2D float matrix with numeric common cols and rows without NaNs."""
-    X = df.copy()
-    # Keep only numeric columns
-    X = X.select_dtypes(include=[np.number])
-    # Drop rows containing NaNs
-    X = X.dropna(axis=0, how="any")
-    return X.values.astype(float)
 
 
 class DriftDetector:
@@ -201,128 +185,6 @@ class DriftDetector:
             except Exception as e:
                 results[col] = {"error": str(e), "drift": False}
         return drift_detected, results
-
-    # =========================
-    # MULTIVARIATE TESTS
-    # =========================
-
-    def mmd_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame,
-             alpha: float = 0.05,
-             kernel: str = "rbf",
-             bandwidth: float | str = "auto",
-             num_permutations: int = 1000):
-        """
-        Batch MMD with permutation test for p-value; drift if p < alpha.
-        Supports kernel='rbf' (default) and 'linear'. Any other value falls back to 'rbf'.
-        """
-        try:
-            X1 = _to_float_matrix(X_ref)
-            X2 = _to_float_matrix(X_new)
-            if X1.size == 0 or X2.size == 0:
-                return False, {"error": "empty data", "drift": False}
-
-            # Select kernel
-            kernel_used = kernel.lower() if isinstance(kernel, str) else "rbf"
-
-            if kernel_used == "rbf":
-                # estimate sigma if requested
-                if bandwidth == "auto":
-                    from sklearn.metrics import pairwise_distances
-                    sample = np.vstack([X1[:min(200, len(X1))], X2[:min(200, len(X2))]])
-                    med = np.median(pairwise_distances(sample, sample))
-                    sigma = med if med > 0 else 1.0
-                else:
-                    sigma = float(bandwidth)
-                kfun = partial(rbf_kernel, sigma=sigma)
-                kernel_info = {"kernel": "rbf", "bandwidth": sigma}
-
-            elif kernel_used == "linear":
-                # simple dot-product kernel
-                def linear_kernel(a, b):
-                    return a @ b.T
-                kfun = linear_kernel
-                kernel_info = {"kernel": "linear", "bandwidth": None}
-
-            else:
-                # fallback to rbf to avoid breaking existing calls
-                if bandwidth == "auto":
-                    from sklearn.metrics import pairwise_distances
-                    sample = np.vstack([X1[:min(200, len(X1))], X2[:min(200, len(X2))]])
-                    med = np.median(pairwise_distances(sample, sample))
-                    sigma = med if med > 0 else 1.0
-                else:
-                    sigma = float(bandwidth)
-                kfun = partial(rbf_kernel, sigma=sigma)
-                kernel_info = {"kernel": f"fallback_rbf_from_{kernel_used}", "bandwidth": sigma}
-
-            detector = MMD(
-                kernel=kfun,
-                callbacks=[
-                    PermutationTestDistanceBased(
-                        num_permutations=num_permutations,
-                        random_state=31,
-                        num_jobs=-1,
-                        method="approx",   # usa "exact" solo con n pequeño
-                        name="permutation_test",
-                    )
-                ],
-            )
-
-            _ = detector.fit(X=X1)
-            _, logs = detector.compare(X=X2)
-            p_value = logs["permutation_test"]["p_value"]
-            stat = logs["permutation_test"].get("statistic")
-            drift = p_value < alpha
-
-            return drift, {
-                "statistic": float(stat) if stat is not None else None,
-                "p_value": float(p_value),
-                "alpha": alpha,
-                **kernel_info,
-                "drift": drift,
-            }
-
-        except Exception as e:
-            return False, {"error": str(e), "drift": False}
-
-
-    def energy_distance_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame,
-                         alpha: float = 0.05, num_permutations: int = 1000):
-        """
-        Energy Distance (global). Se añade permutación para obtener p-value; drift si p < alpha.
-        """
-        try:
-            X1 = _to_float_matrix(X_ref)
-            X2 = _to_float_matrix(X_new)
-            if X1.size == 0 or X2.size == 0:
-                return False, {"error": "empty data", "drift": False}
-
-            detector = EnergyDistance(
-                callbacks=[
-                    PermutationTestDistanceBased(
-                        num_permutations=num_permutations,
-                        random_state=31,
-                        num_jobs=-1,
-                        method="approx",
-                        name="permutation_test",
-                    )
-                ]
-            )
-            _ = detector.fit(X=X1)
-            res, logs = detector.compare(X=X2)  # res.distance
-            p_value = logs["permutation_test"].get("p_value")
-            if p_value is not None:
-                drift = p_value < alpha
-                out = {"distance": float(getattr(res, "distance", np.nan)),
-                    "p_value": float(p_value), "alpha": alpha, "drift": drift}
-            else:
-                # fallback sin p-value
-                out = {"distance": float(getattr(res, "distance", np.nan)),
-                    "p_value": None, "alpha": None, "drift": False}
-                drift = False
-            return drift, out
-        except Exception as e:
-            return False, {"error": str(e), "drift": False}
 
 
     def performance_degradation_test_balanced_accuracy(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9):

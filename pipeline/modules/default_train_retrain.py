@@ -28,7 +28,7 @@ def _merge_train_results_retrain(results_base: dict, extra_info: dict) -> dict:
     results_base["type"] = "retrain"  # aseguramos etiqueta correcta
     return results_base
 
-def save_train_results(results: dict, output_dir: str):
+def save_train_results(results: dict, output_dir: str, logger=None):
     """Save training results in JSON format."""
     os.makedirs(output_dir, exist_ok=True)
     train_path = os.path.join(output_dir, "train_results.json")
@@ -45,7 +45,8 @@ def save_train_results(results: dict, output_dir: str):
     serializable_results = make_serializable(results)
     with open(train_path, "w") as f:
         json.dump(serializable_results, f, indent=4)
-    print(f"[TRAIN] Results saved at {train_path}")
+    if logger:
+        logger.info(f"Training results saved at {train_path}")
 
 
 def prepare_X_y(model, X, y):
@@ -79,7 +80,7 @@ def calculate_metrics(model, X_train, y_train):
 
 def default_train(X, y, last_processed_file, model_instance, random_state, logger, output_dir, param_grid=None, cv=None):
     """Train the model and return the trained model and evaluation metrics."""
-    logger.info(">>> Entering default_train")
+    logger.info("Starting default training process")
 
     # Split data
     X_train, X_eval, y_train, y_eval = train_test_split(X, y, test_size=0.2, random_state=random_state)
@@ -116,11 +117,11 @@ def default_train(X, y, last_processed_file, model_instance, random_state, logge
             **metrics
         }
 
-        save_train_results(results, output_dir)
+        save_train_results(results, output_dir, logger)
         return model, X_eval, y_eval, results
 
     except Exception as e:
-        logger.error(f"Error in default_train: {e}")
+        logger.error(f"Training process failed: {e}")
         raise
 
 
@@ -130,7 +131,7 @@ def default_retrain(
     replay_frac_old: float = 0.4,  # for mode 5
 ):
     """Retrain the model based on the given mode (0..6)."""
-    logger.info(f">>> Entering default_retrain with mode {mode}")
+    logger.info(f"Starting retraining process with mode {mode}")
     results = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "type": "retrain",
@@ -147,7 +148,7 @@ def default_retrain(
             **(extra_info or {}),
             **metrics
         })
-        save_train_results(results, output_dir)
+        save_train_results(results, output_dir, logger)
         return _model, _X_eval, _y_eval, results
 
     def _split(X_, y_):
@@ -172,7 +173,7 @@ def default_retrain(
                 cv=cv
             )
             results = _merge_train_results_retrain(results, extra_info)
-            save_train_results(results, output_dir)
+            save_train_results(results, output_dir, logger)
             return model, X_eval, y_eval, results
 
         # === Mode 1: Incremental (partial_fit) ===
@@ -208,7 +209,7 @@ def default_retrain(
                     cv=cv
                 )
                 results = _merge_train_results_retrain(results, extra_info)
-                save_train_results(results, output_dir)
+                save_train_results(results, output_dir, logger)
                 return model, X_eval, y_eval, results
 
         # === Mode 2: Retrain with window (last N samples) ===
@@ -229,7 +230,7 @@ def default_retrain(
                 cv=cv
             )
             results = _merge_train_results_retrain(results, extra_info)
-            save_train_results(results, output_dir)
+            save_train_results(results, output_dir, logger)
             return model, X_eval, y_eval, results
 
         # === Mode 3: Ensemble old + new (stacking preferred) ===
@@ -304,7 +305,7 @@ def default_retrain(
             control_dir = os.path.join(os.path.dirname(os.path.dirname(output_dir)), "control")
             prev_csv = os.path.join(control_dir, "previous_data.csv")
             if not os.path.exists(prev_csv):
-                logger.warning("previous_data.csv not found; falling back to full retraining on current data.")
+                logger.warning("Previous training data not found; falling back to full retraining on current data")
                 return default_retrain(
                     X, y, last_processed_file, model_path, 0, random_state, logger,
                     output_dir, param_grid=param_grid, cv=cv, window_size=window_size
@@ -336,7 +337,7 @@ def default_retrain(
                     cv=cv
                 )
                 results = _merge_train_results_retrain(results, extra_info)
-                save_train_results(results, output_dir)
+                save_train_results(results, output_dir, logger)
                 return model, X_eval, y_eval, results
             except Exception as e:
                 logger.error(f"Replay mix failed: {e}")
@@ -385,12 +386,12 @@ def default_retrain(
         else:
             results["strategy"] = "invalid_mode"
             results["error"] = f"Unknown mode {mode}"
-            save_train_results(results, output_dir)
+            save_train_results(results, output_dir, logger)
             raise ValueError(f"Unknown mode {mode}")
 
     except Exception as e:
         results["error"] = str(e)
         results["strategy"] = results.get("strategy", "error")
         results["fallback"] = True
-        save_train_results(results, output_dir)
+        save_train_results(results, output_dir, logger)
         raise

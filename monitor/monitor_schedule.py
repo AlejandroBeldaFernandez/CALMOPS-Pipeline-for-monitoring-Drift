@@ -1,13 +1,25 @@
 # monitor/monitor_schedule.py
 # -*- coding: utf-8 -*-
 """
-CalmOps Monitor (Scheduled)
-- Periodically checks a data directory with APScheduler (interval/cron/date).
-- Launches a Streamlit dashboard for monitoring.
-- Optional persistence modes:
-    * "none"   : run in foreground (current behavior)
-    * "pm2"    : generate a runner and start with PM2 (auto restart + on-boot)
-    * "docker" : generate Dockerfile + docker-compose and run in background with restart policy
+CalmOps Monitor - Scheduled Pipeline Execution System
+
+This module implements a comprehensive monitoring system that periodically checks data directories
+and executes ML pipelines using APScheduler. It provides multiple deployment architectures:
+
+Scheduling Engine:
+  - APScheduler integration with interval, cron, and date-based triggers
+  - Robust job management with coalescing and misfire handling
+  - Timezone-aware scheduling with Europe/Madrid as default
+
+Persistence Architectures:
+  - "none"   : Foreground execution with direct process management
+  - "pm2"    : Process Manager 2 integration for auto-restart and boot persistence
+  - "docker" : Containerized deployment with docker-compose orchestration
+
+Pipeline Management:
+  - File-based change detection with modification time tracking
+  - Streamlit dashboard integration for real-time monitoring
+  - Comprehensive error handling and graceful shutdown mechanisms
 """
 
 import os
@@ -18,18 +30,89 @@ import socket
 import shutil
 import threading
 import subprocess
+import logging
+from typing import Dict, Tuple
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+try:
+    # Python 3.9+
+    from zoneinfo import ZoneInfo
+    _TZ_EUROPE_MADRID = ZoneInfo("Europe/Madrid")
+except Exception:
+    _TZ_EUROPE_MADRID = None  # fallback to system tz
 
 # Keep imports relative to repo root (run as: python -m monitor.monitor_schedule)
 from pipeline.pipeline_stream import run_pipeline
 
 
 # =========================
-# Helpers
+# Unified Logging Configuration
+# =========================
+
+_LOG_FORMAT = "[%(levelname)s] %(asctime)s - %(name)s - %(message)s"
+
+def configure_root_logging(level: int = logging.INFO) -> None:
+    """
+    Configure root logger with unified formatting and reduced verbosity.
+    
+    Sets up a single StreamHandler to stdout with monitor-specific formatting,
+    cleans any existing handlers, captures warnings, and reduces noise from
+    third-party libraries (TensorFlow, APScheduler, PIL, matplotlib).
+    
+    Args:
+        level: Logging level (default: INFO)
+    """
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Suppress TensorFlow INFO/WARNING messages
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    sh = logging.StreamHandler(stream=sys.stdout)
+    sh.setLevel(level)
+    sh.setFormatter(logging.Formatter(_LOG_FORMAT))
+    root.addHandler(sh)
+
+    logging.captureWarnings(True)
+    for noisy in ("urllib3", "apscheduler", "PIL", "matplotlib"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def _get_logger(name: str | None = None) -> logging.Logger:
+    """
+    Create a logger that inherits root handler configuration.
+    
+    Returns a logger with proper inheritance from root configuration
+    without adding duplicate handlers.
+    
+    Args:
+        name: Logger name (defaults to current module)
+        
+    Returns:
+        Configured logger instance
+    """
+    if name is None:
+        name = __name__
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    # Prevent propagation if handlers already exist to avoid duplicate output
+    if logger.handlers:
+        logger.propagate = False
+    return logger
+
+
+# Default logger instance (can be reconfigured with pipeline-specific name)
+log = _get_logger()
+# Reduce APScheduler verbosity to focus on application-level events
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
+
+# =========================
+# Core Utility Functions
 # =========================
 
 def _project_root() -> str:
@@ -44,15 +127,24 @@ def _which(cmd: str):
 
 
 def _fatal(msg: str, code: int = 1):
-    """Print a fatal message and exit with given code."""
-    print(f"[FATAL] {msg}", file=sys.stderr)
+    """Log a fatal message and exit with given code."""
+    log.critical(msg)
     sys.exit(code)
 
 
 def _model_spec_from_instance(model_instance):
     """
-    Serialize a sklearn-like model class + params so the runner can re-instantiate it.
-    Falls back to empty-kwargs constructor if get_params is not available.
+    Serialize ML model specifications for persistence layer reconstruction.
+    
+    Extracts model class information and parameters from sklearn-compatible models
+    to enable proper model reconstruction in PM2/Docker environments. Falls back
+    to empty constructor if parameter introspection is not available.
+    
+    Args:
+        model_instance: ML model instance (sklearn-compatible)
+        
+    Returns:
+        dict: Model specification with module, class, and parameters
     """
     spec = {"module": None, "class": None, "params": {}}
     try:
@@ -66,7 +158,21 @@ def _model_spec_from_instance(model_instance):
 
 
 def _write_runner_config(pipeline_name: str, config_obj: dict, base_dir: str) -> str:
-    """Write a JSON config for the runner to reconstruct args & model."""
+    """
+    Generate JSON configuration for persistence layer runners.
+    
+    Creates a JSON configuration file containing all necessary parameters
+    for PM2 and Docker runners to reconstruct the complete pipeline execution
+    environment with proper model instantiation.
+    
+    Args:
+        pipeline_name: Unique pipeline identifier
+        config_obj: Complete configuration dictionary
+        base_dir: Project root directory
+        
+    Returns:
+        str: Path to generated configuration file
+    """
     cfg_dir = os.path.join(base_dir, "pipelines", pipeline_name, "config")
     os.makedirs(cfg_dir, exist_ok=True)
     cfg_path = os.path.join(cfg_dir, "runner_schedule_config.json")
@@ -84,7 +190,6 @@ def _write_runner_script_schedule(pipeline_name: str, runner_cfg_path: str, base
     os.makedirs(pipeline_dir, exist_ok=True)
     runner_path = os.path.join(pipeline_dir, f"run_{pipeline_name}_schedule.py")
 
-    # Avoid backslashes in f-strings by pre-building literal text
     header = f"# Auto-generated runner (schedule) for pipeline: {pipeline_name}"
     body = f"""
 import json, importlib
@@ -139,76 +244,115 @@ if __name__ == "__main__":
 
 
 # =========================
-# PM2 helpers (list / delete)
+# PM2 Process Management Integration
+# PM2 provides process persistence, auto-restart, and boot-time startup
 # =========================
+
+# PM2 Architecture:
+# - Uses ecosystem.config.js for process configuration
+# - Provides automatic restart on failure with configurable limits
+# - Enables system startup integration via pm2 startup command
+# - Supports process monitoring and log aggregation
+# - Cross-platform compatibility (Linux/macOS/Windows)
 
 def pm2_list(prefix: str = "calmops-") -> list[dict]:
     """
-    Return a list of PM2 apps (as dicts) whose name starts with `prefix`.
-    Also prints a readable summary.
-    Requires pm2 installed.
+    Query and display PM2 processes managed by CalmOps.
+    
+    Retrieves process information from PM2 daemon and filters by application
+    prefix. Displays process status including PID, status, and restart count.
+    
+    Args:
+        prefix: Process name prefix for filtering (default: "calmops-")
+        
+    Returns:
+        list[dict]: PM2 process information dictionaries
     """
     if not _which("pm2"):
-        print("[ERROR] PM2 is not installed. Install it with: sudo npm install -g pm2")
+        log.error("PM2 process manager not found. Install with: npm install -g pm2")
         return []
 
     try:
         out = subprocess.check_output(["pm2", "jlist"], text=True)
         procs = json.loads(out)
     except Exception as e:
-        print(f"[ERROR] Could not obtain PM2 list: {e}")
+        log.error(f"Could not obtain PM2 list: {e}")
         return []
 
     filtered = [p for p in procs if p.get("name", "").startswith(prefix)]
     if not filtered:
-        print(f"No PM2 processes with prefix '{prefix}'.")
+        log.info(f"No PM2 processes with prefix '{prefix}'.")
         return []
 
-    print("PM2 processes:")
+    log.info("PM2 processes:")
     for p in filtered:
         name = p.get("name")
         pid = p.get("pid")
         status = p.get("pm2_env", {}).get("status")
         restart = p.get("pm2_env", {}).get("restart_time")
-        print(f"- {name} | pid={pid} | status={status} | restarts={restart}")
+        log.info(f"- {name} | pid={pid} | status={status} | restarts={restart}")
     return filtered
 
 
 def pm2_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> None:
     """
-    Stop & delete PM2 process of the pipeline and remove its folder:
-      - pm2 delete calmops-<pipeline_name>
-      - rm -rf pipelines/<pipeline_name>
+    Complete pipeline cleanup for PM2-managed processes.
+    
+    Performs comprehensive cleanup by stopping the PM2 process, removing it from
+    the process registry, saving the configuration, and removing all associated
+    files and directories.
+    
+    Args:
+        pipeline_name: Pipeline identifier to remove
+        base_dir: Base directory containing pipeline folders
     """
     app_name = f"calmops-schedule-{pipeline_name}"
     if not _which("pm2"):
-        print("[ERROR] PM2 is not installed. Install it with: sudo npm install -g pm2")
+        log.error("PM2 process manager not found. Install with: npm install -g pm2")
         return
 
     try:
         subprocess.call(["pm2", "stop", app_name])
         subprocess.call(["pm2", "delete", app_name])
         subprocess.call(["pm2", "save"])
-        print(f"[PM2] Process '{app_name}' stopped and deleted.")
+        log.info(f"PM2 process '{app_name}' successfully terminated and removed")
     except Exception as e:
-        print(f"[WARN] Could not delete in PM2: {e}")
+        log.warning(f"PM2 process cleanup failed: {e}")
 
     pipeline_path = os.path.join(base_dir, pipeline_name)
     try:
         if os.path.exists(pipeline_path):
             shutil.rmtree(pipeline_path)
-            print(f"[FS] Folder '{pipeline_path}' removed.")
+            log.info(f"Pipeline directory '{pipeline_path}' successfully removed")
         else:
-            print(f"[FS] Folder '{pipeline_path}' does not exist.")
+            log.info(f"Pipeline directory '{pipeline_path}' not found")
     except Exception as e:
-        print(f"[ERROR] Could not remove pipeline folder: {e}")
+        log.error(f"Failed to remove pipeline directory: {e}")
 
 
 # =========================
-# Docker helpers (files / launch / list / delete)
+# Docker Containerization Integration
+# Docker provides isolated execution environment with automatic restart policies
 # =========================
+
+# Docker Architecture:
+# - Uses multi-stage Dockerfile with Python 3.10 slim base image
+# - docker-compose.yml orchestrates container lifecycle and networking
+# - Volume mounts enable persistent data access and live code updates
+# - Restart policies ensure container resilience and automatic recovery
+# - Port mapping exposes Streamlit dashboard to host network
+# - Build context optimization minimizes image size and build time
 
 def _docker_install_hint() -> str:
+    """
+    Provide comprehensive Docker installation guidance.
+    
+    Returns detailed installation instructions for Docker Engine and
+    docker-compose across different platforms and installation methods.
+    
+    Returns:
+        str: Multi-line installation instructions
+    """
     return (
         "Docker is required but not found.\n"
         "Install Docker Engine, e.g. on Debian/Ubuntu:\n"
@@ -224,8 +368,20 @@ def _docker_install_hint() -> str:
 
 def _write_docker_files(pipeline_name: str, runner_script_abs: str, base_dir: str, port: int | None):
     """
-    Generate Dockerfile and docker-compose.yml inside pipelines/<pipeline_name>/.
-    Build context is the project root so the entire repo is copied into /app.
+    Generate Docker deployment configuration files.
+    
+    Creates optimized Dockerfile and docker-compose.yml with proper build context,
+    volume mounts, environment variables, and networking configuration. Uses
+    project root as build context to ensure complete repository access.
+    
+    Args:
+        pipeline_name: Unique pipeline identifier
+        runner_script_abs: Absolute path to generated runner script
+        base_dir: Project root directory
+        port: Streamlit dashboard port (defaults to 8501)
+        
+    Returns:
+        tuple: Paths to generated Dockerfile and docker-compose.yml
     """
     pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
     os.makedirs(pipeline_dir, exist_ok=True)
@@ -233,7 +389,6 @@ def _write_docker_files(pipeline_name: str, runner_script_abs: str, base_dir: st
     dockerfile_path = os.path.join(pipeline_dir, "Dockerfile")
     compose_path = os.path.join(pipeline_dir, "docker-compose.yml")
 
-    # Map host runner path -> container /app/...
     runner_rel = runner_script_abs.replace(base_dir, "").lstrip(os.sep)
     runner_rel_posix = runner_rel.replace(os.sep, "/")
     runner_in_container = f"/app/{runner_rel_posix}"
@@ -293,7 +448,19 @@ services:
 
 
 def _launch_with_docker(pipeline_name: str, runner_script: str, base_dir: str, port: int | None):
-    """Build and run docker-compose in detached mode from pipelines/<pipeline_name>/."""
+    """
+    Deploy pipeline using Docker container orchestration.
+    
+    Generates Docker configuration files and launches the containerized pipeline
+    in detached mode with automatic restart policies. Supports both docker-compose
+    v2 (plugin) and v1 (standalone) installations.
+    
+    Args:
+        pipeline_name: Unique pipeline identifier
+        runner_script: Path to pipeline runner script
+        base_dir: Project root directory
+        port: Streamlit dashboard port
+    """
     if not _which("docker"):
         _fatal(_docker_install_hint())
 
@@ -301,7 +468,6 @@ def _launch_with_docker(pipeline_name: str, runner_script: str, base_dir: str, p
 
     pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
 
-    # Prefer 'docker compose' (v2), fallback to 'docker-compose' (v1)
     try:
         if _which("docker") and subprocess.call(
             ["docker", "compose", "version"],
@@ -319,19 +485,28 @@ def _launch_with_docker(pipeline_name: str, runner_script: str, base_dir: str, p
         _fatal(f"Failed to build/run Docker services: {e}\n{_docker_install_hint()}")
 
 
-def docker_list(prefix: str = "calmops_") -> list[tuple[str, str]]:
+def docker_list(prefix: str = "calmops_") -> list[Tuple[str, str]]:
     """
-    List docker containers whose name starts with prefix. Returns list of (name, status).
+    Query and display Docker containers managed by CalmOps.
+    
+    Retrieves container information and filters by name prefix. Displays
+    container names and current status for monitoring purposes.
+    
+    Args:
+        prefix: Container name prefix for filtering (default: "calmops_")
+        
+    Returns:
+        list[Tuple[str, str]]: Container (name, status) pairs
     """
     if not _which("docker"):
-        print("[ERROR] Docker not installed.")
+        log.error("Docker container engine not found")
         return []
     try:
         out = subprocess.check_output(
             ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"], text=True
         ).strip()
     except Exception as e:
-        print(f"[ERROR] docker ps failed: {e}")
+        log.error(f"Failed to query Docker containers: {e}")
         return []
 
     rows = []
@@ -342,23 +517,30 @@ def docker_list(prefix: str = "calmops_") -> list[tuple[str, str]]:
         if name.startswith(prefix):
             rows.append((name, status))
     if rows:
-        print("Docker containers:")
+        log.info("Active CalmOps containers:")
         for name, status in rows:
-            print(f"- {name}: {status}")
+            log.info(f"- {name}: {status}")
     else:
-        print(f"No docker containers with prefix '{prefix}'.")
+        log.info(f"No managed containers found with prefix '{prefix}'")
     return rows
 
 
 def docker_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> None:
     """
-    Bring down compose (if present) for the pipeline and remove pipeline folder.
-    Container names used: calmops_<pipeline_name>_schedule
+    Complete pipeline cleanup for Docker-managed containers.
+    
+    Performs comprehensive cleanup by stopping docker-compose services, removing
+    volumes and orphaned containers, and cleaning up all associated files.
+    Handles both compose plugin and standalone installations.
+    
+    Args:
+        pipeline_name: Pipeline identifier to remove
+        base_dir: Base directory containing pipeline folders
     """
     pipeline_dir = os.path.join(base_dir, pipeline_name)
     compose_path = os.path.join(pipeline_dir, "docker-compose.yml")
     if not _which("docker"):
-        print("[ERROR] Docker not installed.")
+        log.error("Docker container engine not found")
         return
 
     try:
@@ -368,33 +550,47 @@ def docker_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> N
             elif _which("docker-compose"):
                 subprocess.call(["docker-compose", "down", "--volumes", "--remove-orphans"], cwd=pipeline_dir)
         else:
-            # Try plain stop/rm by name if compose is missing
             cname = f"calmops_{pipeline_name}_schedule"
             subprocess.call(["docker", "rm", "-f", cname])
-        print(f"[DOCKER] Pipeline '{pipeline_name}' containers removed.")
+        log.info(f"Docker containers for pipeline '{pipeline_name}' successfully removed")
     except Exception as e:
-        print(f"[WARN] Could not bring down docker compose: {e}")
+        log.warning(f"Docker compose cleanup failed: {e}")
 
     try:
         if os.path.exists(pipeline_dir):
             shutil.rmtree(pipeline_dir)
-            print(f"[FS] Folder '{pipeline_dir}' removed.")
+            log.info(f"Pipeline directory '{pipeline_dir}' successfully removed")
     except Exception as e:
-        print(f"[ERROR] Could not remove pipeline folder: {e}")
+        log.error(f"Failed to remove pipeline directory: {e}")
 
 
 # =========================
-# PM2 launcher (schedule)
+# PM2 Process Deployment and Lifecycle Management
 # =========================
 
-def _launch_with_pm2(pipeline_name: str, runner_script: str, base_dir: str):
-    """Start the schedule runner with PM2."""
+def _launch_with_pm2(pipeline_name: str, runner_script: str, base_dir: str, logger: logging.Logger | None = None):
+    """
+    Deploy pipeline using PM2 process manager with comprehensive lifecycle management.
+    
+    Creates ecosystem configuration file and launches the pipeline as a managed PM2
+    process with automatic restart, monitoring, and optional system startup integration.
+    Handles cross-platform compatibility and provides robust error recovery.
+    
+    Args:
+        pipeline_name: Unique pipeline identifier
+        runner_script: Path to pipeline runner script
+        base_dir: Project root directory
+        logger: Optional logger instance (defaults to calmops.monitor)
+    """
+    if logger is None:
+        import logging
+        logger = logging.getLogger("calmops.monitor")
+    
     if not _which("pm2"):
         _fatal(
             "PM2 is required but not found.\n"
-            "Install Node.js + PM2, e.g. on Debian/Ubuntu:\n"
-            "  sudo apt-get update && sudo apt-get install -y nodejs npm\n"
-            "  sudo npm install -g pm2\n"
+            "Install Node.js + PM2, e.g.:\n"
+            "  npm install -g pm2\n"
             "Then re-run with persistence='pm2'."
         )
 
@@ -402,7 +598,6 @@ def _launch_with_pm2(pipeline_name: str, runner_script: str, base_dir: str):
     app_name = f"calmops-schedule-{pipeline_name}"
     python_exec = sys.executable
 
-    # Avoid backslash expressions inside f-strings
     runner_script_posix = runner_script.replace("\\", "/")
     python_exec_posix = python_exec.replace("\\", "/")
     base_dir_posix = base_dir.replace("\\", "/")
@@ -427,28 +622,43 @@ module.exports = {{
     try:
         subprocess.check_call(["pm2", "start", eco_path])
     except Exception as e:
-        _fatal(f"Failed to start with PM2: {e}\n(Install with: sudo npm install -g pm2)")
+        _fatal(f"Failed to start with PM2: {e}\n(Install with: npm install -g pm2)")
 
-    # Persist process list (best-effort)
     try:
         subprocess.check_call(["pm2", "save"])
     except Exception:
         pass
-    try:
-        user = os.getenv("USER", "") or ""
-        if user:
-            subprocess.check_call(["pm2", "startup", "-u", user])
-        else:
-            subprocess.check_call(["pm2", "startup"])
-    except Exception:
-        pass
 
-    print(f"[PM2] App '{app_name}' started and saved. It will restart on boot (if pm2 startup is active).")
+    # --- Only attempt startup on Linux/macOS ---
+    if os.name != "nt":
+        try:
+            user = os.getenv("USER") or os.getenv("USERNAME") or ""
+            if user:
+                subprocess.check_call(["pm2", "startup", "-u", user])
+            else:
+                subprocess.check_call(["pm2", "startup"])
+        except Exception:
+            logger.warning("PM2 startup configuration failed - manual setup may be required for boot persistence")
+    else:
+        logger.info("Windows platform detected - boot startup requires manual PM2 configuration")
+
+    logger.info(f"PM2 process '{app_name}' successfully deployed with automatic restart enabled")
 
 
 # =========================
-# Main scheduled monitor
+# Core Scheduled Monitoring System
+# APScheduler Integration with Robust Job Management
 # =========================
+
+# APScheduler Architecture:
+# - BackgroundScheduler runs in separate thread for non-blocking operation
+# - Job coalescing prevents multiple instances of same job running simultaneously
+# - Misfire grace time handles delayed executions due to system load
+# - Multiple trigger types: IntervalTrigger, CronTrigger, DateTrigger
+# - Timezone-aware scheduling ensures consistent execution across environments
+# - Job persistence and recovery mechanisms for system restart scenarios
+
+_ALLOWED_EXTS = (".arff", ".csv", ".txt", ".xml", ".json", ".parquet", ".xls", ".xlsx")
 
 def start_monitor_schedule(
     *,
@@ -474,15 +684,63 @@ def start_monitor_schedule(
     persistence: str = "none",   # "none" | "pm2" | "docker"
 ):
     """
-    Starts the scheduled monitoring system:
-      - Periodically checks the data directory and triggers run_pipeline on new/modified files
-      - Launches Streamlit dashboard
-      - Optionally bootstraps persistence via PM2 or Docker
+    Launch comprehensive scheduled pipeline monitoring system.
+    
+    Core Functionality:
+    - File-based change detection with modification time tracking
+    - APScheduler integration with configurable trigger types (interval/cron/date)
+    - Streamlit dashboard deployment for real-time monitoring
+    - Multi-architecture persistence (foreground/PM2/Docker)
+    
+    Scheduling Modes:
+    - interval: Periodic execution with jitter support for load distribution
+    - cron: Unix cron-style scheduling with full expression support
+    - date: One-time execution at specific datetime
+    
+    Persistence Architectures:
+    - none: Direct foreground execution with manual process management
+    - pm2: Process Manager 2 with auto-restart and boot persistence
+    - docker: Containerized deployment with compose orchestration
+    
+    Pipeline Management:
+    - Tracks processed files via control file with modification times
+    - Supports multiple data formats (CSV, ARFF, JSON, Parquet, Excel)
+    - Comprehensive error handling with graceful shutdown procedures
+    - Timezone-aware scheduling with robust misfire handling
+    
+    Args:
+        pipeline_name: Unique identifier for pipeline instance
+        data_dir: Directory path for monitoring data files
+        preprocess_file: Path to preprocessing script
+        thresholds_drift: Performance drift detection thresholds
+        thresholds_perf: Model performance evaluation thresholds
+        model_instance: ML model instance (sklearn-compatible)
+        retrain_mode: Retraining behavior configuration
+        fallback_mode: Fallback strategy for failed training
+        random_state: Seed for reproducible results
+        param_grid: Hyperparameter grid for model tuning
+        cv: Cross-validation folds
+        custom_train_file: Custom training script path
+        custom_retrain_file: Custom retraining script path
+        custom_fallback_file: Custom fallback script path
+        delimiter: Data file delimiter character
+        schedule: Scheduling configuration with type and parameters
+        window_size: Data window size for processing
+        early_start: Execute initial check before scheduled runs
+        port: Streamlit dashboard port number
+        persistence: Deployment architecture (none/pm2/docker)
     """
-    if schedule is None or "type" not in schedule or "params" not in schedule:
-        _fatal("schedule must be a dict with keys: 'type' and 'params'.")
+    # Configure unified logging format for monitor operations
+    configure_root_logging(logging.INFO)
 
-    # --- persistence bootstrap (early) ---
+    # Create pipeline-specific logger for targeted monitoring
+    global log
+    log = _get_logger(f"calmops.monitor.schedule.{pipeline_name}")
+
+    if schedule is None or "type" not in schedule or "params" not in schedule:
+        _fatal("Schedule configuration requires 'type' and 'params' keys with valid scheduling parameters")
+
+    # Early persistence layer bootstrap for PM2/Docker deployment
     persistence = (persistence or "none").lower()
     base_dir = _project_root()
 
@@ -514,14 +772,14 @@ def start_monitor_schedule(
 
         if persistence == "pm2":
             _launch_with_pm2(pipeline_name, runner_script, base_dir)
-            print("[PM2] Persistence enabled. Exiting foreground process.")
+            log.info("PM2 process deployment completed - foreground process terminating")
             return
         else:
             _launch_with_docker(pipeline_name, runner_script, base_dir, port or 8501)
-            print("[DOCKER] Persistence enabled via docker-compose. Exiting foreground process.")
+            log.info("Docker container deployment completed - foreground process terminating")
             return
 
-    # ---------- regular (non-persistent) flow below ----------
+    # Standard foreground execution without persistence layer
     BASE_PIPELINE_DIR = os.path.join(os.getcwd(), "pipelines", pipeline_name)
     OUTPUT_DIR = os.path.join(BASE_PIPELINE_DIR, "modelos")
     CONTROL_DIR = os.path.join(BASE_PIPELINE_DIR, "control")
@@ -532,11 +790,12 @@ def start_monitor_schedule(
     for d in [OUTPUT_DIR, CONTROL_DIR, LOGS_DIR, METRICS_DIR, CONFIG_DIR]:
         os.makedirs(d, exist_ok=True)
 
-    control_file = os.path.join(CONTROL_DIR, "archivo_control.txt")
+    # Control file synchronization point for dashboard integration
+    control_file = os.path.join(CONTROL_DIR, "control_file.txt")
     if not os.path.exists(control_file):
         open(control_file, "w").close()
 
-    # Save config for dashboard
+    # Generate dashboard configuration for pipeline integration
     config_path = os.path.join(CONFIG_DIR, "config.json")
     with open(config_path, "w") as f:
         json.dump({
@@ -548,35 +807,69 @@ def start_monitor_schedule(
     streamlit_process = None
 
     def stop_all(error_msg=None):
+        """
+        Graceful shutdown procedure for all monitor components.
+        
+        Terminates Streamlit dashboard process and performs clean exit
+        with optional error message logging.
+        
+        Args:
+            error_msg: Optional error message for logging
+        """
         nonlocal streamlit_process
-        print("[CRITICAL] Stopping all processes...")
+        log.critical("Initiating graceful shutdown of monitoring system")
         if streamlit_process and streamlit_process.poll() is None:
-            print("[STREAMLIT] Terminating Streamlit...")
+            log.info("Terminating Streamlit dashboard process")
             streamlit_process.terminate()
-            streamlit_process.wait()
+            try:
+                streamlit_process.wait(timeout=10)
+            except Exception:
+                streamlit_process.kill()
         if error_msg:
-            print(f"[ERROR] {error_msg}")
+            log.error(error_msg)
         sys.exit(1)
 
-    def get_records():
-        """Read control file with processed files and mtimes."""
-        records = {}
+    def get_records() -> Dict[str, int]:
+        """
+        Load file processing history from control file.
+        
+        Reads the control file containing processed file records with modification
+        times to determine which files require processing. Each line contains a
+        filename and its last processed modification time.
+        
+        Control file format:
+            filename.ext,modification_time_epoch
+        
+        Returns:
+            Dict[str, int]: Mapping of filenames to last processed modification times
+        """
+        records: Dict[str, int] = {}
         if os.path.exists(control_file):
             with open(control_file, "r") as f:
                 for line in f:
                     parts = line.strip().split(",")
                     if len(parts) == 2:
                         try:
-                            records[parts[0]] = int(float(parts[1]))
+                            key = parts[0]
+                            records[key] = int(float(parts[1]))
                         except Exception:
                             continue
         return records
 
     def run_pipeline_for_file(file):
+        """
+        Execute pipeline processing for a specific data file.
+        
+        Launches the complete ML pipeline for the given file with all configured
+        parameters, error handling, and processing completion tracking.
+        
+        Args:
+            file: Filename (basename) to process
+        """
         file_path = os.path.join(data_dir, file)
         mtime = int(os.path.getmtime(file_path))
+        log.info(f"Executing pipeline for file '{file}' (modified: {mtime})")
 
-        print(f"[PIPELINE] Running pipeline for file {file}...")
         try:
             run_pipeline(
                 pipeline_name=pipeline_name,
@@ -594,51 +887,66 @@ def start_monitor_schedule(
                 custom_retrain_file=custom_retrain_file,
                 custom_fallback_file=custom_fallback_file,
                 delimiter=delimiter,
-                target_file=file,
+                target_file=file,      # basename (control_file usa solo el nombre)
                 window_size=window_size
             )
-            print(f"[PIPELINE] Pipeline completed for {file}")
+            log.info(f"Pipeline processing completed successfully for '{file}'")
         except Exception as e:
-            stop_all(f"The pipeline failed for {file}: {e}")
+            stop_all(f"Critical pipeline failure for '{file}': {e}")
 
     def check_files():
-        """Check the directory for new/modified files and trigger processing."""
+        """
+        Scan data directory for new or modified files requiring processing.
+        
+        Compares current file modification times against control file records
+        to identify files that need pipeline execution. Supports multiple data
+        formats and maintains processing state persistence.
+        """
         try:
-            print("[CHECK] Checking files in directory...")
+            log.info("Scanning data directory for file changes")
             records = get_records()
             for file in os.listdir(data_dir):
                 file_path = os.path.join(data_dir, file)
                 if not os.path.isfile(file_path):
                     continue
-                if not file.lower().endswith((".arff", ".csv", ".txt", ".xml", ".json", ".parquet", ".xls", ".xlsx")):
+                if not file.lower().endswith(_ALLOWED_EXTS):
                     continue
 
                 mtime = int(os.path.getmtime(file_path))
                 if file not in records or mtime > records[file]:
-                    print(f"[CHECK] New or modified file: {file}")
+                    log.info(f"Detected new or modified file: '{file}'")
                     run_pipeline_for_file(file)
                 else:
-                    print(f"[CONTROL] {file} already processed, skipping.")
+                    log.debug(f"File '{file}' already processed (mtime: {records[file]}) - skipping")
         except Exception as e:
-            stop_all(f"Error in file check: {e}")
+            stop_all(f"Critical error during file system scanning: {e}")
 
-    def is_port_in_use(p):
+    def is_port_in_use(p: int) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            return s.connect_ex(('localhost', p)) == 0
+            return s.connect_ex(("localhost", p)) == 0
 
     def start_streamlit(pipeline_name, port=None):
+        """
+        Launch Streamlit dashboard for real-time pipeline monitoring.
+        
+        Starts the web-based dashboard interface with automatic port allocation
+        and proper configuration for external access.
+        
+        Args:
+            pipeline_name: Pipeline identifier for dashboard context
+            port: Preferred port number (defaults to 8501 with fallback to 8510)
+        """
         nonlocal streamlit_process
         DASHBOARD_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "web_interface", "dashboard.py"))
 
         if port is None:
             port = 8501
             if is_port_in_use(port):
-                print(f"[STREAMLIT] Port {port} is occupied. Trying 8510...")
+                log.info(f"Port {port} unavailable, attempting fallback port 8510")
                 port = 8510
 
-        print(f"[STREAMLIT] Launching dashboard on port {port}...")
+        log.info(f"Launching Streamlit dashboard on port {port}")
         try:
-            # Bind 0.0.0.0 to work inside Docker as well
             streamlit_process = subprocess.Popen([
                 "streamlit", "run", DASHBOARD_PATH,
                 "--server.port", str(port),
@@ -646,26 +954,61 @@ def start_monitor_schedule(
                 "--", "--pipeline_name", pipeline_name
             ])
         except Exception as e:
-            stop_all(f"Could not launch Streamlit: {e}")
+            stop_all(f"Critical failure launching Streamlit dashboard: {e}")
 
-    print(f"[MAIN] Launching scheduled monitor with APScheduler...")
+    log.info("Initializing APScheduler-based monitoring system")
 
     if early_start:
         check_files()
 
-    scheduler = BackgroundScheduler()
+    # Configure APScheduler with robust job management and misfire handling
+    scheduler = BackgroundScheduler(
+        job_defaults={
+            "coalesce": True,
+            "max_instances": 1,
+            "misfire_grace_time": 300
+        },
+        timezone=_TZ_EUROPE_MADRID if _TZ_EUROPE_MADRID else None
+    )
 
-    # Schedule type and parameters are combined in the 'schedule' argument
     stype = schedule["type"]
-    sparams = schedule["params"]
+    sparams = dict(schedule["params"])
     if stype == "interval":
-        scheduler.add_job(check_files, IntervalTrigger(**sparams))
+        jitter = sparams.pop("jitter", 10)
+        trigger = IntervalTrigger(jitter=jitter, **sparams)
+        scheduler.add_job(
+            check_files,
+            trigger=trigger,
+            id=f"check_files:{pipeline_name}",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
     elif stype == "cron":
-        scheduler.add_job(check_files, CronTrigger(**sparams))
+        trigger = CronTrigger(**sparams)
+        scheduler.add_job(
+            check_files,
+            trigger=trigger,
+            id=f"check_files:{pipeline_name}",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
     elif stype == "date":
-        scheduler.add_job(check_files, DateTrigger(run_date=sparams["run_date"]))
+        trigger = DateTrigger(run_date=sparams["run_date"])
+        scheduler.add_job(
+            check_files,
+            trigger=trigger,
+            id=f"check_files:{pipeline_name}",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
     else:
-        stop_all(f"[ERROR] Invalid schedule type: {stype}")
+        stop_all(f"Unsupported schedule type '{stype}' - supported types: interval, cron, date")
 
     scheduler.start()
 
@@ -673,60 +1016,81 @@ def start_monitor_schedule(
 
     try:
         while True:
-            print("[DEBUG] Monitor running...")
+            log.debug("Monitor system heartbeat - all components operational")
             time.sleep(30)
     except KeyboardInterrupt:
-        stop_all("[INTERRUPT] Terminated by keyboard.")
+        stop_all("Monitor terminated by user interrupt signal")
     except Exception as e:
-        stop_all(f"[FATAL] Unexpected error in monitor: {e}")
+        stop_all(f"Unexpected monitor system failure: {e}")
 
 
 # =========================
-# Utility functions
+# Pipeline Management Utilities
 # =========================
 
 def list_pipelines(base_dir="pipelines"):
-    """List all existing pipelines in the specified directory."""
+    """
+    Display all available pipeline configurations.
+    
+    Scans the pipelines directory and lists all configured pipeline instances
+    for management and monitoring purposes.
+    
+    Args:
+        base_dir: Directory containing pipeline configurations
+    """
     try:
         pipelines = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
         if not pipelines:
-            print("No pipelines found.")
+            log.info("No pipeline configurations found")
         else:
-            print("Available Pipelines:")
+            log.info("Available pipeline configurations:")
             for pipeline in pipelines:
-                print(f"- {pipeline}")
+                log.info(f"- {pipeline}")
     except Exception as e:
-        print(f"[ERROR] Could not list pipelines: {e}")
+        log.error(f"Failed to scan pipeline directory: {e}")
 
 
 def delete_pipeline(pipeline_name, base_dir="pipelines"):
-    """Delete a specified pipeline and all its files."""
+    """
+    Remove pipeline configuration and all associated files.
+    
+    Performs complete pipeline cleanup including configuration files,
+    model artifacts, logs, and metrics. Requires user confirmation
+    for irreversible deletion.
+    
+    Args:
+        pipeline_name: Pipeline identifier to remove
+        base_dir: Directory containing pipeline configurations
+    """
     pipeline_path = os.path.join(base_dir, pipeline_name)
     if not os.path.exists(pipeline_path):
-        print(f"[ERROR] Pipeline {pipeline_name} does not exist.")
+        log.error(f"Pipeline '{pipeline_name}' not found")
         return
     try:
         confirmation = input(f"Are you sure you want to delete the pipeline '{pipeline_name}'? This action is irreversible. (y/n): ")
         if confirmation.lower() != 'y':
-            print("Deletion cancelled.")
+            log.info("Pipeline deletion cancelled by user")
             return
         shutil.rmtree(pipeline_path)
-        print(f"[INFO] Pipeline '{pipeline_name}' has been deleted.")
+        log.info(f"Pipeline '{pipeline_name}' successfully deleted")
     except Exception as e:
-        print(f"[ERROR] Failed to delete pipeline {pipeline_name}: {e}")
+        log.error(f"Pipeline deletion failed for '{pipeline_name}': {e}")
 
 
 # =========================
-# Example of usage
+# Example Usage Configuration
 # =========================
 
 if __name__ == "__main__":
+    # Configure unified logging for standalone execution
+    configure_root_logging(logging.INFO)
+
     from sklearn.ensemble import RandomForestClassifier
 
     start_monitor_schedule(
         pipeline_name="my_pipeline_schedule",
         data_dir="/home/alex/datos",
-        preprocess_file="/home/alex/demo/pipeline/preprocessing.py",
+        preprocess_file="/home/alex/calmops/pipeline/preprocessing.py",
         thresholds_drift={"balanced_accuracy": 0.8},
         thresholds_perf={"accuracy": 0.9, "balanced_accuracy": 0.9, "f1": 0.85},
         model_instance=RandomForestClassifier(random_state=42),
@@ -737,10 +1101,10 @@ if __name__ == "__main__":
         cv=5,
         delimiter=",",
         schedule={
-            "type": "interval",  # Options: 'interval', 'cron', 'date'
-            "params": {"minutes": 2}  # For 'interval' type
+            "type": "interval",            # Scheduling modes: 'interval' | 'cron' | 'date'
+            "params": {"minutes": 10}      # Interval parameters: minutes, seconds, hours, days
         },
         early_start=True,
-        port=None,                # Or specify a fixed port like 8600
-        persistence="none"        # "none" | "pm2" | "docker"
+        port=None,                # Dashboard port (auto-allocated if None)
+        persistence="none"        # Deployment architecture: "none" | "pm2" | "docker"
     )

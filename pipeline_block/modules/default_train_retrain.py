@@ -1,296 +1,674 @@
+# modules/default_train_retrain.py
+from __future__ import annotations
+
 import os
 import json
-import joblib
+import time
+from dataclasses import dataclass
+from typing import Optional, Dict, Any, List, Tuple
+
+import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import List, Tuple, Optional
-from sklearn.base import is_classifier, is_regressor
 
-# --- Se asume que ya tienes importados en tu proyecto:
-# from yourmodule.training import default_train, default_retrain
-# from yourmodule.drift import check_drift
-# from yourmodule.loader import data_loader
+from sklearn.base import clone, is_classifier, is_regressor
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import (
+    accuracy_score, f1_score, balanced_accuracy_score,
+    r2_score, mean_squared_error, mean_absolute_error
+)
 
-# ---------------------------
-# Helpers
-# ---------------------------
-def _sorted_block_ids(series: pd.Series) -> List:
-    """Try numeric, then datetime, else lexicographic ordering of block ids."""
-    vals = series.dropna().unique().tolist()
-    # numeric
+
+# =====================================================================================
+# Utils
+# =====================================================================================
+
+def _serializable(obj):
+    import numpy as _np
+    if isinstance(obj, (bool, _np.bool_)):
+        return bool(obj)
+    if isinstance(obj, (int, _np.integer)):
+        return int(obj)
+    if isinstance(obj, (float, _np.floating)):
+        return float(obj)
+    if isinstance(obj, (list, tuple, _np.ndarray)):
+        return [_serializable(x) for x in obj]
+    if isinstance(obj, dict):
+        return {str(k): _serializable(v) for k, v in obj.items()}
+    return obj
+
+
+def _sorted_blocks(values: pd.Series) -> List[str]:
+    vals = values.dropna().astype(str).unique().tolist()
     try:
         nums = [float(v) for v in vals]
         return [x for _, x in sorted(zip(nums, vals))]
     except Exception:
         pass
-    # datetime
     try:
         dt = pd.to_datetime(vals, errors="raise")
         return [x for _, x in sorted(zip(dt, vals))]
     except Exception:
         pass
-    # lexicographic
     return sorted(vals, key=lambda x: str(x))
 
-def _persist_model(model, model_dir: str, model_filename: str, logger):
-    """
-    Persist the model to disk keeping a previous copy:
-      - current -> _previous.pkl
-      - new model -> current .pkl
-    This matches your check_drift rollback expectations.
-    """
-    Path(model_dir).mkdir(parents=True, exist_ok=True)
-    model_path = os.path.join(model_dir, model_filename)
-    prev_model_path = model_path.replace(".pkl", "_previous.pkl")
 
+def _global_metrics(y_true: pd.Series, y_pred: np.ndarray, model) -> Dict[str, float]:
+    # IMPORTANT: detect using underlying estimator (global_model) if present
+    base_est = getattr(model, "global_model", model)
+    if is_classifier(base_est):
+        out = {
+            "accuracy": accuracy_score(y_true, y_pred),
+            "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+            "f1": f1_score(y_true, y_pred, average="macro"),
+        }
+    else:
+        mse = mean_squared_error(y_true, y_pred)
+        out = {
+            "r2": r2_score(y_true, y_pred),
+            "rmse": float(np.sqrt(mse)),
+            "mae": mean_absolute_error(y_true, y_pred),
+            "mse": float(mse),
+        }
+    return {k: float(v) for k, v in out.items()}
+
+
+def _per_block_metrics(y_true: pd.Series, y_pred: np.ndarray, blocks: pd.Series, model) -> Dict[str, Dict[str, float]]:
+    # Detect kind on underlying estimator
+    base_est = getattr(model, "global_model", model)
+    is_cls = is_classifier(base_est)
+
+    df = pd.DataFrame({"y": y_true, "pred": y_pred, "_b": blocks}).dropna(subset=["_b"])
+    out: Dict[str, Dict[str, float]] = {}
+    for bid, g in df.groupby("_b"):
+        if is_cls:
+            out[str(bid)] = {
+                "accuracy": float(accuracy_score(g["y"], g["pred"])),
+                "balanced_accuracy": float(balanced_accuracy_score(g["y"], g["pred"])),
+                "f1": float(f1_score(g["y"], g["pred"], average="macro")),
+                "n": int(g.shape[0]),
+            }
+        else:
+            mse = mean_squared_error(g["y"], g["pred"])
+            out[str(bid)] = {
+                "r2": float(r2_score(g["y"], g["pred"])),
+                "rmse": float(np.sqrt(mse)),
+                "mae": float(mean_absolute_error(g["y"], g["pred"])),
+                "mse": float(mse),
+                "n": int(g.shape[0]),
+            }
+    return out
+
+
+# =====================================================================================
+# Block-wise model
+# =====================================================================================
+
+class BlockWiseModel:
+    """
+    - global_model: trained with all TRAIN blocks
+    - per_block_models: dict {block_id -> model trained only with that block}
+    """
+    def __init__(self, base_estimator, block_col: str):
+        self.base_estimator = base_estimator
+        self.block_col = block_col
+        self.global_model = None
+        self.per_block_models: Dict[str, Any] = {}
+
+    def fit(self, X: pd.DataFrame, y: pd.Series, train_blocks: List[str], *, min_rows_per_block: int = 1):
+        # Train global model with all train blocks
+        mask = X[self.block_col].astype(str).isin([str(b) for b in train_blocks])
+        Xg, yg = X.loc[mask].drop(columns=[self.block_col], errors="ignore"), y.loc[mask]
+        if Xg.shape[0] == 0:
+            raise RuntimeError("No rows available to train the global model. Check train_blocks selection.")
+        self.global_model = clone(self.base_estimator)
+        self.global_model.fit(Xg, yg)
+
+        # Per-block models (skip tiny blocks)
+        self.per_block_models = {}
+        skipped_small: List[str] = []
+        for b in train_blocks:
+            Xb_full = X[X[self.block_col].astype(str) == str(b)]
+            if Xb_full.shape[0] < int(min_rows_per_block):
+                skipped_small.append(str(b))
+                continue
+            Xb = Xb_full.drop(columns=[self.block_col], errors="ignore")
+            yb = y.loc[Xb.index]
+            est = clone(self.base_estimator)
+            est.fit(Xb, yb)
+            self.per_block_models[str(b)] = est
+
+        # Keep info for reporting usage (optionally)
+        self._skipped_small_on_fit = skipped_small
+        return self
+
+    def retrain_blocks(self, X: pd.DataFrame, y: pd.Series, blocks_to_retrain: List[str], *, min_rows_per_block: int = 1):
+        """Retrains ONLY the per-block models listed (does not touch global)."""
+        skipped_small: List[str] = []
+        for b in blocks_to_retrain:
+            Xb_full = X[X[self.block_col].astype(str) == str(b)]
+            if Xb_full.shape[0] < int(min_rows_per_block):
+                skipped_small.append(str(b))
+                continue
+            Xb = Xb_full.drop(columns=[self.block_col], errors="ignore")
+            yb = y.loc[Xb.index]
+            est = clone(self.base_estimator)
+            est.fit(Xb, yb)
+            self.per_block_models[str(b)] = est
+
+        self._skipped_small_on_retrain = skipped_small
+        return self
+
+    def set_block_model(self, block_id: str, model) -> None:
+        self.per_block_models[str(block_id)] = model
+
+    def get_block_model(self, block_id: str):
+        return self.per_block_models.get(str(block_id), None)
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        if self.global_model is None:
+            raise RuntimeError("Model not fitted.")
+
+        # Predict per block when available; fallback to global
+        if self.block_col in X.columns:
+            out = np.empty(len(X), dtype=object)
+            blocks = X[self.block_col].astype(str)
+            base_index = X.index
+            for b, idx_labels in blocks.groupby(blocks).groups.items():
+                idx_labels = pd.Index(idx_labels)
+                pos = base_index.get_indexer(idx_labels)
+
+                Xb = X.loc[idx_labels].drop(columns=[self.block_col], errors="ignore")
+                model_b = self.per_block_models.get(str(b), self.global_model)
+                yb = model_b.predict(Xb)
+                out[pos] = yb
+
+            try:
+                return out.astype(float)
+            except Exception:
+                return out
+
+        return self.global_model.predict(X)
+
+
+# =====================================================================================
+# Helpers for training / per-block cache
+# =====================================================================================
+
+def _fit_with_optional_gs(base_model, Xtr, ytr, param_grid=None, cv=None, logger=None):
+    model = clone(base_model)
+    if param_grid and cv:
+        scoring = "f1_macro" if is_classifier(model) else "r2"
+        gs = GridSearchCV(model, param_grid=param_grid, cv=cv, n_jobs=-1, scoring=scoring, refit=True)
+        gs.fit(Xtr, ytr)
+        best_model = gs.best_estimator_
+        if logger:
+            logger.info(f"[TRAIN] GridSearchCV best params: {gs.best_params_}")
+        return best_model, {"gridsearch": {"best_params": gs.best_params_, "cv": cv}}
+    else:
+        model.fit(Xtr, ytr)
+        return model, {}
+
+
+def _save_block_training_data(control_dir: Optional[str], block_id: str, Xb: pd.DataFrame, yb: pd.Series):
+    if not control_dir:
+        return
+    os.makedirs(os.path.join(control_dir, "per_block_train_data"), exist_ok=True)
+    dfb = Xb.copy()
+    dfb["__target__"] = yb
+    dfb.to_parquet(os.path.join(control_dir, "per_block_train_data", f"{str(block_id)}.parquet"), index=True)
+
+
+def _load_block_training_data(control_dir: Optional[str], block_id: str) -> Optional[pd.DataFrame]:
+    if not control_dir:
+        return None
+    path = os.path.join(control_dir, "per_block_train_data", f"{str(block_id)}.parquet")
+    if not os.path.exists(path):
+        return None
     try:
-        # Move current to previous (if exists)
-        if os.path.exists(model_path):
-            # Overwrite previous if exists
-            if os.path.exists(prev_model_path):
-                os.remove(prev_model_path)
-            os.replace(model_path, prev_model_path)
+        return pd.read_parquet(path)
+    except Exception:
+        return None
 
-        # Dump new model
-        joblib.dump(model, model_path)
-        logger.info(f"[MODEL] Saved current model at {model_path}")
-        if os.path.exists(prev_model_path):
-            logger.info(f"[MODEL] Previous model available at {prev_model_path}")
-    except Exception as e:
-        logger.error(f"[MODEL] Failed to persist model: {e}")
-        raise
 
-def _write_previous_data_csv(control_dir: str, df_ref: pd.DataFrame, y_col: str, logger):
-    """
-    Write control/previous_data.csv with the reference window (features + target).
-    This is used by check_drift() for statistical tests (Frouros).
-    """
-    out_dir = Path(control_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "previous_data.csv"
-    try:
-        df_ref.to_csv(path, index=False)
-        logger.info(f"[REF] Updated previous_data.csv with {len(df_ref)} rows at {path}")
-    except Exception as e:
-        logger.error(f"[REF] Failed to write previous_data.csv: {e}")
+# =====================================================================================
+# Report
+# =====================================================================================
 
-def _select_initial_blocks(block_ids: List, initial_k: int) -> List:
-    """Pick first K blocks for initial training (bounded)."""
-    initial_k = max(1, int(initial_k))
-    return block_ids[:min(len(block_ids), initial_k)]
-
-def _build_ref_window(df: pd.DataFrame, block_col: str, y_col: str, ref_blocks: List) -> pd.DataFrame:
-    """Concatenate reference blocks, returning a DataFrame with features + target."""
-    if not ref_blocks:
-        return pd.DataFrame(columns=[*df.columns])
-    ref_df = df[df[block_col].isin(ref_blocks)].copy()
-    # Keep features + target (drop block_col)
-    return ref_df.drop(columns=[block_col])
-
-# ---------------------------
-# Main driver
-# ---------------------------
-def train_retrain_on_blocked_dataset(
+def _train_report(
     *,
-    logger,
-    detector,
-    perf_thresholds: dict,
-    model_instance,            # e.g., RandomForestClassifier(...)
-    model_dir: str,
-    model_filename: str,       # e.g., "model.pkl"
-    output_dir: str,
-    data_dir: str,
-    control_dir: str,
-    y_col: str,
+    kind: str,
+    file: str,
+    model: BlockWiseModel,
     block_col: str,
-    # data loader options
-    target_file: Optional[str] = None,
-    delimiter: Optional[str] = None,
-    # initial training window
-    initial_k_blocks: int = 1,
-    # reference policy for drift stats
-    reference_mode: str = "rolling",   # "first" | "rolling"
-    rolling_k: int = 3,
-    # retraining policy
-    retrain_mode: int = 0,             # your modes 0..6
-    window_size: Optional[int] = None, # used in mode 2
-    replay_frac_old: float = 0.4,      # used in mode 5
-    # default_train grid
-    random_state: int = 42,
-    param_grid: Optional[dict] = None,
-    cv: Optional[int] = None,
+    train_blocks: List[str],
+    eval_blocks: List[str],
+    X: pd.DataFrame,
+    y: pd.Series,
+    extra: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    report: Dict[str, Any] = {
+        "type": kind,
+        "file": file,
+        "timestamp": ts,
+        "model": model.base_estimator.__class__.__name__,
+        "block_col": block_col,
+        "train_blocks": [str(b) for b in train_blocks],
+        "eval_blocks": [str(b) for b in eval_blocks],
+        "train_size": int(X[X[block_col].astype(str).isin(train_blocks)].shape[0]),
+        "eval_size": int(X[X[block_col].astype(str).isin(eval_blocks)].shape[0]),
+    }
+
+    # In-sample metrics per train block
+    per_block_train: Dict[str, Dict[str, float]] = {}
+    for b in train_blocks:
+        Xb = X[X[block_col].astype(str) == str(b)]
+        yb = y.loc[Xb.index]
+        yhat = model.predict(Xb)
+        per_block_train[str(b)] = _global_metrics(yb, yhat, model)
+        per_block_train[str(b)]["n"] = int(Xb.shape[0])
+    report["per_block_train"] = per_block_train
+
+    # If we tracked skips on fit/retrain, add them
+    if hasattr(model, "_skipped_small_on_fit"):
+        report["skipped_small_blocks_on_fit"] = list(getattr(model, "_skipped_small_on_fit") or [])
+    if hasattr(model, "_skipped_small_on_retrain"):
+        report["skipped_small_blocks_on_retrain"] = list(getattr(model, "_skipped_small_on_retrain") or [])
+
+    if extra:
+        report.update(extra)
+    return _serializable(report)
+
+
+# =====================================================================================
+# TRAIN (block_wise only)
+# =====================================================================================
+
+def default_train(
+    X: pd.DataFrame,
+    y: pd.Series,
+    last_processed_file: str,
+    *,
+    model_instance,
+    random_state: int,
+    logger,
+    param_grid: dict = None,
+    cv: int = None,
+    output_dir: str = None,
+    blocks: Optional[pd.Series] = None,
+    block_col: Optional[str] = None,
+    # only using `test_blocks` to define eval blocks; others kept for API compatibility
+    split_mode: Optional[str] = None,
+    test_size: Optional[float] = None,
+    n_test_blocks: Optional[int] = None,
+    test_blocks: Optional[List[str]] = None,
+    block_selection: Optional[str] = None,
+    # NEW: per-block cache (replay mode) + small-block threshold
+    control_dir: Optional[str] = None,
+    min_rows_per_block: int = 1,          # skip training per-block models smaller than this
+    auto_init_new_blocks: bool = True,    # not used on train (all seen are "current"), kept for symmetry
+) -> Tuple[BlockWiseModel, pd.DataFrame, pd.Series, Dict[str, Any]]:
+    """
+    TRAIN (BLOCK_WISE ONLY):
+      - eval_blocks = test_blocks if provided; otherwise last block
+      - train_blocks = the rest; if empty (1-block dataset), use the same block also as train (safe fallback)
+      - trains global + per-block (skips tiny blocks < min_rows_per_block)
+      - stores per-block cache for replay
+    """
+    assert block_col is not None, "block_col is required in block_wise mode."
+    assert blocks is not None and blocks.size > 0, "A blocks Series is required."
+
+    os.makedirs(output_dir or ".", exist_ok=True)
+    train_json = os.path.join(output_dir or ".", "train_results.json")
+
+    all_blocks_sorted = _sorted_blocks(blocks.astype(str))
+    if not all_blocks_sorted:
+        raise RuntimeError("No block ids found.")
+
+    if test_blocks:
+        eval_blocks = [str(b) for b in test_blocks if str(b) in all_blocks_sorted]
+        if not eval_blocks:
+            eval_blocks = [all_blocks_sorted[-1]]
+    else:
+        eval_blocks = [all_blocks_sorted[-1]]
+
+    train_blocks = [b for b in all_blocks_sorted if b not in set(eval_blocks)]
+    if len(train_blocks) == 0:
+        # Safe fallback for single-block datasets
+        train_blocks = list(eval_blocks)
+
+    # Best base estimator (optional GridSearch) with all TRAIN rows
+    Xg = X[X[block_col].astype(str).isin(train_blocks)].drop(columns=[block_col], errors="ignore")
+    yg = y.loc[Xg.index]
+    best_est, extra = _fit_with_optional_gs(model_instance, Xg, yg, param_grid=param_grid, cv=cv, logger=logger)
+
+    # Block-wise model
+    model = BlockWiseModel(best_est, block_col=block_col).fit(X, y, train_blocks=train_blocks, min_rows_per_block=min_rows_per_block)
+
+    # Save per-block training cache (for replay)
+    for b in train_blocks:
+        Xb_full = X[X[block_col].astype(str) == str(b)].drop(columns=[block_col], errors="ignore")
+        yb_full = y.loc[Xb_full.index]
+        if Xb_full.shape[0] >= int(min_rows_per_block):
+            _save_block_training_data(control_dir, b, Xb_full, yb_full)
+
+    # Report
+    report = _train_report(
+        kind="train",
+        file=last_processed_file,
+        model=model,
+        block_col=block_col,
+        train_blocks=train_blocks,
+        eval_blocks=eval_blocks,
+        X=X, y=y,
+        extra=extra,
+    )
+    try:
+        with open(train_json, "w") as f:
+            json.dump(report, f, indent=2)
+    except Exception:
+        pass
+
+    # Eval subset
+    eval_mask = X[block_col].astype(str).isin(eval_blocks)
+    X_eval = X.loc[eval_mask]
+    y_eval = y.loc[eval_mask]
+    meta = {"test_blocks": pd.Series(X[block_col].loc[eval_mask])}
+
+    return model, X_eval, y_eval, meta
+
+
+# =====================================================================================
+# RETRAIN (selective block-wise with modes 0–6)
+# =====================================================================================
+
+class FrozenEstimator:
+    """Wrapper to freeze a fitted estimator (fit is a no-op)."""
+    def __init__(self, fitted_estimator):
+        self.est = fitted_estimator
+
+    def fit(self, X, y):
+        return self  # no-op
+
+    def predict(self, X):
+        return self.est.predict(X)
+
+    def predict_proba(self, X):
+        if hasattr(self.est, "predict_proba"):
+            return self.est.predict_proba(X)
+        raise AttributeError("Underlying estimator has no predict_proba")
+
+
+def _retrain_block_strategy(
+    *,
+    mode: int,
+    prev_model,
+    base_estimator,
+    Xb: pd.DataFrame,
+    yb: pd.Series,
+    random_state: int,
+    is_clf: bool,
+    control_dir: Optional[str],
+    block_id: str
 ):
     """
-    End-to-end routine:
-      1) Load FULL dataset (no slicing at loader).
-      2) Sort block ids and train on first K blocks.
-      3) For each subsequent block:
-         - Update previous_data.csv based on reference_mode (first/rolling).
-         - Run check_drift on the block.
-         - If 'retrain' → default_retrain with retrain_mode.
-      4) Persist model at each successful (re)train.
-
-    Returns:
-      dict with per-block decisions and a compact summary.
+    Returns the NEW per-block model according to 'mode'.
     """
-    # 1) Load FULL dataset (and snapshot blocks via data_loader if ya integrado)
-    from yourmodule.loader import data_loader  # <-- ajusta el import a tu proyecto real
-    df, last_file, last_mtime = data_loader(
-        logger, data_dir, control_dir, delimiter=delimiter,
-        target_file=target_file, block_col=block_col
-    )
-    if df.empty:
-        logger.warning("[PIPELINE] No dataset returned by loader. Nothing to do.")
-        return {"summary": {"status": "no_data"}}
+    # 0) full
+    if mode == 0:
+        new_model = clone(base_estimator)
+        new_model.fit(Xb, yb)
+        return new_model
 
-    if y_col not in df.columns:
-        raise ValueError(f"[PIPELINE] y_col='{y_col}' not found in dataset.")
+    # 1) incremental (partial_fit)
+    if mode == 1 and hasattr(prev_model, "partial_fit"):
+        try:
+            if is_clf:
+                classes = np.unique(yb)
+                prev_model.partial_fit(Xb, yb, classes=classes)
+            else:
+                prev_model.partial_fit(Xb, yb)
+            return prev_model
+        except Exception:
+            # fallback to full if partial_fit fails
+            new_model = clone(base_estimator)
+            new_model.fit(Xb, yb)
+            return new_model
 
-    if block_col not in df.columns:
-        logger.warning(f"[PIPELINE] block_col='{block_col}' not found. Treating as a single block.")
-        df[block_col] = "ALL"
+    # 2) windowed: Xb already trimmed outside if needed
+    if mode == 2:
+        new_model = clone(base_estimator)
+        new_model.fit(Xb, yb)
+        return new_model
 
-    # 2) Identify and sort blocks
-    block_ids = _sorted_block_ids(df[block_col])
-    if not block_ids:
-        logger.warning("[PIPELINE] No blocks found. Treating as a single block 'ALL'.")
-        block_ids = ["ALL"]
+    # 3) ensemble old + new (stacking)
+    if mode == 3:
+        from sklearn.linear_model import LogisticRegression, Ridge
+        if is_clf:
+            from sklearn.ensemble import StackingClassifier
+            new_est = clone(base_estimator)
+            new_est.fit(Xb, yb)
+            estimators = [("old", clone(prev_model)), ("new", new_est)]
+            meta = LogisticRegression(max_iter=1000)
+            model = StackingClassifier(estimators=estimators, final_estimator=meta, n_jobs=-1)
+            model.fit(Xb, yb)
+            return model
+        else:
+            from sklearn.ensemble import StackingRegressor
+            new_est = clone(base_estimator)
+            new_est.fit(Xb, yb)
+            estimators = [("old", clone(prev_model)), ("new", new_est)]
+            meta = Ridge(random_state=random_state)
+            model = StackingRegressor(estimators=estimators, final_estimator=meta, n_jobs=-1)
+            model.fit(Xb, yb)
+            return model
 
-    # Split features/target by block for reuse
-    by_block = {}
-    for bid in block_ids:
-        part = df[df[block_col] == bid]
-        yb = part[y_col]
-        Xb = part.drop(columns=[y_col, block_col])
-        by_block[bid] = (Xb, yb)
+    # 4) stacking frozen(old) + cloned(old) retrained
+    if mode == 4:
+        from sklearn.linear_model import LogisticRegression, Ridge
+        if is_clf:
+            from sklearn.ensemble import StackingClassifier
+            frozen_old = FrozenEstimator(prev_model)
+            cloned_old = clone(prev_model)
+            cloned_old.fit(Xb, yb)
+            estimators = [("old_frozen", frozen_old), ("old_clone", cloned_old)]
+            meta = LogisticRegression(max_iter=1000)
+            model = StackingClassifier(estimators=estimators, final_estimator=meta, n_jobs=-1, passthrough=False)
+            model.fit(Xb, yb)
+            return model
+        else:
+            from sklearn.ensemble import StackingRegressor
+            frozen_old = FrozenEstimator(prev_model)
+            cloned_old = clone(prev_model)
+            cloned_old.fit(Xb, yb)
+            estimators = [("old_frozen", frozen_old), ("old_clone", cloned_old)]
+            meta = Ridge(random_state=random_state)
+            model = StackingRegressor(estimators=estimators, final_estimator=meta, n_jobs=-1, passthrough=False)
+            model.fit(Xb, yb)
+            return model
 
-    # 3) Initial training on first K blocks
-    init_blocks = _select_initial_blocks(block_ids, initial_k_blocks)
-    df_init = df[df[block_col].isin(init_blocks)].copy()
-    X_init = df_init.drop(columns=[y_col, block_col])
-    y_init = df_init[y_col]
+    # 5) replay mix (previous cached training data + current block data)
+    if mode == 5:
+        df_prev = _load_block_training_data(control_dir, block_id)
+        if df_prev is not None and "__target__" in df_prev.columns:
+            X_prev = df_prev.drop(columns=["__target__"])
+            y_prev = df_prev["__target__"]
+            X_mix = pd.concat([X_prev, Xb], axis=0)
+            y_mix = pd.concat([y_prev, yb], axis=0)
+        else:
+            X_mix, y_mix = Xb, yb
+        new_model = clone(base_estimator)
+        new_model.fit(X_mix, y_mix)
+        return new_model
 
-    from yourmodule.training import default_train, default_retrain  # ajusta import
-    logger.info(f"[PIPELINE] Initial training on blocks={init_blocks} (rows={len(df_init)}).")
-    model, X_eval, y_eval, train_info = default_train(
-        X_init, y_init,
-        last_processed_file=last_file,
-        model_instance=model_instance,
-        random_state=random_state,
-        logger=logger,
-        output_dir=output_dir,
-        param_grid=param_grid,
-        cv=cv
-    )
-    _persist_model(model, model_dir, model_filename, logger)
+    # 6) calibration (classification)
+    if mode == 6 and is_clf:
+        from sklearn.calibration import CalibratedClassifierCV
+        try:
+            calib = CalibratedClassifierCV(base_estimator=prev_model, method="isotonic", cv=3)
+            calib.fit(Xb, yb)
+            return calib
+        except Exception:
+            # fallback to full
+            new_model = clone(base_estimator)
+            new_model.fit(Xb, yb)
+            return new_model
 
-    # Prepare reference list for drift stats
-    if reference_mode not in ("first", "rolling"):
-        raise ValueError("reference_mode must be 'first' or 'rolling'")
-    ref_blocks = list(init_blocks)  # start with initial
+    # fallback → full
+    new_model = clone(base_estimator)
+    new_model.fit(Xb, yb)
+    return new_model
 
-    # 4) Iterate over the remaining blocks
-    from yourmodule.drift import check_drift  # ajusta import
-    decisions = []
-    for bid in block_ids:
-        if bid in init_blocks:
-            decisions.append({"block_id": bid, "decision": "trained_as_reference"})
+
+def default_retrain(
+    X: pd.DataFrame,
+    y: pd.Series,
+    last_processed_file: str,
+    *,
+    model_path: str,
+    mode: int,
+    random_state: int,
+    logger,
+    param_grid: dict = None,     # unused in block-wise selective retrain
+    cv: int = None,              # unused in block-wise selective retrain
+    output_dir: str = None,
+    window_size: int = None,
+    blocks: Optional[pd.Series] = None,
+    block_col: Optional[str] = None,
+    split_mode: Optional[str] = None,         # ignored
+    test_size: Optional[float] = None,        # ignored
+    n_test_blocks: Optional[int] = None,      # ignored
+    test_blocks: Optional[List[str]] = None,  # eval blocks
+    block_selection: Optional[str] = None,    # ignored
+    drifted_blocks: Optional[List[str]] = None,
+    control_dir: Optional[str] = None,
+    # NEW
+    min_rows_per_block: int = 1,          # do not train per-block if block has fewer rows
+    auto_init_new_blocks: bool = True,    # automatically create models for brand-new blocks
+) -> Tuple[BlockWiseModel, pd.DataFrame, pd.Series, Dict[str, Any]]:
+    """
+    SELECTIVE RETRAIN (BLOCK_WISE):
+      - Retrains only `drifted_blocks` using the selected mode.
+      - If `auto_init_new_blocks` is True, also initializes models for brand-new blocks.
+      - Does NOT touch the global model.
+      - Updates per-block training cache when applicable (replay).
+    """
+    assert block_col is not None, "block_col is required in block_wise mode."
+    assert blocks is not None and blocks.size > 0, "A blocks Series is required."
+    import joblib
+
+    os.makedirs(output_dir or ".", exist_ok=True)
+    train_json = os.path.join(output_dir or ".", "train_results.json")
+
+    model: BlockWiseModel = joblib.load(model_path)
+    all_blocks_sorted = _sorted_blocks(blocks.astype(str))
+
+    # Eval blocks (for building the output subset)
+    if test_blocks:
+        eval_blocks = [str(b) for b in test_blocks if str(b) in all_blocks_sorted]
+        if not eval_blocks:
+            eval_blocks = [all_blocks_sorted[-1]]
+    else:
+        eval_blocks = [all_blocks_sorted[-1]]
+    train_blocks = [b for b in all_blocks_sorted if b not in set(eval_blocks)]
+
+    # Compute brand-new blocks vs known per-block models
+    known_blocks = set(model.per_block_models.keys())
+    current_blocks = set(all_blocks_sorted)
+    new_blocks = sorted(list(current_blocks - known_blocks))
+
+    # Build the final list of blocks to train/update
+    drifted_blocks = [str(b) for b in (drifted_blocks or []) if str(b) in train_blocks]
+    new_blocks_init: List[str] = []
+    if auto_init_new_blocks:
+        # Only consider as trainable those new blocks that belong to TRAIN side
+        for b in new_blocks:
+            if str(b) in train_blocks:
+                # must also have enough rows
+                if X[X[block_col].astype(str) == str(b)].shape[0] >= int(min_rows_per_block):
+                    if str(b) not in drifted_blocks:
+                        drifted_blocks.append(str(b))
+                    new_blocks_init.append(str(b))
+
+    # Nature of the problem (classification/regression) based on global model
+    is_clf = is_classifier(model.global_model) if model.global_model is not None else True
+
+    # Windowing helper (mode 2)
+    def _window_block_df(Xb: pd.DataFrame, yb: pd.Series, win: Optional[int]):
+        if win is None or win <= 0 or len(Xb) <= win:
+            return Xb, yb
+        return Xb.tail(win), yb.tail(win)
+
+    # Apply strategy block-by-block
+    skipped_small: List[str] = []
+    for b in drifted_blocks:
+        Xb_full = X[X[block_col].astype(str) == str(b)].drop(columns=[block_col], errors="ignore")
+        yb_full = y.loc[Xb_full.index]
+
+        if Xb_full.shape[0] < int(min_rows_per_block):
+            skipped_small.append(str(b))
             continue
 
-        Xb, yb = by_block[bid]
+        prev_m = model.get_block_model(b)
+        if prev_m is None:
+            # This is a brand-new block (or never had a per-block model)
+            # Try to use cached training data to "warm" the previous estimator if available
+            prev_m = clone(model.base_estimator)
+            df_prev = _load_block_training_data(control_dir, b)
+            if df_prev is not None and "__target__" in df_prev.columns:
+                X_prev, y_prev = df_prev.drop(columns=["__target__"]), df_prev["__target__"]
+                try:
+                    prev_m.fit(X_prev, y_prev)
+                except Exception:
+                    pass
 
-        # Update previous_data.csv per policy
-        if reference_mode == "first":
-            # keep the initial blocks as reference forever
-            df_ref = _build_ref_window(df, block_col, y_col, ref_blocks)
-        else:
-            # rolling: use last rolling_k processed blocks (including most recent non-current)
-            # Ensure current block not in reference
-            recent = [b for b in decisions if b.get("decision") != "trained_as_reference"]
-            done_bids = [d["block_id"] for d in recent if d["block_id"] in by_block]
-            # Use last K from (init_blocks + done_bids) excluding current
-            hist = [*init_blocks, *done_bids]
-            ref_sel = hist[-rolling_k:] if rolling_k > 0 else hist
-            df_ref = _build_ref_window(df, block_col, y_col, ref_sel)
-            ref_blocks = ref_sel  # keep tracking
+        Xb_use, yb_use = (Xb_full, yb_full)
+        if mode == 2:
+            Xb_use, yb_use = _window_block_df(Xb_full, yb_full, window_size)
 
-        _write_previous_data_csv(control_dir, df_ref, y_col, logger)
-
-        # Run drift check for the current block
-        logger.info(f"[PIPELINE] Drift check on block '{bid}' with |X|={len(Xb)}.")
-        decision = check_drift(
-            X=Xb, y=yb,
-            detector=detector,
-            logger=logger,
-            perf_thresholds=perf_thresholds,
-            model_filename=model_filename,
-            data_dir=data_dir,          # kept for signature compatibility
-            output_dir=output_dir,
+        new_block_model = _retrain_block_strategy(
+            mode=mode,
+            prev_model=prev_m,
+            base_estimator=model.base_estimator,
+            Xb=Xb_use,
+            yb=yb_use,
+            random_state=random_state,
+            is_clf=is_clf,
             control_dir=control_dir,
-            model_dir=model_dir,
+            block_id=b,
         )
+        model.set_block_model(b, new_block_model)
 
-        # Handle decision
-        if decision == "retrain":
-            logger.info(f"[PIPELINE] Retraining triggered for block '{bid}' (mode={retrain_mode}).")
-            model, X_eval, y_eval, retrain_info = default_retrain(
-                X=df.drop(columns=[y_col, block_col]),   # retrain on *current dataset* (simple policy)
-                y=df[y_col],
-                last_processed_file=last_file,
-                model_path=os.path.join(model_dir, model_filename),
-                mode=retrain_mode,
-                random_state=random_state,
-                logger=logger,
-                output_dir=output_dir,
-                param_grid=param_grid,
-                cv=cv,
-                window_size=window_size,
-                replay_frac_old=replay_frac_old
-            )
-            _persist_model(model, model_dir, model_filename, logger)
-            decisions.append({"block_id": bid, "decision": "retrain"})
-        elif decision in ("no_drift", "end"):
-            logger.info(f"[PIPELINE] No retrain needed for block '{bid}'.")
-            decisions.append({"block_id": bid, "decision": "no_retrain"})
-        elif decision == "previous_promoted":
-            logger.info(f"[PIPELINE] Previous model promoted during block '{bid}'.")
-            decisions.append({"block_id": bid, "decision": "previous_promoted"})
-        elif decision == "train":
-            # This should not happen after initial training, but we handle it defensively.
-            logger.info(f"[PIPELINE] 'train' requested at block '{bid}'. Performing full training.")
-            model, X_eval, y_eval, train_info = default_train(
-                X_init, y_init, last_processed_file=last_file,
-                model_instance=model_instance, random_state=random_state,
-                logger=logger, output_dir=output_dir,
-                param_grid=param_grid, cv=cv
-            )
-            _persist_model(model, model_dir, model_filename, logger)
-            decisions.append({"block_id": bid, "decision": "trained_again"})
-        else:
-            logger.warning(f"[PIPELINE] Unexpected decision '{decision}' at block '{bid}'. Proceeding.")
-            decisions.append({"block_id": bid, "decision": str(decision)})
+        # Update per-block cache
+        _save_block_training_data(control_dir, b, Xb_use, yb_use)
 
-    # 5) Persist a compact report
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    report = {
-        "file": last_file,
-        "y_col": y_col,
-        "block_col": block_col,
-        "reference_mode": reference_mode,
-        "initial_blocks": init_blocks,
-        "rolling_k": rolling_k,
-        "decisions": decisions,
-        "summary": {
-            "num_blocks": len(block_ids),
-            "num_retrains": sum(1 for d in decisions if d["decision"] == "retrain"),
-            "num_promotions": sum(1 for d in decisions if d["decision"] == "previous_promoted"),
-        }
+    # Report
+    extra_report = {
+        "retrained_blocks": drifted_blocks,
+        "mode": mode,
+        "new_blocks_initialized": new_blocks_init,
+        "skipped_small_blocks": skipped_small,
     }
+    report = _train_report(
+        kind="retrain",
+        file=last_processed_file,
+        model=model,
+        block_col=block_col,
+        train_blocks=train_blocks,
+        eval_blocks=eval_blocks,
+        X=X, y=y,
+        extra=extra_report,
+    )
     try:
-        with open(os.path.join(output_dir, "blocks_training_report.json"), "w") as f:
+        with open(train_json, "w") as f:
             json.dump(report, f, indent=2)
-        logger.info(f"[PIPELINE] Blocks training report saved at {os.path.join(output_dir, 'blocks_training_report.json')}")
-    except Exception as e:
-        logger.error(f"[PIPELINE] Failed to save blocks report: {e}")
+    except Exception:
+        pass
 
-    return report
+    # Eval subset
+    eval_mask = X[block_col].astype(str).isin(eval_blocks)
+    X_eval = X.loc[eval_mask]
+    y_eval = y.loc[eval_mask]
+    meta = {"test_blocks": pd.Series(X[block_col].loc[eval_mask])}
+
+    return model, X_eval, y_eval, meta
