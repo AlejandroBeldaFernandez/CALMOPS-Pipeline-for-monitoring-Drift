@@ -1,259 +1,393 @@
-import os
+"""
+Real Data Generator with Enhanced Synthesis and Drift Injection
+Enhanced with comprehensive statistics, improved visualizations, and multiple synthesis methods
+"""
+
 import pandas as pd
 import numpy as np
-from typing import Literal, Optional, List, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple, Union
+from pathlib import Path
+import warnings
+import logging
+from datetime import datetime
+import os
+
+from sdv.single_table import GaussianCopulaSynthesizer, CTGANSynthesizer
+from sdv.metadata import SingleTableMetadata
 from sklearn.mixture import GaussianMixture
 from imblearn.over_sampling import SMOTE
-from sklearn.preprocessing import OrdinalEncoder
-from collections import Counter
+from imblearn.under_sampling import RandomUnderSampler
+
+from ..DriftInjection.DriftInjector import DriftInjector
 from .RealReporter import RealReporter
 
-try:
-    from sdv.single_table import CTGANSynthesizer, GaussianCopulaSynthesizer
-    from sdv.metadata import SingleTableMetadata
-    SDV_AVAILABLE = True
-except ImportError:
-    SDV_AVAILABLE = False
-    print(" SDV not installed. CTGAN and Copula methods will be unavailable.")
 
-
-class RealGenerator(RealReporter):
-    def __init__(self, target_col: str = "target", df:pd.DataFrame = None, dataset_path: str  = None ):
-        self.dataset_path = dataset_path
-        if df is None: 
-            self.df = pd.read_csv(dataset_path)
-        else:
-            self.df = df.copy()
-        self.target_col = target_col
-
-        if self.target_col not in self.df.columns:
-            raise ValueError(f"The dataset must contain a column named '{self.target_col}'.")
-
-        # Separate features and target
-        self.X = self.df.drop(columns=[self.target_col])
-        self.y = self.df[self.target_col]
-
-        # Impute missing values
-        self.X = self._impute_missing(self.X)
-
-        if SDV_AVAILABLE:
-            self.metadata = SingleTableMetadata()
-            self.metadata.detect_from_dataframe(data=self.df)
-
-    def _impute_missing(self, X: pd.DataFrame) -> pd.DataFrame:
-        X_imputed = pd.DataFrame()
-        for col in X.columns:
-            if X[col].dtype == "object":
-                X_imputed[col] = X[col].fillna(X[col].mode()[0])
-            else:
-                X_imputed[col] = X[col].fillna(X[col].mean())
-        return X_imputed
-
-    def _validate_params(self, output_path: str, filename: str, n_samples: int, method: str, id_cols: Optional[List[str]] = None, method_params: Optional[Dict[str, Any]] = None, random_state: Optional[int] = None):
+class RealGenerator:
+    """
+    Enhanced Real Data Generator with multiple synthesis methods and comprehensive validation
+    
+    Features:
+    - Multiple synthesis methods: GMM, CTGAN, Copula, SMOTE, Resample
+    - Comprehensive statistical validation and quality assessment
+    - Automatic visualization generation
+    - Enhanced drift injection capabilities
+    - Detailed reporting and logging
+    """
+    
+    SUPPORTED_METHODS = ['gmm', 'ctgan', 'copula', 'smote', 'resample']
+    
+    def __init__(self, 
+                 dataset_path: str,
+                 synthesis_method: str = 'gmm',
+                 target_column: Optional[str] = None,
+                 categorical_columns: Optional[List[str]] = None,
+                 auto_visualize: bool = True,
+                 random_state: int = 42,
+                 verbose: bool = True):
         """
-        Validates input parameters for generating synthetic data.
-        Raises informative errors if any validation fails.
+        Initialize RealGenerator with enhanced capabilities
+        
+        Parameters:
+        -----------
+        dataset_path : str
+            Path to the original dataset
+        synthesis_method : str
+            Method for synthesis ('gmm', 'ctgan', 'copula', 'smote', 'resample')
+        target_column : Optional[str]
+            Name of target column
+        categorical_columns : Optional[List[str]]
+            List of categorical column names
+        auto_visualize : bool
+            Whether to generate automatic visualizations
+        random_state : int
+            Random seed for reproducibility
+        verbose : bool
+            Whether to print detailed information
         """
-        # Validate output path and filename
-        if not output_path or not filename:
-            raise ValueError("output_path and filename must be provided.")
-        if not os.path.exists(output_path):
-            raise ValueError(f"The output_path '{output_path}' does not exist.")
-
+        self.dataset_path = Path(dataset_path)
+        self.synthesis_method = synthesis_method.lower()
+        self.target_column = target_column
+        self.categorical_columns = categorical_columns or []
+        self.auto_visualize = auto_visualize
+        self.random_state = random_state
+        self.verbose = verbose
         
-        if not os.access(output_path, os.W_OK):
-            raise PermissionError(f"Output directory '{output_path}' is not writable.")
-
-        # Validate n_samples
-        if not isinstance(n_samples, int):
-            raise ValueError("n_samples must be an integer.")
-        if n_samples <= 0:
-            raise ValueError("n_samples must be greater than 0.")
-
-        # Validate method
-        valid_methods = ["resample", "smote", "gmm", "ctgan", "copula"]
-        if method not in valid_methods:
-            raise ValueError(f"Invalid method '{method}'. Choose one of {valid_methods}.")
-
-        # Validate id_cols
-        if id_cols:
-            missing_cols = [c for c in id_cols if c not in self.df.columns]
-            if missing_cols:
-                raise ValueError(f"ID columns not found in dataset: {missing_cols}")
-            if self.target_col in id_cols:
-                raise ValueError(f"target_col '{self.target_col}' cannot be included in id_cols.")
-
-        # Validate method_params depending on method
-        method_params = method_params or {}
-        if method == "smote":
-            # SMOTE requires at least 2 samples per class
-            class_counts = self.y.value_counts()
-            if (class_counts < 2).any():
-                raise ValueError(f"SMOTE requires at least 2 samples per class. Found classes with counts: {class_counts[class_counts < 2].to_dict()}")
-        elif method == "gmm":
-            n_components = method_params.get("n_components", 10)
-            if n_components > len(self.X):
-                raise ValueError(f"gmm 'n_components' ({n_components}) cannot exceed the number of samples ({len(self.X)}).")
-
-        # Validate random_state
-        if random_state is not None and not isinstance(random_state, int):
-            raise ValueError("random_state must be an integer or None.")
-
-
-    def generate(
-        self,
-        output_path: str,
-        filename: str,
-        n_samples: int,
-        method: Literal["resample", "smote", "gmm", "ctgan", "copula"] = "resample",
-        random_state: Optional[int] = None,
-        id_cols: Optional[List[str]] = None,
-        method_params: Optional[Dict[str, Any]] = None,
-        balance: bool = False
-    ) -> str:
-        self._validate_params(
-        output_path=output_path,
-        filename=filename,
-        n_samples=n_samples,
-        method=method,
-        id_cols=id_cols,
-        method_params=method_params,
-        random_state=random_state
-        )
-
+        # Validate synthesis method
+        if self.synthesis_method not in self.SUPPORTED_METHODS:
+            raise ValueError(f"Unsupported synthesis method: {self.synthesis_method}. "
+                           f"Supported methods: {self.SUPPORTED_METHODS}")
         
-        full_path = os.path.join(output_path, filename)
-        method_params = method_params or {}
-
-        # Exclude ID columns from synthesis
-        X, y = self.X.copy(), self.y.copy()
-        if id_cols:
-            X_ids = X[id_cols]
-            X = X.drop(columns=id_cols)
-        else:
-            X_ids = None
-
-        # Generate synthetic data
-        if method == "resample":
-            result = self._resample(X, y, n_samples, random_state)
-        elif method == "smote":
-            result = self._apply_smote(X, y, n_samples, random_state, method_params)
-        elif method == "gmm":
-            result = self._apply_gmm(X, y, n_samples, random_state, method_params)
-        elif method == "ctgan":
-            result = self._apply_ctgan(n_samples, method_params)
-        elif method == "copula":
-            result = self._apply_copula(n_samples, method_params)
-
-        # Restore ID columns
-        if X_ids is not None:
-            for col in X_ids.columns:
-                result[col] = np.random.choice(X_ids[col], size=len(result))
-
-        # Balance classes if requested
-        if balance:
-            result = self._balance_classes(result, n_samples, random_state)
-
-        # Fill missing values
-        result = result.fillna(result.mode().iloc[0])
-
-        # Save CSV
-        result.to_csv(full_path, index=False)
-        print(f" Generated {len(result)} samples using method='{method}' at: {full_path}")
-
-        # Report dataset quality
-        self._report_real_dataset(
-            real_df=self.df,
-            synthetic_df=result,
-            target_col=self.target_col,
-            method=method,
-            extra_info={"Balance": balance}
+        # Load original dataset
+        self.original_data = self._load_dataset()
+        self.reporter = RealReporter()
+        
+        # Setup logging
+        self._setup_logging()
+        
+        if self.verbose:
+            print(f"RealGenerator initialized with method: {self.synthesis_method}")
+            print(f"Original dataset shape: {self.original_data.shape}")
+    
+    def _setup_logging(self):
+        """Setup logging configuration"""
+        logging.basicConfig(
+            level=logging.INFO if self.verbose else logging.WARNING,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
-
-        return full_path
-
-    # ---------------- GENERATION METHODS ---------------- #
-    def _resample(self, X: pd.DataFrame, y: pd.Series, n_samples: int, random_state: Optional[int]):
-        sampled_idx = X.sample(n=n_samples, replace=True, random_state=random_state).index
-        return pd.concat([X.loc[sampled_idx], y.loc[sampled_idx]], axis=1)
-
-    def _apply_smote(self, X: pd.DataFrame, y: pd.Series, n_samples: int, random_state: Optional[int], method_params: Dict[str, Any]):
-        cat_cols = X.select_dtypes(include=["object"]).columns
-        num_cols = [c for c in X.columns if c not in cat_cols]
-
-        enc = OrdinalEncoder()
-        X_cat = enc.fit_transform(X[cat_cols]) if len(cat_cols) > 0 else np.empty((len(X), 0))
-        X_num = X[num_cols].to_numpy()
-
-        X_combined = np.hstack([X_num, X_cat])
-        sm = SMOTE(random_state=random_state, **method_params)
-        X_res, y_res = sm.fit_resample(X_combined, y)
-
-        result = pd.DataFrame(X_res[:, :len(num_cols)], columns=num_cols)
-        if len(cat_cols) > 0:
-            decoded_cats = enc.inverse_transform(X_res[:, len(num_cols):])
-            for i, col in enumerate(cat_cols):
-                result[col] = decoded_cats[:, i]
-
-        result[self.target_col] = y_res
-        return result
-
-    def _apply_gmm(self, X: pd.DataFrame, y: pd.Series, n_samples: int, random_state: Optional[int], method_params: Dict[str, Any]):
-        numeric_cols = X.select_dtypes(include=[np.number]).columns
-        cat_cols = X.select_dtypes(exclude=[np.number]).columns
-
-        gmm = GaussianMixture(
-            n_components=method_params.get("n_components", 10),
-            covariance_type=method_params.get("covariance_type", "full"),
-            random_state=random_state
-        )
-        gmm.fit(X[numeric_cols])
-
-        X_new, labels = gmm.sample(n_samples)
-        synthetic_X = pd.DataFrame(X_new, columns=numeric_cols)
-
-        for col in cat_cols:
-            synthetic_X[col] = np.random.choice(X[col], size=n_samples)
-
-        synthetic_X[self.target_col] = np.random.choice(y, size=n_samples)
-        return synthetic_X
-
-    def _apply_ctgan(self, n_samples: int, method_params: Dict[str, Any]):
-        if not SDV_AVAILABLE:
-            raise ImportError("SDV is not installed. Install with `pip install sdv`.")
-        synthesizer = CTGANSynthesizer(self.metadata, **method_params)
-        synthesizer.fit(self.df)
-        return synthesizer.sample(n_samples)
-
-    def _apply_copula(self, n_samples: int, method_params: Dict[str, Any]):
-        if not SDV_AVAILABLE:
-            raise ImportError("SDV is not installed. Install with `pip install sdv`.")
-        synthesizer = GaussianCopulaSynthesizer(self.metadata, **method_params)
-        synthesizer.fit(self.df)
-        return synthesizer.sample(n_samples)
-
-    # ---------------- BALANCING ---------------- #
-    def _balance_classes(self, result: pd.DataFrame, n_samples: int, random_state: Optional[int]):
-        classes = result[self.target_col].unique()
-        n_classes = len(classes)
-        target_per_class = n_samples // n_classes
-
-        balanced_data = []
-        for cls in classes:
-            subset = result[result[self.target_col] == cls]
-            if len(subset) < target_per_class:
-                resampled = subset.sample(target_per_class, replace=True, random_state=random_state)
+        self.logger = logging.getLogger(self.__class__.__name__)
+    
+    def _load_dataset(self) -> pd.DataFrame:
+        """Load dataset from various formats"""
+        if not self.dataset_path.exists():
+            raise FileNotFoundError(f"Dataset not found: {self.dataset_path}")
+        
+        file_ext = self.dataset_path.suffix.lower()
+        
+        try:
+            if file_ext == '.csv':
+                return pd.read_csv(self.dataset_path)
+            elif file_ext in ['.xlsx', '.xls']:
+                return pd.read_excel(self.dataset_path)
+            elif file_ext == '.parquet':
+                return pd.read_parquet(self.dataset_path)
+            elif file_ext == '.json':
+                return pd.read_json(self.dataset_path)
+            elif file_ext == '.arff':
+                from scipy.io.arff import loadarff
+                data, meta = loadarff(self.dataset_path)
+                return pd.DataFrame(data)
             else:
-                resampled = subset.sample(target_per_class, replace=False, random_state=random_state)
-            balanced_data.append(resampled)
-
-        result = pd.concat(balanced_data)
-
-        if len(result) < n_samples:
-            diff = n_samples - len(result)
-            extra = result.sample(diff, replace=True, random_state=random_state)
-            result = pd.concat([result, extra])
-
-        result = result.sample(frac=1, random_state=random_state).reset_index(drop=True)
-        print(f" Balanced dataset with {len(result)} samples: {dict(Counter(result[self.target_col]))}")
-        return result
+                # Default to CSV
+                return pd.read_csv(self.dataset_path)
+                
+        except Exception as e:
+            raise ValueError(f"Error loading dataset: {e}")
+    
+    def _prepare_metadata(self, data: pd.DataFrame) -> SingleTableMetadata:
+        """Prepare metadata for SDV synthesizers"""
+        metadata = SingleTableMetadata()
+        metadata.detect_from_dataframe(data)
+        
+        # Update categorical columns if specified
+        if self.categorical_columns:
+            for col in self.categorical_columns:
+                if col in data.columns:
+                    metadata.update_column(col, sdtype='categorical')
+        
+        return metadata
+    
+    def _synthesize_gmm(self, data: pd.DataFrame, n_samples: int) -> pd.DataFrame:
+        """Generate synthetic data using Gaussian Mixture Model"""
+        try:
+            # Prepare numeric data for GMM
+            numeric_cols = data.select_dtypes(include=[np.number]).columns
+            categorical_cols = [col for col in data.columns if col not in numeric_cols]
+            
+            if len(numeric_cols) == 0:
+                raise ValueError("GMM requires at least one numeric column")
+            
+            # Fit GMM on numeric data
+            gmm = GaussianMixture(
+                n_components=min(10, len(data) // 50 + 1),
+                random_state=self.random_state,
+                max_iter=200
+            )
+            
+            X_numeric = data[numeric_cols].values
+            gmm.fit(X_numeric)
+            
+            # Generate synthetic numeric data
+            X_synthetic = gmm.sample(n_samples)[0]
+            synthetic_df = pd.DataFrame(X_synthetic, columns=numeric_cols)
+            
+            # Handle categorical columns by sampling
+            for col in categorical_cols:
+                if col in data.columns:
+                    synthetic_df[col] = np.random.choice(
+                        data[col].values, size=n_samples, replace=True
+                    )
+            
+            return synthetic_df[data.columns]  # Maintain column order
+            
+        except Exception as e:
+            self.logger.error(f"GMM synthesis failed: {e}")
+            raise
+    
+    def _synthesize_ctgan(self, data: pd.DataFrame, n_samples: int) -> pd.DataFrame:
+        """Generate synthetic data using CTGAN"""
+        try:
+            metadata = self._prepare_metadata(data)
+            
+            synthesizer = CTGANSynthesizer(
+                metadata=metadata,
+                epochs=100,
+                verbose=False
+            )
+            
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                synthesizer.fit(data)
+                synthetic_data = synthesizer.sample(num_rows=n_samples)
+            
+            return synthetic_data
+            
+        except Exception as e:
+            self.logger.error(f"CTGAN synthesis failed: {e}")
+            # Fallback to GMM
+            self.logger.warning("Falling back to GMM method")
+            return self._synthesize_gmm(data, n_samples)
+    
+    def _synthesize_copula(self, data: pd.DataFrame, n_samples: int) -> pd.DataFrame:
+        """Generate synthetic data using Gaussian Copula"""
+        try:
+            metadata = self._prepare_metadata(data)
+            
+            synthesizer = GaussianCopulaSynthesizer(
+                metadata=metadata,
+                default_distribution='beta'
+            )
+            
+            synthesizer.fit(data)
+            synthetic_data = synthesizer.sample(num_rows=n_samples)
+            
+            return synthetic_data
+            
+        except Exception as e:
+            self.logger.error(f"Copula synthesis failed: {e}")
+            # Fallback to GMM
+            self.logger.warning("Falling back to GMM method")
+            return self._synthesize_gmm(data, n_samples)
+    
+    def _synthesize_smote(self, data: pd.DataFrame, n_samples: int) -> pd.DataFrame:
+        """Generate synthetic data using SMOTE"""
+        if self.target_column is None:
+            raise ValueError("SMOTE requires a target column")
+        
+        if self.target_column not in data.columns:
+            raise ValueError(f"Target column '{self.target_column}' not found in data")
+        
+        try:
+            # Prepare data for SMOTE
+            X = data.drop(columns=[self.target_column])
+            y = data[self.target_column]
+            
+            # Only works with numeric features
+            numeric_cols = X.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) < len(X.columns):
+                X = X[numeric_cols]
+                self.logger.warning(f"SMOTE: Using only numeric columns: {list(numeric_cols)}")
+            
+            # Apply SMOTE
+            smote = SMOTE(random_state=self.random_state, k_neighbors=min(5, len(data)-1))
+            X_resampled, y_resampled = smote.fit_resample(X, y)
+            
+            # Create synthetic dataframe
+            synthetic_df = pd.DataFrame(X_resampled, columns=X.columns)
+            synthetic_df[self.target_column] = y_resampled
+            
+            # Sample to desired size
+            if len(synthetic_df) > n_samples:
+                synthetic_df = synthetic_df.sample(n=n_samples, random_state=self.random_state)
+            
+            return synthetic_df
+            
+        except Exception as e:
+            self.logger.error(f"SMOTE synthesis failed: {e}")
+            # Fallback to GMM
+            self.logger.warning("Falling back to GMM method")
+            return self._synthesize_gmm(data, n_samples)
+    
+    def _synthesize_resample(self, data: pd.DataFrame, n_samples: int) -> pd.DataFrame:
+        """Generate synthetic data using resampling with noise"""
+        try:
+            # Bootstrap sampling with replacement
+            synthetic_df = data.sample(n=n_samples, replace=True, random_state=self.random_state)
+            
+            # Add small amount of noise to numeric columns
+            numeric_cols = synthetic_df.select_dtypes(include=[np.number]).columns
+            for col in numeric_cols:
+                noise_std = synthetic_df[col].std() * 0.05  # 5% noise
+                noise = np.random.normal(0, noise_std, size=len(synthetic_df))
+                synthetic_df[col] = synthetic_df[col] + noise
+            
+            # Reset index
+            synthetic_df = synthetic_df.reset_index(drop=True)
+            
+            return synthetic_df
+            
+        except Exception as e:
+            self.logger.error(f"Resample synthesis failed: {e}")
+            raise
+    
+    def generate_synthetic_data(self, 
+                              n_samples: Optional[int] = None,
+                              apply_drift: bool = False,
+                              drift_config: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+        """
+        Generate synthetic data using the specified method
+        
+        Parameters:
+        -----------
+        n_samples : Optional[int]
+            Number of samples to generate (default: same as original)
+        apply_drift : bool
+            Whether to apply drift to the synthetic data
+        drift_config : Optional[Dict[str, Any]]
+            Configuration for drift injection
+        
+        Returns:
+        --------
+        pd.DataFrame
+            Generated synthetic data
+        """
+        if n_samples is None:
+            n_samples = len(self.original_data)
+        
+        self.logger.info(f"Generating {n_samples} synthetic samples using {self.synthesis_method}")
+        
+        # Generate synthetic data based on method
+        if self.synthesis_method == 'gmm':
+            synthetic_data = self._synthesize_gmm(self.original_data, n_samples)
+        elif self.synthesis_method == 'ctgan':
+            synthetic_data = self._synthesize_ctgan(self.original_data, n_samples)
+        elif self.synthesis_method == 'copula':
+            synthetic_data = self._synthesize_copula(self.original_data, n_samples)
+        elif self.synthesis_method == 'smote':
+            synthetic_data = self._synthesize_smote(self.original_data, n_samples)
+        elif self.synthesis_method == 'resample':
+            synthetic_data = self._synthesize_resample(self.original_data, n_samples)
+        else:
+            raise ValueError(f"Unknown synthesis method: {self.synthesis_method}")
+        
+        # Apply drift if requested
+        if apply_drift and drift_config:
+            drift_injector = DriftInjector(**drift_config)
+            synthetic_data = drift_injector.inject_drift(synthetic_data)
+            self.logger.info("Applied drift to synthetic data")
+        
+        # Generate report and visualizations
+        self._generate_report(synthetic_data)
+        
+        return synthetic_data
+    
+    def _generate_report(self, synthetic_data: pd.DataFrame):
+        """Generate comprehensive report comparing real and synthetic data"""
+        if not self.auto_visualize:
+            return
+        
+        try:
+            # Create output directory
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = f"output_real_generation_{self.synthesis_method}_{timestamp}"
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Generate comprehensive report
+            self.reporter.generate_comprehensive_report(
+                real_df=self.original_data,
+                synthetic_df=synthetic_data,
+                generator_name=f"RealGenerator_{self.synthesis_method}",
+                output_dir=output_dir,
+                target_column=self.target_column
+            )
+            
+            self.logger.info(f"Report and visualizations saved to: {output_dir}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate report: {e}")
+    
+    def get_data_info(self) -> Dict[str, Any]:
+        """Get information about the original dataset"""
+        return {
+            'dataset_path': str(self.dataset_path),
+            'shape': self.original_data.shape,
+            'columns': list(self.original_data.columns),
+            'dtypes': self.original_data.dtypes.to_dict(),
+            'missing_values': self.original_data.isnull().sum().to_dict(),
+            'synthesis_method': self.synthesis_method,
+            'target_column': self.target_column,
+            'categorical_columns': self.categorical_columns
+        }
+    
+    def save_synthetic_data(self, 
+                          synthetic_data: pd.DataFrame, 
+                          output_path: str,
+                          format: str = 'csv') -> str:
+        """Save synthetic data to file"""
+        output_path = Path(output_path)
+        
+        try:
+            if format.lower() == 'csv':
+                synthetic_data.to_csv(output_path, index=False)
+            elif format.lower() == 'parquet':
+                synthetic_data.to_parquet(output_path, index=False)
+            elif format.lower() in ['xlsx', 'excel']:
+                synthetic_data.to_excel(output_path, index=False)
+            else:
+                raise ValueError(f"Unsupported format: {format}")
+            
+            self.logger.info(f"Synthetic data saved to: {output_path}")
+            return str(output_path)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save synthetic data: {e}")
+            raise

@@ -166,12 +166,13 @@ class GeneratorFactory:
         params = {
             'n_num_features': config.n_num_features,
             'n_cat_features': config.n_cat_features,
-            'n_categories_per_cat_feature': config.n_categories_per_cat_feature,
+            'n_categories_per_feature': config.n_categories_per_cat_feature,
             'max_tree_depth': config.max_tree_depth,
-            'first_leaf_label': config.first_leaf_label
+            'first_leaf_level': config.first_leaf_label
         }
         if config.random_state is not None:
-            params['seed'] = config.random_state
+            params['seed_tree'] = config.random_state
+            params['seed_sample'] = config.random_state
         return synth.RandomTree(**params)
     
     @staticmethod
@@ -191,8 +192,6 @@ class GeneratorFactory:
         params = {
             'has_noise': config.has_noise
         }
-        if config.has_noise:
-            params['noise_percentage'] = config.noise_percentage_sine
         if config.random_state is not None:
             params['seed'] = config.random_state
         return synth.Sine(**params)
