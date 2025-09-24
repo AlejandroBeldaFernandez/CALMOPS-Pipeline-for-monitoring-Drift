@@ -5,17 +5,21 @@ from .SyntheticReporter import SyntheticReporter
 
 class SyntheticBlockGenerator:
     def generate_blocks_simple(self,
-                              output_path: str,
-                              filename: str,
-                              n_blocks: int,
-                              total_samples: int,
-                              methods,
-                              method_params=None,
-                              instances_per_block=None,
-                              class_ratios=None,
-                              target_col="target",
-                              balance: bool = False,
-                              random_state: int = None):
+                           output_path: str,
+                           filename: str,
+                           n_blocks: int,
+                           total_samples: int,
+                           methods,
+                           method_params=None,
+                           instances_per_block=None,
+                           class_ratios=None,
+                           target_col="target",
+                           balance: bool = False,
+                           random_state: int = None,
+                           # ⬇️ NUEVO (opcional)
+                           date_start: str = None,
+                           date_step: dict = None,
+                           date_col: str = "timestamp"):
         """
         Simplified interface for generating block datasets (similar to SyntheticGenerator)
         
@@ -99,7 +103,11 @@ class SyntheticBlockGenerator:
             generators=generators,
             class_ratios=class_ratios,
             target_col=target_col,
-            balance=balance
+            balance=balance,
+            # ⬇️ NUEVO
+            date_start=date_start,
+            date_step=date_step,
+            date_col=date_col
         )
 
     def _ensure_list(self, value, n_blocks):
@@ -156,18 +164,21 @@ class SyntheticBlockGenerator:
         return expanded
 
     def generate_blocks(
-        self,
-        output_path: str,
-        filename: str,
-        n_blocks: int,
-        total_samples: int,
-        instances_per_block,
-        generators,
-        class_ratios=None,
-        target_col="target",
-        balance: bool = False,
-        block_assignments: dict = None
-    ) -> str:
+            self,
+            output_path: str,
+            filename: str,
+            n_blocks: int,
+            total_samples: int,
+            instances_per_block,
+            generators,
+            class_ratios=None,
+            target_col="target",
+            balance: bool = False,
+            block_assignments: dict = None,
+            date_start: str = None,
+            date_step: dict = None,
+            date_col: str = "timestamp"
+        ) -> str:
         """
         Generates synthetic data divided into blocks using specified generator instances.
         Supports custom block assignments for flexible mapping.
@@ -194,7 +205,24 @@ class SyntheticBlockGenerator:
 
         os.makedirs(output_path, exist_ok=True)
         full_path = os.path.join(output_path, filename)
-
+        # --- Block-level dates (optional) ---
+        # If date_start is provided, build one anchor date per block:
+        # block 1 = date_start, block 2 = date_start + step, etc.
+        if date_start is not None:
+            try:
+                start_ts = pd.to_datetime(date_start)
+            except Exception as e:
+                raise ValueError(f"Invalid date_start '{date_start}': {e}")
+            # Default step = +1 day if not provided
+            step_dict = date_step or {"days": 1}
+            valid_keys = {'years','months','weeks','days','hours','minutes','seconds','microseconds','nanoseconds'}
+            invalid = set(step_dict.keys()) - valid_keys
+            if invalid:
+                raise ValueError(f"Invalid date_step keys: {invalid}. Allowed: {sorted(valid_keys)}")
+            step = pd.DateOffset(**step_dict)
+            block_dates = [start_ts + step * i for i in range(n_blocks)]
+        else:
+            block_dates = None
         all_data = []
         block_reports = []
         all_columns = set()
@@ -210,7 +238,8 @@ class SyntheticBlockGenerator:
                 continue
 
         feature_cols = sorted([str(col) for col in all_columns])
-        all_cols = feature_cols + [target_col, "block"]
+        all_cols = ( [date_col] + feature_cols + [target_col, "block"] ) if block_dates else (feature_cols + [target_col, "block"])
+
 
         for i in range(n_blocks):
             gen = generators[i]
@@ -246,6 +275,10 @@ class SyntheticBlockGenerator:
                     current_counts[y_str] += 1
 
                 row = []
+                # Prepend block date if enabled
+                if block_dates:
+                    row.append(block_dates[i])
+
                 for col in feature_cols:
                     value = None
                     for orig_key in x.keys():
@@ -255,6 +288,7 @@ class SyntheticBlockGenerator:
                     if value is None:
                         value = 0
                     row.append(value)
+
                 row.extend([y, i + 1])
 
                 block_data.append(row)
