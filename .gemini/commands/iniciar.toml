@@ -1,0 +1,5 @@
+# Description for the command palette
+description = "Carga el contexto del proyecto leyendo GEMINI.md y AGENTS.md."
+
+# The prompt to be sent to the model
+prompt = "Por favor, lee los ficheros GEMINI.md y AGENTS.md para establecer el contexto de este proyecto."

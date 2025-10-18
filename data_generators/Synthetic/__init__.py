@@ -38,7 +38,6 @@ Example usage:
 from .SyntheticGenerator import SyntheticGenerator
 from .SyntheticBlockGenerator import SyntheticBlockGenerator
 from .GeneratorFactory import GeneratorFactory, GeneratorType, GeneratorConfig
-from .DriftDetector import DriftDetector, DetectorConfig, compare_detectors
 from .SyntheticReporter import SyntheticReporter
 
 __all__ = [
@@ -47,9 +46,6 @@ __all__ = [
     'GeneratorFactory',
     'GeneratorType',
     'GeneratorConfig',
-    'DriftDetector',
-    'DetectorConfig',
-    'compare_detectors',
     'SyntheticReporter'
 ]
 

@@ -99,3 +99,16 @@ class PipelineLogger:
         Returns the logger instance to be used for logging events.
         """
         return self.logger
+
+def get_logger(name: str, log_dir: str = "logs") -> logging.Logger:
+    """
+    Initializes and returns a logger instance using the PipelineLogger class.
+
+    Args:
+        name (str): The name of the logger.
+        log_dir (str): The directory to save log files in.
+
+    Returns:
+        logging.Logger: The configured logger instance.
+    """
+    return PipelineLogger(name=name, log_dir=log_dir).get_logger()

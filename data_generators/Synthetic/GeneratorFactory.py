@@ -1,18 +1,36 @@
 """
 Generator Factory for CalmOps Synthetic Data Generators
-=======================================================
-This module provides a factory pattern for creating various River synthetic data generators
-with standardized configuration and type safety.
+
+This module provides a factory pattern for creating various synthetic data generators from the River library.
+It standardizes the configuration and instantiation of these generators, making them easy to use
+throughout the CalmOps project.
+
+Key Features:
+- **Centralized Generator Creation**: A single point of entry (`GeneratorFactory.create_generator`)
+  to get instances of different River generators.
+- **Standardized Configuration**: Uses a `GeneratorConfig` dataclass to manage all possible
+  parameters for the supported generators, with clear aliases (e.g., `seed` and `random_state`).
+- **Type Safety**: Employs a `GeneratorType` Enum to prevent errors from using incorrect generator names.
+- **Preset Drift Scenarios**: Includes a helper method (`create_preset_concept_drift`) to quickly
+  set up pairs of generators for concept drift experiments.
+- **Discoverability**: Provides methods to list available generators (`get_available_generators`) and get
+  information about their properties (`get_generator_info`).
 """
 
+import warnings
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 from river.datasets import synth
 
+# Suppress common warnings for cleaner output
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
 
 class GeneratorType(Enum):
-    """Enumeration of available generator types"""
+    """Enumeration of available River generator types."""
     AGRAWAL = "agrawal"
     SEA = "sea"
     HYPERPLANE = "hyperplane"
@@ -26,7 +44,7 @@ class GeneratorType(Enum):
 
 @dataclass
 class GeneratorConfig:
-    """Configuration class for generator parameters"""
+    """Configuration class for all supported River generator parameters."""
     # Common parameters
     random_state: Optional[int] = None
     seed: Optional[int] = None  # Alias for random_state
@@ -74,7 +92,7 @@ class GeneratorConfig:
     n_centroids: int = 50
     
     def __post_init__(self):
-        """Post-initialization to handle aliases and validation"""
+        """Post-initialization to handle aliases and ensure consistency."""
         # Handle seed/random_state alias
         if self.seed is not None and self.random_state is None:
             self.random_state = self.seed
@@ -89,24 +107,24 @@ class GeneratorConfig:
 
 
 class GeneratorFactory:
-    """Factory class for creating River synthetic data generators"""
+    """A factory class for creating River synthetic data generators."""
     
     @staticmethod
     def get_available_generators() -> List[GeneratorType]:
-        """Returns list of all available generator types"""
+        """Returns a list of all available generator types."""
         return list(GeneratorType)
     
     @staticmethod
     def create_generator(generator_type: GeneratorType, config: GeneratorConfig):
         """
-        Creates a generator instance based on type and configuration
+        Creates a generator instance based on the specified type and configuration.
         
         Args:
-            generator_type: Type of generator to create
-            config: Configuration object with parameters
+            generator_type (GeneratorType): The type of generator to create.
+            config (GeneratorConfig): A configuration object with all necessary parameters.
             
         Returns:
-            Generator instance ready to use
+            An instance of a River generator, ready to be used.
         """
         generators = {
             GeneratorType.AGRAWAL: GeneratorFactory._create_agrawal,
@@ -127,7 +145,7 @@ class GeneratorFactory:
     
     @staticmethod
     def _create_agrawal(config: GeneratorConfig):
-        """Creates Agrawal generator"""
+        """Creates an Agrawal generator instance."""
         params = {
             'classification_function': config.classification_function,
             'balance_classes': config.balance_classes,
@@ -139,7 +157,7 @@ class GeneratorFactory:
     
     @staticmethod
     def _create_sea(config: GeneratorConfig):
-        """Creates SEA generator"""
+        """Creates a SEA generator instance."""
         params = {
             'variant': config.function,
             'noise': config.noise_percentage
@@ -150,7 +168,7 @@ class GeneratorFactory:
     
     @staticmethod
     def _create_hyperplane(config: GeneratorConfig):
-        """Creates Hyperplane generator"""
+        """Creates a Hyperplane generator instance."""
         params = {
             'n_features': config.n_features,
             'mag_change': config.mag_change,
@@ -162,7 +180,7 @@ class GeneratorFactory:
     
     @staticmethod
     def _create_random_tree(config: GeneratorConfig):
-        """Creates Random Tree generator"""
+        """Creates a RandomTree generator instance."""
         params = {
             'n_num_features': config.n_num_features,
             'n_cat_features': config.n_cat_features,
@@ -177,7 +195,7 @@ class GeneratorFactory:
     
     @staticmethod
     def _create_stagger(config: GeneratorConfig):
-        """Creates Stagger generator"""
+        """Creates a STAGGER generator instance."""
         params = {
             'classification_function': config.classification_function_stagger,
             'balance_classes': config.balance_classes_stagger
@@ -188,7 +206,7 @@ class GeneratorFactory:
     
     @staticmethod
     def _create_sine(config: GeneratorConfig):
-        """Creates Sine generator"""
+        """Creates a Sine generator instance."""
         params = {
             'has_noise': config.has_noise
         }
@@ -198,7 +216,7 @@ class GeneratorFactory:
     
     @staticmethod
     def _create_mixed(config: GeneratorConfig):
-        """Creates Mixed generator"""
+        """Creates a Mixed generator instance."""
         params = {
             'classification_function': config.classification_function_mixed,
             'balance_classes': config.balance_classes_mixed
@@ -209,7 +227,7 @@ class GeneratorFactory:
     
     @staticmethod
     def _create_friedman(config: GeneratorConfig):
-        """Creates Friedman generator"""
+        """Creates a Friedman generator instance."""
         params = {
             'n_features': config.n_features_friedman
         }
@@ -219,7 +237,7 @@ class GeneratorFactory:
     
     @staticmethod
     def _create_random_rbf(config: GeneratorConfig):
-        """Creates Random RBF generator"""
+        """Creates a RandomRBF generator instance."""
         params = {
             'n_features': config.n_features_rbf,
             'n_centroids': config.n_centroids
@@ -233,15 +251,15 @@ class GeneratorFactory:
                                   seed: int = 42, 
                                   drift_magnitude: float = 0.5):
         """
-        Creates a pair of generators suitable for concept drift testing
+        Creates a pair of generators (base and drift) suitable for concept drift experiments.
         
         Args:
-            generator_type: Base generator type
-            seed: Random seed for reproducibility
-            drift_magnitude: Magnitude of the drift between generators
+            generator_type (GeneratorType): The base generator type to use.
+            seed (int): A random seed for reproducibility.
+            drift_magnitude (float): The magnitude of the drift to introduce between the two generators.
             
         Returns:
-            Tuple of (base_generator, drift_generator)
+            A tuple containing the (base_generator, drift_generator).
         """
         base_config = GeneratorConfig(random_state=seed)
         drift_config = GeneratorConfig(random_state=seed + 1)
@@ -263,67 +281,67 @@ class GeneratorFactory:
     
     @staticmethod
     def get_generator_info(generator_type: GeneratorType) -> Dict[str, Any]:
-        """Returns information about a specific generator type"""
+        """Returns a dictionary with information about a specific generator type."""
         info = {
             GeneratorType.AGRAWAL: {
                 "name": "Agrawal",
-                "description": "Classification dataset with multiple classification functions",
+                "description": "A classic classification dataset with multiple concept-drifting classification functions.",
                 "features": 9,
                 "classes": 2,
                 "drift_capable": True
             },
             GeneratorType.SEA: {
                 "name": "SEA Concepts",
-                "description": "Streaming Ensemble Algorithm concepts with noise",
+                "description": "Streaming Ensemble Algorithm (SEA) concepts with abrupt drift and noise.",
                 "features": 3,
                 "classes": 2,
                 "drift_capable": True
             },
             GeneratorType.HYPERPLANE: {
                 "name": "Hyperplane",
-                "description": "Hyperplane-based classification with concept drift",
+                "description": "A dataset where the classification boundary is a rotating hyperplane, simulating gradual concept drift.",
                 "features": "configurable",
                 "classes": 2,
                 "drift_capable": True
             },
             GeneratorType.RANDOM_TREE: {
                 "name": "Random Tree",
-                "description": "Random tree-based classification",
+                "description": "A stable classification dataset generated by a fixed random tree structure.",
                 "features": "configurable",
                 "classes": 2,
                 "drift_capable": False
             },
             GeneratorType.STAGGER: {
                 "name": "STAGGER Concepts",
-                "description": "STAGGER concept classification problems",
+                "description": "A dataset with three predefined, abruptly-drifting concepts.",
                 "features": 3,
                 "classes": 2,
                 "drift_capable": True
             },
             GeneratorType.SINE: {
                 "name": "Sine",
-                "description": "Sine-wave based regression with optional noise",
+                "description": "A regression dataset based on a sine wave with optional noise.",
                 "features": 2,
                 "classes": "regression",
                 "drift_capable": False
             },
             GeneratorType.MIXED: {
                 "name": "Mixed",
-                "description": "Mixed classification functions",
+                "description": "A dataset with both boolean and numeric features, with two possible classification functions.",
                 "features": 4,
                 "classes": 2,
                 "drift_capable": False
             },
             GeneratorType.FRIEDMAN: {
                 "name": "Friedman",
-                "description": "Friedman synthetic regression dataset",
+                "description": "A synthetic regression dataset based on the Friedman #1 function.",
                 "features": "configurable",
                 "classes": "regression",
                 "drift_capable": False
             },
             GeneratorType.RANDOM_RBF: {
                 "name": "Random RBF",
-                "description": "Random Radial Basis Function centers",
+                "description": "A classification dataset generated using random Radial Basis Function (RBF) centers.",
                 "features": "configurable",
                 "classes": "variable",
                 "drift_capable": False
