@@ -461,49 +461,111 @@ class RealBlockGenerator(RealGenerator):
 
 
 
-        # Apply drift to the complete dataset based on the schedule
-
-        if drift_schedule:
-
-            self.logger.info("Applying drift schedule to the complete dataset.")
-
-            
-
-            drift_injector = DriftInjector(
-
-                original_df=self.original_data,
-
-                output_dir=output_dir,
-
-                generator_name=f"RealBlockGenerator_{self.method}",
-
-                target_column=self.target_column,
-
-                block_column=self.block_column,
-
-                random_state=self.random_state
-
-            )
+                # Apply drift to the complete dataset based on the schedule
 
 
 
-            complete_dataset = drift_injector.inject_multiple_types_of_drift(
+                if drift_schedule:
 
-                df=complete_dataset,
 
-                schedule=drift_schedule
 
-            )
+                    self.logger.info("Applying drift schedule to the complete dataset.")
 
-            self.logger.info("Drift schedule applied successfully.")
+
+
+                    
+
+
+
+                    drift_injector = DriftInjector(
+
+
+
+                        original_df=self.original_data,
+
+
+
+                        output_dir=output_dir,
+
+
+
+                        generator_name=f"RealBlockGenerator_{self.method}",
+
+
+
+                        target_column=self.target_column,
+
+
+
+                        block_column=self.block_column,
+
+
+
+                        random_state=self.random_state
+
+
+
+                    )
+
+
 
         
 
-        else:
 
-            # Generate a report for the final dataset (no drift)
 
-            self._generate_block_report(complete_dataset, output_dir=output_dir)
+                    complete_dataset = drift_injector.inject_multiple_types_of_drift(
+
+
+
+                        df=complete_dataset,
+
+
+
+                        schedule=drift_schedule
+
+
+
+                    )
+
+
+
+                    self.logger.info("Drift schedule applied successfully.")
+
+
+
+                
+
+
+
+                else:
+
+
+
+                    # Generate a report for the final dataset (no drift)
+
+
+
+                    self._generate_block_report(complete_dataset, output_dir=output_dir)
+
+
+
+        
+
+
+
+                # Always save the final dataset
+
+
+
+                final_dataset_path = os.path.join(output_dir, f"complete_block_dataset_{self.method}.csv")
+
+
+
+                self.save_block_dataset(complete_dataset, output_path=final_dataset_path)
+
+
+
+                self.logger.info("Complete synthetic dataset saved to: %s", final_dataset_path)
 
 
 
