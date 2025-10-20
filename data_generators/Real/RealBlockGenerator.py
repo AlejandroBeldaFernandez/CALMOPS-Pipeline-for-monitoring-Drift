@@ -477,35 +477,135 @@ class RealBlockGenerator(RealGenerator):
 
 
 
-                    drift_injector = DriftInjector(
+                                        drift_injector = DriftInjector(
 
 
 
-                        original_df=self.original_data,
+                    
 
 
 
-                        output_dir=output_dir,
+                    
 
 
 
-                        generator_name=f"RealBlockGenerator_{self.method}",
+                    
 
 
 
-                        target_column=self.target_column,
+                                            original_df=self.original_data,
 
 
 
-                        block_column=self.block_column,
+                    
 
 
 
-                        random_state=self.random_state
+                    
 
 
 
-                    )
+                    
+
+
+
+                                            output_dir=output_dir,
+
+
+
+                    
+
+
+
+                    
+
+
+
+                    
+
+
+
+                                            generator_name=f"RealBlockGenerator_{self.method}",
+
+
+
+                    
+
+
+
+                    
+
+
+
+                    
+
+
+
+                                            target_column=self.target_column,
+
+
+
+                    
+
+
+
+                    
+
+
+
+                    
+
+
+
+                                            block_column=self.block_column,
+
+
+
+                    
+
+
+
+                    
+
+
+
+                    
+
+
+
+                                            time_col=date_col, 
+
+
+
+                    
+
+
+
+                    
+
+
+
+                    
+
+
+
+                                            random_state=self.random_state
+
+
+
+                    
+
+
+
+                    
+
+
+
+                    
+
+
+
+                                        )
 
 
 
@@ -537,15 +637,39 @@ class RealBlockGenerator(RealGenerator):
 
 
 
-                else:
+                                else:
 
 
 
-                    # Generate a report for the final dataset (no drift)
+                
 
 
 
-                    self._generate_block_report(complete_dataset, output_dir=output_dir)
+                
+
+
+
+                
+
+
+
+                                    # Generate a report for the final dataset (no drift)
+
+
+
+                
+
+
+
+                
+
+
+
+                
+
+
+
+                                    self._generate_block_report(complete_dataset, output_dir=output_dir, time_col=date_col)
 
 
 
@@ -595,7 +719,7 @@ class RealBlockGenerator(RealGenerator):
 
 
 
-    def _generate_block_report(self, synthetic_dataset: pd.DataFrame, output_dir: str):
+    def _generate_block_report(self, synthetic_dataset: pd.DataFrame, output_dir: str, time_col: Optional[str] = None):
 
         """Generates a comprehensive report for the full block-based dataset at the dataset level."""
 
@@ -621,7 +745,9 @@ class RealBlockGenerator(RealGenerator):
 
                 target_column=self.target_column,
 
-                block_column=self.block_column
+                block_column=self.block_column,
+
+                time_col=time_col
 
             )
 

@@ -63,6 +63,7 @@ class RealGenerator:
         original_data: pd.DataFrame,
         method: str = 'cart',
         target_column: Optional[str] = None,
+        block_column: Optional[str] = None,
         auto_report: bool = True,
         logger: Optional[logging.Logger] = None,
         random_state: Optional[int] = None,
@@ -76,6 +77,7 @@ class RealGenerator:
             original_data (pd.DataFrame): The real dataset to be synthesized.
             method (str): The synthesis method to use. See class docstring for options.
             target_column (Optional[str]): The name of the target variable column.
+            block_column (Optional[str]): The name of the column defining data blocks.
             auto_report (bool): If True, automatically generates a quality report after synthesis.
             logger (Optional[logging.Logger]): An external logger instance. If None, a new one is created.
             random_state (Optional[int]): Seed for random number generation for reproducibility.
@@ -85,6 +87,7 @@ class RealGenerator:
         self.original_data = original_data
         self.method = method
         self.target_column = target_column
+        self.block_column = block_column
         self.auto_report = auto_report
         self.logger = logger if logger else get_logger("RealGenerator")
         self.random_state = random_state
@@ -597,7 +600,8 @@ class RealGenerator:
                         synthetic_df=synth,
                         generator_name=f"RealGenerator_{self.method}",
                         output_dir=output_dir,
-                        target_column=self.target_column
+                        target_column=self.target_column,
+                        time_col=date_col
                     )
                 
                 # Save the generated dataset for inspection

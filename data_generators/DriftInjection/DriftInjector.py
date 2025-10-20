@@ -35,7 +35,7 @@ class DriftInjector:
     # -------------------------
     # Init & utils
     # -------------------------
-    def __init__(self, original_df: pd.DataFrame, output_dir: str, generator_name: str, target_column: Optional[str] = None, block_column: Optional[str] = None, random_state: Optional[int] = None):
+    def __init__(self, original_df: pd.DataFrame, output_dir: str, generator_name: str, target_column: Optional[str] = None, block_column: Optional[str] = None, time_col: Optional[str] = None, random_state: Optional[int] = None):
         """
         Initializes the DriftInjector.
 
@@ -45,6 +45,7 @@ class DriftInjector:
             generator_name (str): A name for the generator, used in output file names.
             target_column (Optional[str]): The name of the target variable column.
             block_column (Optional[str]): The name of the column defining data blocks or chunks.
+            time_col (Optional[str]): The name of the timestamp column.
             random_state (Optional[int]): Seed for the random number generator for reproducibility.
         """
         self.rng = np.random.default_rng(random_state)
@@ -54,6 +55,7 @@ class DriftInjector:
         self.generator_name = generator_name
         self.target_column = target_column
         self.block_column = block_column
+        self.time_col = time_col
         self.reporter = RealReporter()
         os.makedirs(self.output_dir, exist_ok=True) # Ensure output_dir exists
 
@@ -61,15 +63,27 @@ class DriftInjector:
         """Clips a float to the [0.0, 1.0] range."""
         return float(np.clip(x, 0.0, 1.0))
 
-    def _generate_reports(self, original_df, drifted_df, drift_config):
+    def _generate_reports(self, original_df, drifted_df, drift_config, time_col: Optional[str] = None):
         """Helper to generate the standard report."""
         # Generate the primary report in the main output directory
         self.reporter.update_report_after_drift(
             original_df=original_df,
             drifted_df=drifted_df,
             output_dir=self.output_dir,
-            drift_config=drift_config
+            drift_config=drift_config,
+            time_col=time_col
         )
+
+    def _ensure_psd_matrix(self, matrix: np.ndarray) -> np.ndarray:
+        """Ensures a matrix is positive semi-definite (PSD) by adjusting its eigenvalues."""
+        eigenvalues, eigenvectors = np.linalg.eigh(matrix)
+        eigenvalues[eigenvalues < 1e-6] = 1e-6  # Clamp small eigenvalues
+        psd_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+        # Renormalize to have 1s on the diagonal
+        d = np.sqrt(np.diag(psd_matrix))
+        d_inv = np.where(d > 1e-9, 1.0 / d, 0)
+        psd_matrix = np.diag(d_inv) @ psd_matrix @ np.diag(d_inv)
+        return psd_matrix
 
     def _get_target_rows(
         self,
@@ -361,7 +375,8 @@ class DriftInjector:
         drift_values: Optional[Dict[str, float]] = None,
         start_index: Optional[int] = None,
         block_index: Optional[int] = None,
-        block_column: Optional[str] = None
+        block_column: Optional[str] = None,
+        auto_report: bool = True
     ) -> pd.DataFrame:
         """
         Applies drift at once from a start_index or in a specific block.
@@ -414,7 +429,8 @@ class DriftInjector:
             "generator_name": f"{self.generator_name}_feature_drift"
         }
         df_drift.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, df_drift, drift_config)
+        if auto_report:
+            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
         return df_drift
 
     # -------------------------
@@ -439,7 +455,8 @@ class DriftInjector:
         profile: str = "sigmoid",
         speed_k: float = 1.0,
         direction: str = "up",
-        inconsistency: float = 0.0 # New parameter for inconsistent drift
+        inconsistency: float = 0.0, # New parameter for inconsistent drift
+        auto_report: bool = True
     ) -> pd.DataFrame:
         """
         Injects gradual drift on selected rows using a transition window.
@@ -542,7 +559,8 @@ class DriftInjector:
             "generator_name": f"{self.generator_name}_feature_drift_gradual"
         }
         df_drift.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, df_drift, drift_config)
+        if auto_report:
+            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
         return df_drift
 
     def inject_feature_drift_abrupt(
@@ -560,6 +578,7 @@ class DriftInjector:
         change_index: Optional[int] = None,
         width: int = 3,
         direction: str = "up",
+        auto_report: bool = True,
         **kwargs
     ) -> pd.DataFrame:
         """
@@ -602,6 +621,7 @@ class DriftInjector:
         blocks: Optional[Sequence] = None,
         block_start: Optional[object] = None,
         n_blocks: Optional[int] = None,
+        auto_report: bool = True,
         **kwargs
     ) -> pd.DataFrame:
         """
@@ -642,6 +662,7 @@ class DriftInjector:
             profile="sigmoid",
             speed_k=1.0, # Standard speed
             direction="up",
+            auto_report=False, # Always disable report for internal call
             **kwargs
         )
         
@@ -661,7 +682,8 @@ class DriftInjector:
             "generator_name": f"{self.generator_name}_feature_drift_incremental"
         }
         tmp.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, tmp, drift_config)
+        if auto_report:
+            self._generate_reports(df, tmp, drift_config, time_col=self.time_col)
         return tmp
 
     def inject_feature_drift_recurrent(
@@ -745,7 +767,8 @@ class DriftInjector:
                 "generator_name": f"{self.generator_name}_feature_drift_recurrent"
             }
             df_out.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-            self._generate_reports(df, df_out, drift_config)
+            if auto_report:
+                self._generate_reports(df, df_out, drift_config, time_col=self.time_col)
             return df_out
 
         if not (block_column and cycle_blocks):
@@ -812,12 +835,11 @@ class DriftInjector:
             "blocks": blocks,
             "block_start": block_start,
             "n_blocks": n_blocks,
-            "generator_name": f"{self.generator_name}_feature_drift_recurrent"
-        }
-        df_out.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, df_out, drift_config)
-        return df_out
-
+                    "generator_name": f"{self.generator_name}_feature_drift_recurrent"
+                }
+                    df_out.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
+                    self._generate_reports(df, df_out, drift_config, time_col=self.time_col)
+                    return df_out
     # -------------------------
     # Label drift (original) + gradual version
     # -------------------------
@@ -878,7 +900,7 @@ class DriftInjector:
                 "generator_name": f"{self.generator_name}_label_drift"
             }
             df_drift.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-            self._generate_reports(df, df_drift, drift_config)
+            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
         return df_drift
 
     def inject_label_drift_gradual(
@@ -947,7 +969,7 @@ class DriftInjector:
                 "generator_name": f"{self.generator_name}_label_drift_gradual"
             }
             df_drift.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-            self._generate_reports(df, df_drift, drift_config)
+            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
         return df_drift
 
     def inject_label_drift_abrupt(self, df: pd.DataFrame, target_col: str, drift_magnitude: float, change_index: int, **kwargs) -> pd.DataFrame:
@@ -992,7 +1014,7 @@ class DriftInjector:
             "generator_name": f"{self.generator_name}_label_drift_incremental"
         }
         tmp.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, tmp, drift_config)
+        self._generate_reports(df, tmp, drift_config, time_col=self.time_col)
         return tmp
 
     def inject_label_drift_recurrent(self, df: pd.DataFrame, target_col: str, drift_magnitude: float, windows: List[Tuple[int, int]], **kwargs) -> pd.DataFrame:
@@ -1012,7 +1034,7 @@ class DriftInjector:
             "generator_name": f"{self.generator_name}_label_drift_recurrent"
         }
         df_out.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, df_out, drift_config)
+        self._generate_reports(df, df_out, drift_config, time_col=self.time_col)
         return df_out
 
     # -------------------------
@@ -1025,7 +1047,8 @@ class DriftInjector:
         target_distribution: dict,
         start_index: Optional[int] = None,
         block_index: Optional[int] = None,
-        block_column: Optional[str] = None
+        block_column: Optional[str] = None,
+        auto_report: bool = True
     ) -> pd.DataFrame:
         """
         Injects label shift by resampling the target column to match a new distribution.
@@ -1075,7 +1098,8 @@ class DriftInjector:
             "generator_name": f"{self.generator_name}_label_shift"
         }
         df_drift.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, df_drift, drift_config)
+        if auto_report:
+            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
         return df_drift
 
     # -------------------------
@@ -1126,7 +1150,7 @@ class DriftInjector:
             "generator_name": f"{self.generator_name}_missing_values_drift"
         }
         df_drift.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, df_drift, drift_config)
+        self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
         return df_drift
 
     # -------------------------
@@ -1139,7 +1163,8 @@ class DriftInjector:
         target_correlation_matrix: np.ndarray,
         start_index: Optional[int] = None,
         block_index: Optional[int] = None,
-        block_column: Optional[str] = None
+        block_column: Optional[str] = None,
+        auto_report: bool = True
     ) -> pd.DataFrame:
         """
         Injects covariate drift by transforming numeric features to match a target correlation matrix.
@@ -1161,6 +1186,9 @@ class DriftInjector:
         if not isinstance(target_correlation_matrix, np.ndarray) or target_correlation_matrix.shape != (k, k):
             raise ValueError(f"target_correlation_matrix must be a square ndarray of shape ({k}, {k}).")
 
+        # Ensure the target matrix is PSD
+        target_correlation_matrix = self._ensure_psd_matrix(target_correlation_matrix)
+
         data = df_drift.loc[rows, numeric_cols].to_numpy(copy=True)
         
         # Apply Cholesky transformation
@@ -1178,7 +1206,8 @@ class DriftInjector:
             "generator_name": f"{self.generator_name}_correlation_matrix_drift"
         }
         df_drift.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, df_drift, drift_config)
+        if auto_report:
+            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
         return df_drift
 
     def inject_covariate_shift(
@@ -1189,7 +1218,8 @@ class DriftInjector:
         feature_pairs: Optional[List[tuple]] = None,
         start_index: Optional[int] = None,
         block_index: Optional[int] = None,
-        block_column: Optional[str] = None
+        block_column: Optional[str] = None,
+        auto_report: bool = True # Added for consistency, though report is generated by the new method
     ) -> pd.DataFrame:
         """
         [DEPRECATED] Injects covariate drift by modifying correlations between pairs of features.
@@ -1233,23 +1263,15 @@ class DriftInjector:
             new_corr = current_corr * (1 - shift_strength) + target_val * shift_strength
             target_corr[i, j] = target_corr[j, i] = new_corr
 
-        # Ensure the matrix is positive semi-definite (PSD)
-        eigenvalues, eigenvectors = np.linalg.eigh(target_corr)
-        eigenvalues[eigenvalues < 1e-6] = 1e-6 # Clamp small eigenvalues
-        target_corr_psd = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
-        # Renormalize to have 1s on the diagonal
-        d = np.sqrt(np.diag(target_corr_psd))
-        d_inv = np.where(d > 1e-9, 1.0 / d, 0)
-        target_corr_psd = np.diag(d_inv) @ target_corr_psd @ np.diag(d_inv)
-
-        # Call the new robust method
+        # Call the new robust method, which will handle PSD correction and reporting
         return self.inject_correlation_matrix_drift(
             df=df,
             feature_cols=numeric_cols,
-            target_correlation_matrix=target_corr_psd,
+            target_correlation_matrix=target_corr,
             start_index=start_index,
             block_index=block_index,
-            block_column=block_column
+            block_column=block_column,
+            auto_report=auto_report
         )
 
     def _apply_cholesky_transformation(self, data: np.ndarray, target_corr: np.ndarray) -> np.ndarray:
@@ -1348,7 +1370,8 @@ class DriftInjector:
         block_column: Optional[str] = None,
         center: Optional[int] = None,
         width: Optional[int] = None,
-        profile: str = "sigmoid"
+        profile: str = "sigmoid",
+        auto_report: bool = True
     ) -> pd.DataFrame:
         """
         Injects a new category into a feature column based on specified logic,
@@ -1458,6 +1481,7 @@ class DriftInjector:
             "generator_name": f"{self.generator_name}_new_category_drift"
         }
         df_drift.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-        self._generate_reports(df, df_drift, drift_config)
+        if auto_report:
+            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
         
         return df_drift

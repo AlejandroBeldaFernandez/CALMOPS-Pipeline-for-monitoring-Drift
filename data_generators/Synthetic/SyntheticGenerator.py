@@ -64,6 +64,7 @@ class SyntheticGenerator:
         drift_type: str = "none",
         position_of_drift: int = None,
         target_col: str = "target",
+        block_column: Optional[str] = None,
         balance: bool = False,
         inconsistency: float = 0.0,
         drift_options: Optional[Dict] = None,
@@ -118,6 +119,7 @@ class SyntheticGenerator:
             generator_instance_drift=drift_generator,
             position_of_drift=position_of_drift,
             target_col=target_col,
+            block_column=block_column,
             balance=balance,
             drift_type=drift_type,
             inconsistency=inconsistency,
@@ -328,6 +330,7 @@ class SyntheticGenerator:
         report_kwargs = {
             'target_column': kwargs.get('target_col'),
             'time_col': kwargs.get('date_col'),
+            'block_column': kwargs.get('block_column'),
             'drift_config': {
                 'drift_type': kwargs.get('drift_type'),
                 'position_of_drift': kwargs.get('position_of_drift'),
