@@ -1,4 +1,4 @@
-"Static, File-Based Real Data Reporter
+"""Static, File-Based Real Data Reporter
 
 This module provides the RealReporter class, which is responsible for generating a detailed,
 static report comparing a real dataset with a synthetic one. All generated artifacts,
@@ -17,7 +17,7 @@ Key Features:
 - **Block-Level Analysis**: If a `block_column` is provided, it generates specific reports and plots for each individual block.
 - **Drift-Aware Reporting**: Can highlight drift-injected areas in plots when provided with drift configuration.
 - **Static Output**: All outputs are saved to a specified directory, making it suitable for environments without dynamic UIs.
-"
+"""
 
 import pandas as pd
 import numpy as np
@@ -775,7 +775,7 @@ class RealReporter:
             plot_count = 0
             for num_col in numeric_cols:
                 for cat_col in categorical_cols:
-                    if num_col == cat_col]: continue
+                    if num_col == cat_col: continue
                     if plot_count >= max_plots:
                         break
                     if 2 <= real_df[cat_col].nunique() <= 10:

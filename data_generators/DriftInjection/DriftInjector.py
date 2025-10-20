@@ -835,11 +835,11 @@ class DriftInjector:
             "blocks": blocks,
             "block_start": block_start,
             "n_blocks": n_blocks,
-                    "generator_name": f"{self.generator_name}_feature_drift_recurrent"
-                }
-                    df_out.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
-                    self._generate_reports(df, df_out, drift_config, time_col=self.time_col)
-                    return df_out
+            "generator_name": f"{self.generator_name}_feature_drift_recurrent"
+        }
+        df_out.to_csv(os.path.join(self.output_dir, f'{drift_config["generator_name"]}.csv'), index=False)
+        self._generate_reports(df, df_out, drift_config, time_col=self.time_col)
+        return df_out
     # -------------------------
     # Label drift (original) + gradual version
     # -------------------------
