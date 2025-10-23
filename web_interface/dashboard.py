@@ -5,9 +5,11 @@ import os
 import re
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.figure_factory as ff
 import argparse
 import numpy as np
 from typing import Optional, Tuple, Dict, List
+from sklearn.metrics import roc_curve, precision_recall_curve, auc, confusion_matrix
 from utils import _load_any_dataset, load_log, dashboard_data_loader, actualizar_registro
 
 # =========================
@@ -149,7 +151,7 @@ def _paired_hist(prev: np.ndarray, curr: np.ndarray, bins: int, density: bool) -
 # Dataset Section
 # =========================
 def show_dataset_section(data_dir, pipeline_name):
-    """Displays dataset preview, info, stats, and top categorical values."""
+    """Displays dataset preview, info, stats, top categorical values, and a drift heatmap."""
     st.subheader("Dataset Information")
     control_dir = os.path.join("pipelines", pipeline_name, "control")
 
@@ -175,6 +177,14 @@ def show_dataset_section(data_dir, pipeline_name):
     })
     st.dataframe(info_df, use_container_width=True)
 
+    # Show df.info()
+    st.markdown("### Dataset Info (`df.info()`)")
+    import io
+    buffer = io.StringIO()
+    df.info(buf=buffer)
+    info_str = buffer.getvalue()
+    st.text(info_str)
+
     # Summary
     st.markdown(f"""
     **Total Rows:** {df.shape[0]}  
@@ -182,18 +192,15 @@ def show_dataset_section(data_dir, pipeline_name):
     **Memory Usage:** {df.memory_usage().sum() / 1024**2:.2f} MB
     """)
 
-    # Descriptivos bajo demanda (evita cómputo caro)
-    with st.expander("Descriptive Statistics (on demand)"):
-        if st.checkbox("Calcular estadísticas completas (puede tardar en datasets muy grandes)", value=False):
-            st.dataframe(df.describe(include="all").transpose(), use_container_width=True)
-        else:
-            st.caption("Activa la casilla para calcular el describe completo.")
+    # Descriptive Statistics
+    st.markdown("### Descriptive Statistics (`df.describe()`)")
+    st.dataframe(df.describe(include="all").transpose(), use_container_width=True)
 
     # Top valores categóricos (limita Nº columnas para evitar loops caros)
     st.markdown("### Top 5 Most Frequent Values in Categorical Columns")
     cat_cols = df.select_dtypes(include="object").columns
     if len(cat_cols) > 0:
-        max_cols = st.slider("Máx. columnas categóricas a mostrar", 1, min(20, len(cat_cols)), min(5, len(cat_cols)))
+        max_cols = st.slider("Max. categorical columns to display", 1, min(20, len(cat_cols)), min(5, len(cat_cols)))
         show_cols = list(cat_cols[:max_cols])
         for col in show_cols:
             st.markdown(f"**{col}**")
@@ -209,12 +216,106 @@ def show_dataset_section(data_dir, pipeline_name):
     else:
         st.info("No categorical columns to show frequencies.")
 
+    # Heatmap (from drift results)
+    st.markdown("## Drift Heatmap")
+    base_dir = os.path.join("pipelines", pipeline_name)
+    metrics_dir = os.path.join(base_dir, "metrics")
+    drift_path = os.path.join(metrics_dir, "drift_results.json")
+
+    if os.path.exists(drift_path):
+        results = _load_json_cached(drift_path, _mtime(drift_path))
+        tests = results.get("tests", {})
+
+        metric_options = []
+        if "Kolmogorov-Smirnov" in tests: metric_options.append("KS p-value")
+        if "PSI" in tests: metric_options.append("PSI")
+        if "Hellinger Distance" in tests: metric_options.append("Hellinger")
+        if "Earth Mover's Distance" in tests: metric_options.append("EMD")
+
+        if not metric_options:
+            st.info("No per-feature drift metrics found to build a heatmap.")
+            return
+
+        msel = st.selectbox("Heatmap metric", options=metric_options, index=0)
+        topk = st.slider("Top K features to display", min_value=10, max_value=200, value=50, step=10)
+
+        feat_vals: Dict[str, Optional[float]] = {}
+        ordered: List[Tuple[str, float]] = []
+
+        if msel == "KS p-value" and "Kolmogorov-Smirnov" in tests:
+            for feat, payload in tests["Kolmogorov-Smirnov"].items():
+                try:
+                    v = payload.get("p_value")
+                    feat_vals[feat] = float(v) if v is not None else None
+                except (ValueError, TypeError):
+                    feat_vals[feat] = None
+            ordered = sorted([(k, v) for k, v in feat_vals.items() if v is not None], key=lambda x: x[1])  # p-value asc
+        elif msel == "PSI" and "PSI" in tests:
+            for feat, payload in tests["PSI"].items():
+                v = payload.get("psi")
+                if v is None:
+                    pv = payload.get("psi_value")
+                    if isinstance(pv, dict):
+                        exp = pv.get("expected"); act = pv.get("actual")
+                        if isinstance(exp, list) and isinstance(act, list) and len(exp) == len(act) and len(exp) > 0:
+                            try:
+                                exp_arr = np.array(exp, dtype=float); act_arr = np.array(act, dtype=float)
+                                exp_arr = np.where(exp_arr == 0, 1e-8, exp_arr); act_arr = np.where(act_arr == 0, 1e-8, act_arr)
+                                v = float(np.sum((act_arr - exp_arr) * np.log(act_arr / exp_arr)))
+                            except Exception:
+                                v = None
+                feat_vals[feat] = v if v is None else float(v)
+            ordered = sorted([(k, v) for k, v in feat_vals.items() if v is not None], key=lambda x: -abs(x[1]))
+        elif msel == "Hellinger" and "Hellinger Distance" in tests:
+            for feat, payload in tests["Hellinger Distance"].items():
+                try:
+                    v = payload.get("hellinger_distance")
+                    feat_vals[feat] = float(v) if v is not None else None
+                except (ValueError, TypeError):
+                    feat_vals[feat] = None
+            ordered = sorted([(k, v) for k, v in feat_vals.items() if v is not None], key=lambda x: -abs(x[1]))
+        elif msel == "EMD" and "Earth Mover's Distance" in tests:
+            for feat, payload in tests["Earth Mover's Distance"].items():
+                try:
+                    v = payload.get("emd_distance")
+                    feat_vals[feat] = float(v) if v is not None else None
+                except (ValueError, TypeError):
+                    feat_vals[feat] = None
+            ordered = sorted([(k, v) for k, v in feat_vals.items() if v is not None], key=lambda x: -abs(x[1]))
+
+        if not ordered:
+            st.info("No values available for the selected metric.")
+        else:
+            ordered = ordered[:topk]
+            heat_df = pd.DataFrame({"feature": [k for k, _ in ordered], "value": [v for _, v in ordered]})
+            if heat_df.empty:
+                st.info("No numeric values available for heatmap.")
+            else:
+                heat_fig = go.Figure(
+                    data=go.Heatmap(
+                        z=heat_df["value"].values.reshape(1, -1),
+                        x=heat_df["feature"].tolist(),
+                        y=[msel],
+                        coloraxis="coloraxis"
+                    )
+                )
+                heat_fig.update_layout(
+                    title=f"Drift heatmap by feature – {msel} (Top {topk})",
+                    xaxis=dict(title="Feature", tickangle=-45),
+                    yaxis=dict(title=""),
+                    coloraxis=dict(colorbar=dict(title=msel))
+                )
+                st.plotly_chart(heat_fig, use_container_width=True)
+    else:
+        st.info("Drift results file (`drift_results.json`) not found. Heatmap cannot be displayed.")
+
 # =========================
 # Evaluator Section
 # =========================
 def show_evaluator_section(pipeline_name):
-    """Displays evaluation metrics, thresholds, circuit breaker status, and candidates overview (sin devolver DeltaGenerator)."""
-    st.subheader("Evaluation Results")
+    """Displays evaluation metrics for the approved model, including thresholds, circuit breaker status, and an overview of candidates."""
+    st.subheader("Approved Model Evaluation Results")
+    st.markdown("This section provides a detailed analysis of the currently approved **Champion** model's performance on the test set.")
 
     base_dir = os.path.join("pipelines", pipeline_name)
     metrics_dir = os.path.join(base_dir, "metrics")
@@ -265,11 +366,57 @@ def show_evaluator_section(pipeline_name):
             _ = st.table(report_df.transpose())
         else:
             _ = st.table(report_df)
+        
+        # Confusion Matrix
+        if "predictions" in results and results["predictions"]:
+            st.markdown("### Confusion Matrix")
+            preds_df = pd.DataFrame(results["predictions"])
+            y_true = preds_df["y_true"]
+            y_pred = preds_df["y_pred"]
+            labels = sorted(list(set(y_true) | set(y_pred)))
+            cm = confusion_matrix(y_true, y_pred, labels=labels)
+            fig = px.imshow(cm,
+                            labels=dict(x="Predicted Label", y="True Label"),
+                            x=labels,
+                            y=labels,
+                            text_auto=True)
+            fig.update_layout(title='Confusion Matrix')
+            st.plotly_chart(fig, use_container_width=True)
+
+        if 'roc_auc' in metrics and 'roc_curve' in metrics:
+            st.write(f"**ROC AUC:** {round(metrics['roc_auc'], 4)}")
+            st.markdown("### ROC Curve")
+            roc_data = metrics['roc_curve']
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=roc_data['fpr'], y=roc_data['tpr'],
+                                mode='lines',
+                                name=f"ROC (AUC = {metrics['roc_auc']:.4f})"))
+            fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1],
+                                mode='lines',
+                                name='Random Chance',
+                                line=dict(dash='dash')))
+            fig.update_layout(title='ROC Curve',
+                              xaxis_title='False Positive Rate',
+                              yaxis_title='True Positive Rate')
+            st.plotly_chart(fig, use_container_width=True)
+
     elif "r2" in metrics:
         _ = st.write(f"**R²:** {round(metrics.get('r2', 0), 4)}")
         _ = st.write(f"**RMSE:** {round(metrics.get('rmse', 0), 4)}")
         _ = st.write(f"**MAE:** {round(metrics.get('mae', 0), 4)}")
         _ = st.write(f"**MSE:** {round(metrics.get('mse', 0), 4)}")
+
+        # Residual Plot
+        if "predictions" in results and results["predictions"]:
+            st.markdown("### Residual Plot")
+            preds_df = pd.DataFrame(results["predictions"])
+            y_true = preds_df["y_true"]
+            y_pred = preds_df["y_pred"]
+            residuals = y_true - y_pred
+            fig = px.scatter(x=y_pred, y=residuals, labels={'x': 'Predicted Values', 'y': 'Residuals'}, title='Residual Plot')
+            fig.add_hline(y=0, line_dash="dash", line_color="red")
+            st.plotly_chart(fig, use_container_width=True)
+
     else:
         _ = st.info("No evaluation metrics found.")
 
@@ -355,31 +502,200 @@ def show_evaluator_section(pipeline_name):
 
     return None  
 
+def show_historical_performance_section(pipeline_name):
+    """Plots the historical performance of Champion and Challenger models over time, including the final approved Champion."""
+    st.subheader("Historical Model Performance")
+    st.markdown("This chart shows the `balanced_accuracy` of models over time, based on drift detection runs and final evaluations.")
+
+    base_dir = os.path.join("pipelines", pipeline_name)
+    metrics_dir = os.path.join(base_dir, "metrics")
+    drift_history_dir = os.path.join(metrics_dir, "drift_history")
+
+    history_data = []
+
+    # 1. Load data from drift history
+    if os.path.exists(drift_history_dir):
+        history_files = sorted([f for f in os.listdir(drift_history_dir) if f.startswith("drift_results_") and f.endswith(".json")])
+        for file_name in history_files:
+            file_path = os.path.join(drift_history_dir, file_name)
+            try:
+                results = _load_json_cached(file_path, _mtime(file_path))
+                timestamp_str = file_name.replace("drift_results_", "").replace(".json", "")
+                timestamp = pd.to_datetime(timestamp_str, format="%Y%m%d_%H%M%S")
+                tests = results.get("tests", {})
+
+                # Extract Champion performance from drift check
+                if "Performance_Previous" in tests and tests["Performance_Previous"].get("balanced_accuracy"):
+                    champ_perf = tests["Performance_Previous"]["balanced_accuracy"].get("value")
+                    if champ_perf is not None:
+                        history_data.append({"timestamp": timestamp, "model_type": "Champion", "balanced_accuracy": champ_perf})
+
+                # Extract Challenger performance from drift check
+                if "Performance_Current" in tests and tests["Performance_Current"].get("balanced_accuracy"):
+                    chall_perf = tests["Performance_Current"]["balanced_accuracy"].get("value")
+                    if chall_perf is not None:
+                        history_data.append({"timestamp": timestamp, "model_type": "Challenger", "balanced_accuracy": chall_perf})
+            except Exception as e:
+                st.warning(f"Could not read or parse {file_name}: {e}")
+
+    # 2. Load data from the final evaluator result for the current Champion
+    eval_path = os.path.join(metrics_dir, "eval_results.json")
+    if os.path.exists(eval_path):
+        eval_results = _load_json_cached(eval_path, _mtime(eval_path))
+        metrics = eval_results.get("metrics", {})
+        timestamp = eval_results.get("timestamp")
+        if metrics.get("balanced_accuracy") and timestamp:
+            history_data.append({
+                "timestamp": pd.to_datetime(timestamp),
+                "model_type": "Champion (Approved)",
+                "balanced_accuracy": metrics["balanced_accuracy"]
+            })
+
+    if not history_data:
+        st.info("No historical performance data with balanced_accuracy found.")
+        return
+
+    df_history = pd.DataFrame(history_data)
+    # Clean up data: drop duplicates and sort
+    df_history = df_history.drop_duplicates(subset=['timestamp', 'model_type'], keep='last').sort_values(by="timestamp")
+
+    # Date range selector
+    if not df_history.empty:
+        min_date = df_history["timestamp"].min().date()
+        max_date = df_history["timestamp"].max().date()
+        date_range = st.date_input("Select date range for performance history", (min_date, max_date), min_value=min_date, max_value=max_date)
+
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            df_history = df_history[(df_history["timestamp"].dt.date >= start_date) & (df_history["timestamp"].dt.date <= end_date)]
+
+    st.dataframe(df_history)
+
+    # Plot performance over time
+    if not df_history.empty:
+        fig = px.line(df_history, x="timestamp", y="balanced_accuracy", color='model_type', markers=True,
+                      title="Historical Balanced Accuracy")
+        fig.update_traces(connectgaps=True)  # Connect points over gaps
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def show_drift_trends_section(pipeline_name):
+    """
+    Displays historical drift metrics trends.
+    """
+    st.markdown("## Drift Metric Trends Over Time")
+    
+    base_dir = os.path.join("pipelines", pipeline_name)
+    drift_history_dir = os.path.join(base_dir, "metrics", "drift_history")
+
+    if not os.path.exists(drift_history_dir):
+        st.info("No drift history found.")
+        return
+
+    history_files = sorted([f for f in os.listdir(drift_history_dir) if f.startswith("drift_results_") and f.endswith(".json")])
+
+    if not history_files:
+        st.info("No historical drift data found.")
+        return
+
+    all_results = []
+    for file_name in history_files:
+        file_path = os.path.join(drift_history_dir, file_name)
+        try:
+            with open(file_path, "r") as f:
+                results = json.load(f)
+                # Extract timestamp from filename for sorting
+                timestamp_str = file_name.replace("drift_results_", "").replace(".json", "")
+                results["timestamp"] = pd.to_datetime(timestamp_str, format="%Y%m%d_%H%M%S")
+                all_results.append(results)
+        except Exception as e:
+            st.warning(f"Could not read or parse {file_name}: {e}")
+    
+    if not all_results:
+        st.warning("No valid historical data could be loaded.")
+        return
+
+    # Extract all features and metrics from the historical data
+    all_features = set()
+    all_metrics = set()
+    for result in all_results:
+        tests = result.get("tests", {})
+        for test_name, test_results in tests.items():
+            if isinstance(test_results, dict):
+                for feature_name, metrics in test_results.items():
+                    all_features.add(feature_name)
+                    if isinstance(metrics, dict):
+                        for metric_name in metrics.keys():
+                            all_metrics.add(metric_name)
+    
+    if not all_features:
+        st.info("No features found in historical drift data.")
+        return
+
+    # Date range selector
+    min_date = min([res["timestamp"] for res in all_results])
+    max_date = max([res["timestamp"] for res in all_results])
+    date_range = st.date_input("Select date range", (min_date, max_date), min_value=min_date, max_value=max_date)
+
+    if len(date_range) == 2:
+        start_date, end_date = date_range
+        all_results = [res for res in all_results if start_date <= res["timestamp"].date() <= end_date]
+
+    selected_feature = st.selectbox("Select Feature for Trend Analysis", options=sorted(list(all_features)))
+    
+    if not selected_feature:
+        return
+
+    feature_data = []
+    for result in all_results:
+        timestamp = result["timestamp"]
+        tests = result.get("tests", {})
+        row = {"timestamp": timestamp}
+        for test_name, test_results in tests.items():
+            if isinstance(test_results, dict) and selected_feature in test_results:
+                metrics = test_results[selected_feature]
+                if isinstance(metrics, dict):
+                    for metric_name, value in metrics.items():
+                        if isinstance(value, (int, float)):
+                            row[f"{test_name}_{metric_name}"] = value
+        feature_data.append(row)
+
+    if not feature_data:
+        st.info(f"No historical data found for feature: {selected_feature}")
+        return
+
+    df_trends = pd.DataFrame(feature_data)
+    df_trends = df_trends.set_index("timestamp")
+    
+    if df_trends.empty:
+        st.info(f"No plottable data for feature: {selected_feature}")
+        return
+
+    st.dataframe(df_trends)
+
+    # Allow user to select which metrics to plot
+    available_metrics = [col for col in df_trends.columns]
+    selected_metrics = st.multiselect("Select metrics to plot", options=available_metrics, default=available_metrics)
+
+    if selected_metrics:
+        fig = px.line(df_trends, x=df_trends.index, y=selected_metrics, title=f"Drift Metrics for {selected_feature}")
+        st.plotly_chart(fig, use_container_width=True)
+
 # =========================
 # Drift Section (lightweight)
 # =========================
 def show_drift_section(pipeline_name):
     """
-    Más ligero:
-    - Cargas cacheadas.
-    - Muestreo configurable (default 50k) para plots.
-    - ECDF aproximada por cuantiles (512).
-    - Histogramas agregados (numpy) -> go.Bar.
-    - Violin sin puntos por defecto (opción para ver puntos con muestreo).
-    - Heatmap con Top K features.
+    Shows a simplified summary of drift detection results, comparing the
+    Champion (previous) vs. Challenger (current) models. It focuses on
+    high-level drift flags and performance comparison rather than per-feature plots.
     """
-    st.subheader("Drift Results")
+    st.subheader("Drift Analysis: Champion vs. Challenger")
+    st.markdown("This section analyzes for data and model drift, comparing the established **Champion** modelTrains and evaluates a new **Challenger** model on recent data.")
+
     base_dir = os.path.join("pipelines", pipeline_name)
     metrics_dir = os.path.join(base_dir, "metrics")
-    control_dir = os.path.join(base_dir, "control")
-    config_path = os.path.join(base_dir, "config", "config.json")
     drift_path = os.path.join(metrics_dir, "drift_results.json")
-
-    # Config/data_dir
-    data_dir = None
-    if os.path.exists(config_path):
-        cfg = _load_json_cached(config_path, _mtime(config_path))
-        data_dir = cfg.get("data_dir")
 
     if not os.path.exists(drift_path):
         st.info("No drift results saved yet.")
@@ -396,14 +712,14 @@ def show_drift_section(pipeline_name):
     decision = results.get("decision")
     if decision:
         if decision == "no_drift":
-            st.success("No drift detected – current model maintained")
+            st.success("No drift detected – Champion model maintained")
         elif decision == "previous_promoted":
             reason = results.get("promotion_reason")
-            st.warning("Previous model promoted due to better performance" + (f" (reason: `{reason}`)" if reason else ""))
+            st.warning("Champion model promoted due to better performance" + (f" (reason: `{reason}`)" if reason else ""))
         elif decision == "retrain":
-            st.error("Retraining triggered due to drift")
+            st.error("Retraining triggered due to drift, creating a new Challenger")
         elif decision == "train":
-            st.info("First run: training from scratch")
+            st.info("First run: training initial Champion model")
         elif decision == "end_error":
             st.warning("Ended with error while loading current model")
         else:
@@ -411,8 +727,9 @@ def show_drift_section(pipeline_name):
 
     # Summary flags
     if isinstance(drift_flags, dict) and drift_flags:
-        st.markdown("## Drift Summary")
-        promoted_key = "promoted_model" if "promoted_model" in results else ("modelo_promovido" if "modelo_promovido" in results else None)
+        st.markdown("## Drift Test Summary")
+        st.markdown("Indicates if drift was detected in any variable for each statistical test.")
+        promoted_key = "promoted_model" if "promoted_model" in results else None
         if promoted_key is not None:
             val = results.get(promoted_key)
             if val is True:
@@ -424,12 +741,19 @@ def show_drift_section(pipeline_name):
             elif val == "error":
                 st.warning("Error comparing with the previous model.")
 
-        summary_data = [{"Test": k, "Result": "Drift detected" if bool(v) else "No drift detected"} for k, v in drift_flags.items()]
-        summary_df = pd.DataFrame(summary_data)
-        total = len(summary_df); detected = (summary_df["Result"].str.contains("Drift")).sum()
-        st.success(f"Tests without drift: {total - detected} of {total}")
-        st.error(f"Tests with drift: {detected} of {total}")
-        st.table(summary_df)
+        summary_data = []
+        for k, v in drift_flags.items():
+            # We only show the general test result, not per variable
+            if "::" not in k:  # Avoid showing per-variable drift flags
+                summary_data.append({"Test": k, "Result": "Drift detected" if bool(v) else "No drift detected"})
+        
+        if summary_data:
+            summary_df = pd.DataFrame(summary_data)
+            total = len(summary_df)
+            detected = (summary_df["Result"].str.contains("Drift")).sum()
+            st.success(f"Tests without drift: {total - detected} of {total}")
+            st.error(f"Tests with drift: {detected} of {total}")
+            st.table(summary_df)
     else:
         st.info("No drift results found.")
         return
@@ -455,7 +779,7 @@ def show_drift_section(pipeline_name):
             )
             rows.append({
                 "Metric": metric_name,
-                "Value": value,
+                "Value": f"{value:.4f}" if isinstance(value, float) else value,
                 "Threshold": payload.get("threshold"),
                 "Drift": bool(payload.get("drift", False))
             })
@@ -463,9 +787,9 @@ def show_drift_section(pipeline_name):
         st.table(pd.DataFrame(rows))
 
     if "Performance_Current" in tests:
-        _render_perf_table(tests["Performance_Current"], "Current Model vs thresholds")
+        _render_perf_table(tests["Performance_Current"], "Challenger Model vs Thresholds")
     if "Performance_Previous" in tests:
-        _render_perf_table(tests["Performance_Previous"], "Previous Model vs thresholds")
+        _render_perf_table(tests["Performance_Previous"], "Champion Model vs Thresholds")
     if "Performance_Comparison" in tests and isinstance(tests["Performance_Comparison"], dict):
         comp_rows = []
         for mname, payload in tests["Performance_Comparison"].items():
@@ -476,216 +800,36 @@ def show_drift_section(pipeline_name):
             drift_key = f"comparison::{metric.split('_')[0]}"
             comp_rows.append({
                 "Metric": metric,
-                "Previous": prev_v,
-                "Current": curr_v,
-                "Relative change": change if change is None else f"{float(change)*100:.2f}%",
+                "Champion": f"{prev_v:.4f}" if isinstance(prev_v, float) else prev_v,
+                "Challenger": f"{curr_v:.4f}" if isinstance(curr_v, float) else curr_v,
+                "Relative Performance Change": f"{float(change)*100:.2f}%" if change is not None else "N/A",
                 "Threshold": thr,
                 "Drift": bool(drift_flags.get(drift_key, False))
             })
         if comp_rows:
-            st.markdown("### Previous vs Current (Relative change)")
+            st.markdown("### Champion vs Challenger (Relative Performance)")
             st.table(pd.DataFrame(comp_rows))
 
-   
-    # =========================
-    # Data for plots 
-    # =========================
-    prev_path = os.path.join(control_dir, "previous_data.csv")
-    last_file = None; df_current = None; df_prev = None
+            # Bar chart comparison
+            df_comp = pd.DataFrame(comp_rows)
+            if not df_comp.empty:
+                # Ensure Champion and Challenger are numeric for plotting
+                df_comp["Champion"] = pd.to_numeric(df_comp["Champion"], errors='coerce')
+                df_comp["Challenger"] = pd.to_numeric(df_comp["Challenger"], errors='coerce')
+                
+                df_melted = df_comp.melt(id_vars=["Metric"], value_vars=["Champion", "Challenger"], var_name="Model", value_name="Score")
+                fig = px.bar(df_melted, x="Metric", y="Score", color="Model", barmode="group", title="Champion vs Challenger Performance")
+                st.plotly_chart(fig, use_container_width=True)
 
-    if os.path.exists(prev_path):
-        try:
-            df_prev = _load_csv_cached(prev_path, _mtime(prev_path))
-        except Exception:
-            df_prev = None
-
-    control_file = os.path.join(control_dir, "control_file.txt")
-    if os.path.exists(control_file) and data_dir:
-        try:
-            with open(control_file, "r") as f:
-                lines = [x.strip() for x in f.readlines() if x.strip()]
-            if lines:
-                last_file = lines[-1].split(",")[0]
-                cand = os.path.join(data_dir, last_file)
-                if os.path.exists(cand):
-                    df_current = _load_any_cached(cand, _mtime(cand))
-        except Exception as e:
-            st.error(f"Error loading latest dataset: {e}")
-            df_current = None
-
-    st.markdown("## Feature Explorer")
-    if df_prev is None or df_current is None:
-        st.info("To render the distribution plots, I need both: `previous_data.csv` and the latest dataset. Skipping interactive plots.")
-        return
-
-    # Numerics columns commons
-    common_cols = [c for c in df_prev.columns if c in df_current.columns]
-    num_cols = [c for c in common_cols if pd.api.types.is_numeric_dtype(df_prev[c]) and pd.api.types.is_numeric_dtype(df_current[c])]
-    if not num_cols:
-        st.info("No common numeric columns found for distribution plots.")
-        return
-
-    # Performance
-    perf_col, opts_col = st.columns([2, 1])
-    with opts_col:
-        max_points = st.number_input("Max rows (sampling)", min_value=5_000, max_value=500_000, value=50_000, step=5_000)
-        bins = st.slider("Bins", min_value=10, max_value=100, value=40, step=5)
-        show_logx = st.checkbox("Log X-axis", value=False)
-        show_norm = st.checkbox("Normalize hist", value=True)
-        show_violin_points = st.checkbox("Show violin points (sampled)", value=False)
-        ecdf_pts = st.select_slider("ECDF resolution", options=[128, 256, 512, 1024], value=512)
-
-    with perf_col:
-        col = st.selectbox("Variable", options=num_cols, index=0)
-
-    s_prev = pd.to_numeric(df_prev[col], errors="coerce").dropna().to_numpy()
-    s_curr = pd.to_numeric(df_current[col], errors="coerce").dropna().to_numpy()
-
-  
-    s_prev = _sample_series(s_prev, max_points=max_points, seed=1)
-    s_curr = _sample_series(s_curr, max_points=max_points, seed=2)
-
-    st.markdown(f"### {col}")
-
-    # 1) Hystogram
-    h_prev, h_curr, centers = _paired_hist(s_prev, s_curr, bins=bins, density=show_norm)
-    if centers.size > 0:
-        hist_fig = go.Figure()
-        hist_fig.add_trace(go.Bar(x=centers, y=h_prev, name="Previous", opacity=0.55))
-        hist_fig.add_trace(go.Bar(x=centers, y=h_curr, name="Current", opacity=0.55))
-        hist_fig.update_layout(barmode="overlay", title=f"Histogram – {col}",
-                               xaxis_title=col, yaxis_title="Density" if show_norm else "Count")
-        if show_logx:
-            hist_fig.update_xaxes(type="log")
-        st.plotly_chart(hist_fig, use_container_width=True)
-    else:
-        st.info("Not enough data to draw histogram.")
-
-    # 2) ECDF 
-    x1, y1 = _ecdf_quantile_curve(s_prev, q_points=int(ecdf_pts), logx=show_logx)
-    x2, y2 = _ecdf_quantile_curve(s_curr, q_points=int(ecdf_pts), logx=show_logx)
-    ecdf_fig = go.Figure()
-    ecdf_fig.add_trace(go.Scatter(x=x1, y=y1, mode="lines", name="Previous"))
-    ecdf_fig.add_trace(go.Scatter(x=x2, y=y2, mode="lines", name="Current"))
-    ecdf_fig.update_layout(title=f"ECDF – {col}", xaxis_title=col, yaxis_title="Cumulative probability")
-    if show_logx:
-        ecdf_fig.update_xaxes(type="log")
-    st.plotly_chart(ecdf_fig, use_container_width=True)
-
-    # 3) Q–Q 
-    q = np.linspace(0.01, 0.99, 99)
-    q_prev = np.quantile(s_prev, q); q_curr = np.quantile(s_curr, q)
-    qq_fig = go.Figure()
-    qq_fig.add_trace(go.Scatter(x=q_prev, y=q_curr, mode="markers", name="Q–Q"))
-    minv = float(np.nanmin([q_prev.min(), q_curr.min()])); maxv = float(np.nanmax([q_prev.max(), q_curr.max()]))
-    qq_fig.add_trace(go.Scatter(x=[minv, maxv], y=[minv, maxv], mode="lines", name="y=x", line=dict(dash="dash")))
-    qq_fig.update_layout(title=f"Q–Q Plot – {col}", xaxis_title="Previous quantiles", yaxis_title="Current quantiles")
-    if show_logx:
-        qq_fig.update_xaxes(type="log"); qq_fig.update_yaxes(type="log")
-    st.plotly_chart(qq_fig, use_container_width=True)
-
-    # 4) Violin + Box 
-    violin_prev = _sample_series(s_prev, max_points=min(max_points, 10000), seed=11)
-    violin_curr = _sample_series(s_curr, max_points=min(max_points, 10000), seed=12)
-    vb_fig = go.Figure()
-    vb_fig.add_trace(go.Violin(y=violin_prev, name="Previous", box_visible=True, meanline_visible=True,
-                               points="all" if show_violin_points else False, jitter=0.1))
-    vb_fig.add_trace(go.Violin(y=violin_curr, name="Current", box_visible=True, meanline_visible=True,
-                               points="all" if show_violin_points else False, jitter=0.1))
-    vb_fig.update_layout(title=f"Violin + Box – {col}", yaxis_title=col)
-    st.plotly_chart(vb_fig, use_container_width=True)
-
-    # Heatmap (Top K)
-    st.markdown("## Drift Heatmap")
-    metric_options = []
-    if "Kolmogorov-Smirnov" in tests: metric_options.append("KS p-value")
-    if "PSI" in tests: metric_options.append("PSI")
-    if "Hellinger Distance" in tests: metric_options.append("Hellinger")
-    if "Earth Mover's Distance" in tests: metric_options.append("EMD")
-
-    if not metric_options:
-        st.info("No per-feature drift metrics found to build a heatmap.")
-        return
-
-    msel = st.selectbox("Heatmap metric", options=metric_options, index=0)
-    topk = st.slider("Top K features to display", min_value=10, max_value=200, value=50, step=10)
-
-    feat_vals: Dict[str, Optional[float]] = {}
-    ordered: List[Tuple[str, float]] = []
-
-    if msel == "KS p-value" and "Kolmogorov-Smirnov" in tests:
-        for feat, payload in tests["Kolmogorov-Smirnov"].items():
-            try:
-                v = payload.get("p_value")
-                feat_vals[feat] = float(v) if v is not None else None
-            except Exception:
-                feat_vals[feat] = None
-        ordered = sorted([(k, v) for k, v in feat_vals.items() if v is not None], key=lambda x: x[1])  # p-value asc
-    elif msel == "PSI" and "PSI" in tests:
-        for feat, payload in tests["PSI"].items():
-            v = payload.get("psi")
-            if v is None:
-                pv = payload.get("psi_value")
-                if isinstance(pv, dict):
-                    exp = pv.get("expected"); act = pv.get("actual")
-                    if isinstance(exp, list) and isinstance(act, list) and len(exp) == len(act) and len(exp) > 0:
-                        try:
-                            exp_arr = np.array(exp, dtype=float); act_arr = np.array(act, dtype=float)
-                            exp_arr = np.where(exp_arr == 0, 1e-8, exp_arr); act_arr = np.where(act_arr == 0, 1e-8, act_arr)
-                            v = float(np.sum((act_arr - exp_arr) * np.log(act_arr / exp_arr)))
-                        except Exception:
-                            v = None
-            feat_vals[feat] = v if v is None else float(v)
-        ordered = sorted([(k, v) for k, v in feat_vals.items() if v is not None], key=lambda x: -abs(x[1]))
-    elif msel == "Hellinger" and "Hellinger Distance" in tests:
-        for feat, payload in tests["Hellinger Distance"].items():
-            try:
-                v = payload.get("hellinger_distance")
-                feat_vals[feat] = float(v) if v is not None else None
-            except Exception:
-                feat_vals[feat] = None
-        ordered = sorted([(k, v) for k, v in feat_vals.items() if v is not None], key=lambda x: -abs(x[1]))
-    elif msel == "EMD" and "Earth Mover's Distance" in tests:
-        for feat, payload in tests["Earth Mover's Distance"].items():
-            try:
-                v = payload.get("emd_distance")
-                feat_vals[feat] = float(v) if v is not None else None
-            except Exception:
-                feat_vals[feat] = None
-        ordered = sorted([(k, v) for k, v in feat_vals.items() if v is not None], key=lambda x: -abs(x[1]))
-
-    if not ordered:
-        st.info("No values available for the selected metric.")
-        return
-
-    ordered = ordered[:topk]
-    heat_df = pd.DataFrame({"feature": [k for k, _ in ordered], "value": [v for _, v in ordered]})
-    if heat_df.empty:
-        st.info("No numeric values available for heatmap.")
-        return
-
-    heat_fig = go.Figure(
-        data=go.Heatmap(
-            z=heat_df["value"].values.reshape(1, -1),
-            x=heat_df["feature"].tolist(),
-            y=[msel],
-            coloraxis="coloraxis"
-        )
-    )
-    heat_fig.update_layout(
-        title=f"Drift heatmap by feature – {msel} (Top {topk})",
-        xaxis=dict(title="Feature", tickangle=-45),
-        yaxis=dict(title=""),
-        coloraxis=dict(colorbar=dict(title=msel))
-    )
-    st.plotly_chart(heat_fig, use_container_width=True)
+    # Show drift trends
+    show_drift_trends_section(pipeline_name)
 
 # =========================
 # Train / Retrain Section
 # =========================
 def show_train_section(pipeline_name):
     """
-    Displays training or retraining metrics.
+    Displays training or retraining metrics, providing detailed explanations for the retraining methods used.
     Expects JSON at: pipelines/{pipeline_name}/metrics/train_results.json
     """
     st.subheader("Training / Retraining Results")
@@ -709,12 +853,22 @@ def show_train_section(pipeline_name):
         5: "Replay mix (prev + current)",
         6: "Recalibration (Platt/Isotonic)",
     }
+    
+    MODE_DESCRIPTIONS = {
+        0: "The model is retrained from scratch on the new dataset, completely replacing the old model.",
+        1: "The model is updated with the new data using `partial_fit`, suitable for models that support incremental learning.",
+        2: "The model is retrained on a rolling window of the most recent data, discarding the oldest samples.",
+        3: "A new model is trained on the new data, and an ensemble is created by stacking it with the old model.",
+        4: "An ensemble is created by stacking the old model with a clone of itself that has been retrained on the new data.",
+        5: "The model is retrained on a dataset composed of a mix of previous data and the new current data.",
+        6: "The model’s probability outputs are recalibrated using methods like Platt Scaling or Isotonic Regression on the new data.",
+    }
 
     st.markdown("## General Information")
-    _type = results.get("tipo", results.get("type", "-"))
-    _file = results.get("archivo", results.get("file", "-"))
+    _type = results.get("type", "-")
+    _file = results.get("file", "-")
     _date = results.get("timestamp", "-")
-    _model = results.get("modelo", results.get("model", "-"))
+    _model = results.get("model", "-")
 
     cols = st.columns(2)
     with cols[0]:
@@ -733,6 +887,11 @@ def show_train_section(pipeline_name):
             if mode is not None:
                 label = MODE_LABELS.get(mode, f"Unknown ({mode})")
                 st.write(f"**Mode:** {mode} — {label}")
+                # Show the description for the used mode
+                description = MODE_DESCRIPTIONS.get(mode)
+                if description:
+                    st.info(description)
+
             if fallback is not None:
                 st.markdown("**Fallback:** " + ("Enabled (used)" if bool(fallback) else "Not used"))
 
@@ -896,7 +1055,7 @@ if not data_dir:
     st.stop()
 
 # Tabs
-tabs = st.tabs(["Dataset", "Evaluator", "Drift", "Train/Retrain", "Logs"])
+tabs = st.tabs(["Dataset", "Evaluator", "Drift", "Historical Performance", "Train/Retrain", "Logs"])
 
 # =========================
 # Auto-refresh on control_file change
@@ -904,7 +1063,7 @@ tabs = st.tabs(["Dataset", "Evaluator", "Drift", "Train/Retrain", "Logs"])
 control_file = os.path.join("pipelines", pipeline_name, "control", "control_file.txt")
 
 
-# Inicialize timestapm in session_state in case that it doesn't exists
+# Initialize timestamp in session_state in case that it doesn't exists
 if "control_file_mtime" not in st.session_state:
     st.session_state.control_file_mtime = os.path.getmtime(control_file) if os.path.exists(control_file) else 0.0
 
@@ -925,7 +1084,10 @@ with tabs[2]:
     show_drift_section(pipeline_name)
 
 with tabs[3]:
-    show_train_section(pipeline_name)
+    show_historical_performance_section(pipeline_name)
 
 with tabs[4]:
+    show_train_section(pipeline_name)
+
+with tabs[5]:
     show_logs_section(pipeline_name)

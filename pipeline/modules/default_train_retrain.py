@@ -233,42 +233,7 @@ def default_retrain(
             save_train_results(results, output_dir, logger)
             return model, X_eval, y_eval, results
 
-        # === Mode 3: Ensemble old + new (stacking preferred) ===
-        elif mode == 3:
-            results["strategy"] = "ensemble old + new (stacking-preferred)"
-            old_model = joblib.load(model_path)
-            fresh = clone(old_model)
-            model_new, X_eval, y_eval, extra_info = default_train(
-                X, y, last_processed_file,
-                model_instance=fresh,
-                random_state=random_state,
-                logger=logger,
-                output_dir=output_dir,
-                param_grid=param_grid,
-                cv=cv
-            )
-            results = _merge_train_results_retrain(results, extra_info)
 
-            if is_classifier(old_model):
-                final_est = LogisticRegression(max_iter=200)
-                model = StackingClassifier(
-                    estimators=[("old", old_model), ("new", model_new)],
-                    final_estimator=final_est,
-                    passthrough=False,
-                    cv=5
-                )
-            elif is_regressor(old_model):
-                model = StackingRegressor(
-                    estimators=[("old", old_model), ("new", model_new)],
-                    final_estimator=RidgeCV(alphas=(0.1, 1.0, 10.0)),
-                    passthrough=False,
-                    cv=5
-                )
-            else:
-                raise ValueError("The model is neither a classifier nor a regressor")
-
-            model.fit(X, y)
-            return _safe_train_return(model, X, y, X_eval, y_eval, extra_info={"meta": "stacking"})
 
         # === Mode 4: Stacking (old + cloned(old)) ===
         elif mode == 4:

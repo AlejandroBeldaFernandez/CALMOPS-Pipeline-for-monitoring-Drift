@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score, f1_score, classification_report,
-    mean_squared_error, mean_absolute_error, r2_score
+    mean_squared_error, mean_absolute_error, r2_score, roc_curve, auc
 )
 
 def _upsert_control_entry(control_file: Path, file_path: str, mtime, logger=None):
@@ -116,19 +116,28 @@ def calculate_metrics(model, X_test, y_test, is_classification: bool):
         is_classification (bool): Whether this is a classification or regression problem
     
     Returns:
-        tuple: (metrics_dict, predictions_array)
+        tuple: (metrics_dict, predictions_array, prediction_probabilities_array)
             - metrics: Dictionary containing computed performance metrics
             - y_pred: Model predictions on test set
+            - y_pred_proba: Model prediction probabilities on test set
     """
     y_pred = model.predict(X_test)
+    y_pred_proba = None
 
     if is_classification:
+        if hasattr(model, "predict_proba"):
+            y_pred_proba = model.predict_proba(X_test)
         metrics = {
             "accuracy": accuracy_score(y_test, y_pred),
             "balanced_accuracy": balanced_accuracy_score(y_test, y_pred),
             "f1": f1_score(y_test, y_pred, average="macro"),
             "classification_report": classification_report(y_test, y_pred, output_dict=True)
         }
+        if y_pred_proba is not None and np.unique(y_test).size == 2:
+            fpr, tpr, _ = roc_curve(y_test, y_pred_proba[:, 1])
+            roc_auc = auc(fpr, tpr)
+            metrics['roc_auc'] = roc_auc
+            metrics['roc_curve'] = {'fpr': fpr.tolist(), 'tpr': tpr.tolist()}
     else:
         metrics = {
             "r2": r2_score(y_test, y_pred),
@@ -137,7 +146,7 @@ def calculate_metrics(model, X_test, y_test, is_classification: bool):
             "mse": mean_squared_error(y_test, y_pred)
         }
 
-    return metrics, y_pred
+    return metrics, y_pred, y_pred_proba
 
 
 def _save_candidate(model, results: dict, candidates_dir: str, base_name: str, logger=None):
@@ -205,6 +214,7 @@ def evaluator(
     df: pd.DataFrame,
     candidates_dir: str = None,
     save_candidates: bool = True,
+    min_improvement_thresholds: dict = None,
 ):
     """
     Champion/Challenger model evaluation system with atomic model rotation.
@@ -231,7 +241,7 @@ def evaluator(
     - Current champion is backed up with _previous.pkl suffix
     - New champion is saved only after successful backup
     - Control files are updated atomically to prevent corruption
-    - Previous training data is preserved for debugging
+    - Previous training data is preserved for debugging and rollback scenarios
     
     CANDIDATE MODEL STORAGE SYSTEM:
     - Non-approved models are archived with timestamps
@@ -254,12 +264,13 @@ def evaluator(
         is_first_model (bool): Whether this is the initial model (affects validation)
         thresholds_perf (dict): Performance thresholds for model approval
         model_dir (str): Directory where champion models are stored
-        model_filename (str): Filename for the champion model
+        model_filename: Filename for the champion model
         control_dir (str): Directory for control files and metadata
         output_dir (str): Directory for evaluation results
         df (pd.DataFrame): Training data to preserve with control files
         candidates_dir (str, optional): Directory for archiving failed candidates
         save_candidates (bool): Whether to save non-approved models
+        min_improvement_thresholds (dict, optional): Minimum improvement thresholds over champion for each metric.
     
     Returns:
         bool: True if model was approved and deployed, False otherwise
@@ -292,15 +303,33 @@ def evaluator(
     if (not is_classification) and user_type == "classification":
         raise ValueError("Model type mismatch: Regression model detected but thresholds_perf contains classification metrics.")
 
+    # Load Champion model and evaluate its performance if not the first model
+    champion_metrics = {}
+    if not is_first_model:
+        champion_model_path = os.path.join(model_dir, model_filename)
+        if os.path.exists(champion_model_path):
+            try:
+                champion_model = joblib.load(champion_model_path)
+                champion_metrics, _ = calculate_metrics(champion_model, X_test, y_test, is_classification)
+                logger.info("Champion model loaded and evaluated for comparison.")
+            except Exception as e:
+                logger.warning(f"Could not load or evaluate Champion model for comparison: {e}")
+        else:
+            logger.info("No Champion model found for comparison (expected if first model, unexpected otherwise).")
+
     try:
-        metrics, y_pred = calculate_metrics(model, X_test, y_test, is_classification)
+        metrics, y_pred, y_pred_proba = calculate_metrics(model, X_test, y_test, is_classification)
 
         # Keep a small sample of predictions to aid debugging
         sample_df = pd.DataFrame({
             "y_true": y_test,
             "y_pred": y_pred
-        }).sample(n=min(10, len(y_test)), random_state=42)
-        sample_predictions = sample_df.to_dict(orient="records")
+        })
+        if y_pred_proba is not None:
+            for i in range(y_pred_proba.shape[1]):
+                sample_df[f"y_pred_proba_{i}"] = y_pred_proba[:, i]
+
+        sample_predictions = sample_df.sample(n=min(10, len(y_test)), random_state=42).to_dict(orient="records")
 
         # Evaluate thresholds:
         for metric, threshold in thresholds_perf.items():
@@ -330,6 +359,27 @@ def evaluator(
                     approved = False
                 else:
                     logger.info(f"Threshold passed: {metric}={value:.6f} >= {threshold}")
+
+            # Check for minimum improvement over Champion (if Champion metrics available)
+            if not is_first_model and champion_metrics and metric in champion_metrics and min_improvement_thresholds:
+                champion_value = champion_metrics.get(metric)
+                min_improvement_ratio = min_improvement_thresholds.get(metric, 0.10) # Default to 10%
+
+                if champion_value is not None and min_improvement_ratio is not None:
+                    if metric in {"rmse", "mae", "mse"}: # Lower is better
+                        required_value = champion_value * (1 - min_improvement_ratio)
+                        if value > required_value:
+                            logger.warning(f"Improvement check violation: {metric}={value:.6f} is not {min_improvement_ratio:.0%} better than Champion's {champion_value:.6f} (required <= {required_value:.6f})")
+                            approved = False
+                        else:
+                            logger.info(f"Improvement check passed: {metric}={value:.6f} is {min_improvement_ratio:.0%} better than Champion's {champion_value:.6f}")
+                    elif metric in {"accuracy", "balanced_accuracy", "f1", "r2"}: # Higher is better
+                        required_value = champion_value * (1 + min_improvement_ratio)
+                        if value < required_value:
+                            logger.warning(f"Improvement check violation: {metric}={value:.6f} is not {min_improvement_ratio:.0%} better than Champion's {champion_value:.6f} (required >= {required_value:.6f})")
+                            approved = False
+                        else:
+                            logger.info(f"Improvement check passed: {metric}={value:.6f} is {min_improvement_ratio:.0%} better than Champion's {champion_value:.6f}")
 
         # Assemble results payload
         results = {

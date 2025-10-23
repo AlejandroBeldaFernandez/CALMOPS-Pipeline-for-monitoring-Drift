@@ -26,23 +26,23 @@ from typing import Optional, Dict, Tuple, List
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Importa la pipeline por BLOQUES (deja este import como lo tienes en tu proyecto)
+# Import the pipeline for BLOCKS (leave this import as you have it in your project)
 from pipeline_block.pipeline_block import run_pipeline as run_pipeline_blocks
 
 
 # =========================
-# Logging (formato unificado)
+# Logging (unified format)
 # =========================
 
 _LOG_FORMAT = "[%(levelname)s] %(asctime)s - %(name)s - %(message)s"
 
 def configure_root_logging(level: int = logging.INFO) -> None:
     """
-    Configura el root logger con un único StreamHandler a stdout y
-    el formato del monitor. Limpia handlers previos, captura warnings
-    y reduce verbosidad de librerías ruidosas.
+    Configures the root logger with a single StreamHandler to stdout and
+    the monitor's format. Clears previous handlers, captures warnings,
+    and reduces verbosity of noisy libraries.
     """
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # suprime INFO/WARNING de TF
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Suppress TF INFO/WARNING
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -61,8 +61,8 @@ def configure_root_logging(level: int = logging.INFO) -> None:
 
 def _get_logger(name: str | None = None) -> logging.Logger:
     """
-    Devuelve un logger que hereda el handler/format del root.
-    No añade handlers (evita duplicados).
+    Returns a logger that inherits the handler/format from the root.
+    Does not add handlers (avoids duplicates).
     """
     if name is None:
         name = __name__
@@ -71,7 +71,7 @@ def _get_logger(name: str | None = None) -> logging.Logger:
     return logger
 
 
-# Logger por defecto del módulo; dentro de start_monitor_schedule_block() se renombra por pipeline
+# Default module logger; it is renamed by pipeline inside start_monitor_schedule_block()
 log = _get_logger()
 
 
@@ -82,7 +82,7 @@ log = _get_logger()
 _ALLOWED_EXTS = (".arff", ".csv", ".txt", ".xml", ".json", ".parquet", ".xls", ".xlsx")
 
 def _project_root() -> str:
-    """Absolute path al root del proyecto (asumiendo este archivo en monitor/)."""
+    """Absolute path to the project root (assuming this file is in monitor/)."""
     return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -98,7 +98,7 @@ def _fatal(msg: str, code: int = 1):
 
 def _model_spec_from_instance(model_instance):
     """
-    Serializa clase + parámetros del modelo sklearn-like para recrearlo en el runner.
+    Serializes the sklearn-like model class + parameters to recreate it in the runner.
     """
     spec = {"module": None, "class": None, "params": {}}
     try:
@@ -112,7 +112,7 @@ def _model_spec_from_instance(model_instance):
 
 
 def _write_runner_config(pipeline_name: str, config_obj: dict, base_dir: str) -> str:
-    """Escribe JSON con config del runner."""
+    """Write JSON with runner config."""
     cfg_dir = os.path.join(base_dir, "pipelines", pipeline_name, "config")
     os.makedirs(cfg_dir, exist_ok=True)
     cfg_path = os.path.join(cfg_dir, "runner_schedule_blocks_config.json")
@@ -123,8 +123,8 @@ def _write_runner_config(pipeline_name: str, config_obj: dict, base_dir: str) ->
 
 def _write_runner_script(pipeline_name: str, runner_cfg_path: str, base_dir: str) -> str:
     """
-    Crea script runner que reconstruye el modelo y llama a start_monitor_schedule_block
-    con persistence='none' (evita recursión en PM2/Docker).
+    Create a runner script that rebuilds the model and calls start_monitor_schedule_block
+    with persistence='none' (avoids recursion in PM2/Docker).
     """
     pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
     os.makedirs(pipeline_dir, exist_ok=True)
@@ -192,19 +192,19 @@ if __name__ == "__main__":
 
 def pm2_list(prefix: str = "calmops-") -> List[dict]:
     if not _which("pm2"):
-        log.error("PM2 no está instalado. sudo npm install -g pm2")
+        log.error("PM2 is not installed. sudo npm install -g pm2")
         return []
     try:
         out = subprocess.check_output(["pm2", "jlist"], text=True)
         procs = json.loads(out)
     except Exception as e:
-        log.error(f"No se pudo obtener la lista de PM2: {e}")
+        log.error(f"Could not get PM2 list: {e}")
         return []
     filtered = [p for p in procs if p.get("name", "").startswith(prefix)]
     if not filtered:
-        log.info(f"No hay procesos PM2 con prefijo '{prefix}'.")
+        log.info(f"No PM2 processes with prefix '{prefix}'.")
         return []
-    log.info("Procesos PM2:")
+    log.info("PM2 processes:")
     for p in filtered:
         name = p.get("name")
         pid = p.get("pid")
@@ -217,25 +217,25 @@ def pm2_list(prefix: str = "calmops-") -> List[dict]:
 def pm2_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> None:
     app_name = f"calmops-{pipeline_name}-blocks"
     if not _which("pm2"):
-        log.error("[ERROR] PM2 no está instalado.")
+        log.error("[ERROR] PM2 is not installed.")
         return
     try:
         subprocess.call(["pm2", "stop", app_name])
         subprocess.call(["pm2", "delete", app_name])
         subprocess.call(["pm2", "save"])
-        log.info(f"[PM2] Proceso '{app_name}' detenido y eliminado.")
+        log.info(f"[PM2] Process '{app_name}' stopped and deleted.")
     except Exception as e:
-        log.warning(f"No se pudo eliminar en PM2: {e}")
+        log.warning(f"Could not delete in PM2: {e}")
 
     pipeline_path = os.path.join(base_dir, pipeline_name)
     try:
         if os.path.exists(pipeline_path):
             shutil.rmtree(pipeline_path)
-            log.info(f"[FS] Carpeta '{pipeline_path}' eliminada.")
+            log.info(f"[FS] Folder '{pipeline_path}' deleted.")
         else:
-            log.info(f"[FS] Carpeta '{pipeline_path}' no existe.")
+            log.info(f"[FS] Folder '{pipeline_path}' does not exist.")
     except Exception as e:
-        log.error(f"No se pudo eliminar la carpeta de la pipeline: {e}")
+        log.error(f"Could not delete the pipeline folder: {e}")
 
 
 # =========================
@@ -377,7 +377,7 @@ def docker_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> N
     pipeline_dir = os.path.join(base_dir, pipeline_name)
     compose_path = os.path.join(pipeline_dir, "docker-compose.yml")
     if not _which("docker"):
-        log.error("Docker no instalado.")
+        log.error("Docker not installed.")
         return
     try:
         if os.path.exists(compose_path):
@@ -388,16 +388,16 @@ def docker_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> N
         else:
             cname = f"calmops_{pipeline_name}_blocks_watchdog"
             subprocess.call(["docker", "rm", "-f", cname])
-        log.info(f"[DOCKER] Pipeline '{pipeline_name}' (blocks watchdog) eliminada.")
+        log.info(f"[DOCKER] Pipeline '{pipeline_name}' (blocks watchdog) deleted.")
     except Exception as e:
-        log.warning(f"No se pudo bajar docker compose: {e}")
+        log.warning(f"Could not bring down docker compose: {e}")
 
     try:
         if os.path.exists(pipeline_dir):
             shutil.rmtree(pipeline_dir)
-            log.info(f"[FS] Carpeta '{pipeline_dir}' eliminada.")
+            log.info(f"[FS] Folder '{pipeline_dir}' deleted.")
     except Exception as e:
-        log.error(f"No se pudo eliminar la carpeta: {e}")
+        log.error(f"Could not delete the folder: {e}")
 
 
 # =========================
@@ -424,20 +424,20 @@ def start_monitor_schedule_block(
     window_size: Optional[int] = None,
     port: Optional[int] = None,
     persistence: str = "none",   # "none" | "pm2" | "docker"
-    # --- BLOQUES ---
+    # --- BLOCKS ---
     block_col: Optional[str] = None,
-    blocks_eval: Optional[List[str]] = None,  # lista de bloques a evaluar; se pasa como eval_blocks a la pipeline
+    blocks_eval: Optional[List[str]] = None,  # list of blocks to evaluate; passed as eval_blocks to the pipeline
 ):
     """
-    Sistema de monitorización por BLOQUES (Watchdog):
-      - Vigila `data_dir` y ejecuta run_pipeline_blocks() en nuevos/modificados.
-      - Lanza el dashboard de bloques.
-      - Puede arrancar persistente con PM2 o Docker.
+    BLOCK monitoring system (Watchdog):
+      - Watches `data_dir` and executes run_pipeline_blocks() on new/modified files.
+      - Launches the blocks dashboard.
+      - Can start persistently with PM2 or Docker.
     """
-    # Logging global con formato del monitor
+    # Global logging with monitor format
     configure_root_logging(logging.INFO)
 
-    # Logger específico por pipeline
+    # Logger specific to the pipeline
     global log
     log = _get_logger(f"calmops.monitor.schedule_blocks.{pipeline_name}")
 
@@ -483,13 +483,13 @@ def start_monitor_schedule_block(
             app_name = f"calmops-{pipeline_name}-blocks"
             python_exec = sys.executable
 
-            # IMPORTANT: no backslashes dentro de expresiones de f-string.
-            # Normalizamos a rutas POSIX antes de montar el texto.
+            # IMPORTANT: no backslashes inside f-string expressions.
+            # We normalize to POSIX paths before mounting the text.
             runner_script_posix = runner_script.replace("\\", "/")
             python_exec_posix = python_exec.replace("\\", "/")
             base_dir_posix = base_dir.replace("\\", "/")
 
-            # Construimos el contenido sin meter backslashes en expresiones {…}
+            # We build the content without putting backslashes in expressions {…}
             ecosystem_lines = [
                 "module.exports = {",
                 "  apps: [{",
@@ -529,7 +529,7 @@ def start_monitor_schedule_block(
 
     # ---------- regular (non-persistent) flow ----------
     BASE_PIPELINE_DIR = os.path.join(os.getcwd(), "pipelines", pipeline_name)
-    OUTPUT_DIR  = os.path.join(BASE_PIPELINE_DIR, "modelos")
+    OUTPUT_DIR  = os.path.join(BASE_PIPELINE_DIR, "outputs")
     CONTROL_DIR = os.path.join(BASE_PIPELINE_DIR, "control")
     LOGS_DIR    = os.path.join(BASE_PIPELINE_DIR, "logs")
     METRICS_DIR = os.path.join(BASE_PIPELINE_DIR, "metrics")
@@ -542,7 +542,7 @@ def start_monitor_schedule_block(
     if not os.path.exists(control_file):
         open(control_file, "w").close()
 
-    # Config para dashboard (bloques)
+    # Config for dashboard (blocks)
     config_path = os.path.join(CONFIG_DIR, "config.json")
     with open(config_path, "w") as f:
         json.dump({
@@ -570,7 +570,7 @@ def start_monitor_schedule_block(
         sys.exit(1)
 
     def get_records() -> Dict[str, int]:
-        """Lee control_file con ficheros + mtimes procesados. <filename>,<mtime>"""
+        """Read control_file with processed files + mtimes. <filename>,<mtime>"""
         records: Dict[str, int] = {}
         if os.path.exists(control_file):
             with open(control_file, "r") as f:
@@ -607,17 +607,17 @@ def start_monitor_schedule_block(
                 custom_retrain_file=custom_retrain_file,
                 custom_fallback_file=custom_fallback_file,
                 delimiter=delimiter,
-                target_file=file,          # basename (alineado con control_file)
+                target_file=file,          # basename (aligned with control_file)
                 window_size=window_size,
                 block_col=block_col,
-                eval_blocks=blocks_eval,   # pasa evaluación de bloques a la pipeline
+                eval_blocks=blocks_eval,   # passes block evaluation to the pipeline
             )
             log.info(f"[PIPELINE] (blocks) Completed for {file}")
         except Exception as e:
             stop_all(f"The block pipeline failed for {file}: {e}")
 
     def execute_if_needed(file: str):
-        """Dispara procesamiento sólo si el fichero es nuevo o modificado respecto al control."""
+        """Trigger processing only if the file is new or modified with respect to the control."""
         file_path = os.path.join(data_dir, file)
         if not os.path.isfile(file_path):
             return
@@ -637,7 +637,7 @@ def start_monitor_schedule_block(
             log.info(f"[CONTROL] {file} already processed (stored mtime={records[file]}), skipping.")
 
     class DataFileHandler(FileSystemEventHandler):
-        """Watchdog handler para creates/updates de ficheros soportados."""
+        """Watchdog handler for creates/updates of supported files."""
         def __init__(self, logger: logging.Logger):
             super().__init__()
             self.log = logger
@@ -684,7 +684,7 @@ def start_monitor_schedule_block(
             stop_all(f"Could not launch Streamlit (blocks): {e}")
 
     def start_watchdog():
-        """Arranca Watchdog y vigila la salud del dashboard."""
+        """Start Watchdog and monitor the health of the dashboard."""
         log.info(f"[MONITOR] Watching directory: {data_dir} ...")
         event_handler = DataFileHandler(log)
         observer = Observer()
@@ -702,7 +702,7 @@ def start_monitor_schedule_block(
     log.info("[MAIN] Launching blocks monitor with Watchdog + Streamlit...")
     log.info("[CHECK] Verifying files in the directory at startup...")
 
-    # Escaneo inicial: procesa sólo si es nuevo/modificado vs control_file.txt
+    # Initial scan: process only if new/modified vs control_file.txt
     for file in os.listdir(data_dir):
         execute_if_needed(file)
 
@@ -773,8 +773,8 @@ if __name__ == "__main__":
         },
         cv=3,
         delimiter=",",
-        port=None,             # ej. 8600 si quieres puerto fijo
+        port=None,             # e.g. 8600 if you want a fixed port
         persistence="none",    # "none" | "pm2" | "docker"
-        block_col="chunk",     # si None, la pipeline intentará detectar "block"/"block_id"
-        blocks_eval=["6"]      # evalúa solo estos bloques (se pasa como eval_blocks a la pipeline)
+        block_col="chunk",     # if None, the pipeline will try to detect "block"/"block_id"
+        blocks_eval=["6"]      # evaluates only these blocks (passed as eval_blocks to the pipeline)
     )

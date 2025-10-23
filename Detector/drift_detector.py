@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, mean_squared_error, r2_score
+from pandas.api.types import is_numeric_dtype
 
 # pip install frouros
 import numpy as np
@@ -9,12 +10,10 @@ import pandas as pd
 
 from frouros.detectors.data_drift import MMD  # batch MMD
 from frouros.detectors.data_drift.batch.distance_based import (
-    PSI as PSI_Detector,       # univariante
-    HellingerDistance as HellingerDet,
-    EMD as EMD_Detector,
+    PSI as PSI_Detector
 )
 from frouros.detectors.data_drift.batch.statistical_test import (
-    KSTest, MannWhitneyUTest, CVMTest,
+    KSTest, MannWhitneyUTest, ChiSquareTest
 )
 
 
@@ -88,30 +87,7 @@ class DriftDetector:
                 results[col] = {"error": str(e), "drift": False}
         return drift_detected, results
 
-    def cramervonmises_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05):
-        """Column-wise Cramér–von Mises; drift if p < alpha."""
-        drift_detected, results = False, {}
-        det = CVMTest()
-        for col in X_ref.columns:
-            if col not in X_new.columns:
-                continue
-            try:
-                x1 = _to_float_array(X_ref[col])
-                x2 = _to_float_array(X_new[col])
-                if x1.size == 0 or x2.size == 0:
-                    results[col] = {"error": "empty data", "drift": False}
-                    continue
-                det.reset()
-                det.fit(X=x1)
-                res, _ = det.compare(X=x2)
-                p = float(res.p_value)
-                stat = float(res.statistic)
-                d = p < alpha
-                results[col] = {"statistic": stat, "p_value": p, "alpha": alpha, "drift": d}
-                drift_detected |= d
-            except Exception as e:
-                results[col] = {"error": str(e), "drift": False}
-        return drift_detected, results
+    
 
     def population_stability_index_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame, psi_threshold: float = 0.10, num_bins: int = 10):
         """Column-wise PSI; drift if PSI > psi_threshold."""
@@ -137,54 +113,135 @@ class DriftDetector:
                 results[col] = {"error": str(e), "drift": False}
         return drift_detected, results
 
-    def hellinger_distance_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame, num_bins: int = 30, threshold: float = 0.10):
-        """Column-wise Hellinger; drift if distance > threshold."""
+    def chi_squared_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05):
+        """Column-wise Chi-squared test; drift if p < alpha. For categorical features."""
         drift_detected, results = False, {}
-        det = HellingerDet(num_bins=num_bins)
+        det = ChiSquareTest()
         for col in X_ref.columns:
             if col not in X_new.columns:
                 continue
             try:
-                x1 = _to_float_array(X_ref[col])
-                x2 = _to_float_array(X_new[col])
-                if x1.size == 0 or x2.size == 0:
+                # For categorical data, we pass the series directly
+                x1 = X_ref[col]
+                x2 = X_new[col]
+                if x1.empty or x2.empty:
                     results[col] = {"error": "empty data", "drift": False}
                     continue
                 det.reset()
                 det.fit(X=x1)
-                res, _ = det.compare(X=x2)  # res.distance
-                h = float(res.distance)
-                d = h > threshold
-                results[col] = {"hellinger_distance": h, "threshold": threshold, "num_bins": num_bins, "drift": d}
+                res, _ = det.compare(X=x2)
+                p = float(res.p_value)
+                stat = float(res.statistic)
+                d = p < alpha
+                results[col] = {"statistic": stat, "p_value": p, "alpha": alpha, "drift": d}
                 drift_detected |= d
             except Exception as e:
                 results[col] = {"error": str(e), "drift": False}
         return drift_detected, results
 
-    def earth_movers_distance_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame, threshold: float | None = None):
-        """Column-wise EMD; drift if EMD > threshold (if None, adaptive threshold 0.1*std_ref)."""
-        drift_detected, results = False, {}
-        det = EMD_Detector()
+    def data_drift_suite(self, X_ref: pd.DataFrame, X_new: pd.DataFrame,
+                         alpha: float = 0.05,
+                         psi_threshold: float = 0.10,
+                         num_bins: int = 10):
+        """Run a suite of univariate data drift tests, adapting to column types."""
+        drift_detected, results, flags = False, {}, {}
+
         for col in X_ref.columns:
             if col not in X_new.columns:
+                results[col] = {"error": "column missing in new data", "drift": True}
+                flags[col] = True
+                drift_detected = True
                 continue
-            try:
-                x1 = _to_float_array(X_ref[col])
-                x2 = _to_float_array(X_new[col])
-                if x1.size == 0 or x2.size == 0:
-                    results[col] = {"error": "empty data", "drift": False}
-                    continue
-                det.reset()
-                det.fit(X=x1)
-                res, _ = det.compare(X=x2)  # res.distance
-                emd = float(res.distance)
-                thr = (0.1 * np.std(x1)) if threshold is None else float(threshold)
-                d = emd > thr
-                results[col] = {"emd_distance": emd, "threshold": thr, "drift": d}
+
+            # Determine column type
+            if is_numeric_dtype(X_ref[col]):
+                # Numerical tests
+                d, r = self.kolmogorov_smirnov_test(X_ref[[col]], X_new[[col]], alpha=alpha)
+                results[f"{col}_ks"] = r[col]
+                flags[f"{col}_ks"] = d
                 drift_detected |= d
-            except Exception as e:
-                results[col] = {"error": str(e), "drift": False}
-        return drift_detected, results
+
+                d, r = self.mann_whitney_test(X_ref[[col]], X_new[[col]], alpha=alpha)
+                results[f"{col}_mw"] = r[col]
+                flags[f"{col}_mw"] = d
+                drift_detected |= d
+
+                d, r = self.population_stability_index_test(X_ref[[col]], X_new[[col]], psi_threshold=psi_threshold, num_bins=num_bins)
+                results[f"{col}_psi"] = r[col]
+                flags[f"{col}_psi"] = d
+                drift_detected |= d
+            else:
+                # Categorical tests
+                d, r = self.chi_squared_test(X_ref[[col]], X_new[[col]], alpha=alpha)
+                results[f"{col}_chi2"] = r[col]
+                flags[f"{col}_chi2"] = d
+                drift_detected |= d
+        
+        return drift_detected, results, flags
+
+
+    def absolute_performance_degradation_suite(self, X: pd.DataFrame, y: pd.Series, model,
+                                               task: str = "classification",
+                                               balanced_accuracy_threshold: float = 0.9,
+                                               accuracy_threshold: float = 0.9,
+                                               f1_threshold: float = 0.9,
+                                               rmse_threshold: float = 1.2,
+                                               r2_threshold: float = 0.5,
+                                               mae_threshold: float = 0.2,
+                                               mse_threshold: float = 0.4,
+                                               average: str = "macro"):
+        """
+        Run a suite of absolute performance degradation tests.
+        Returns:
+            drift_detected (bool), results (dict per metric), flags (dict[metric]=bool)
+        """
+        results = {}
+        flags = {}
+        drift_detected = False
+
+        if task == "classification":
+            d, r = self.performance_degradation_test_balanced_accuracy(X, y, model, balanced_accuracy_threshold)
+            results["balanced_accuracy"] = r
+            flags["balanced_accuracy"] = d
+            drift_detected |= d
+
+            d, r = self.performance_degradation_test_accuracy(X, y, model, accuracy_threshold)
+            results["accuracy"] = r
+            flags["accuracy"] = d
+            drift_detected |= d
+
+            d, r = self.performance_degradation_test_f1(X, y, model, f1_threshold)
+            results["f1"] = r
+            flags["f1"] = d
+            drift_detected |= d
+
+        elif task == "regression":
+            d, r = self.performance_degradation_test_rmse(X, y, model, rmse_threshold)
+            results["rmse"] = r
+            flags["rmse"] = d
+            drift_detected |= d
+
+            d, r = self.performance_degradation_test_r2(X, y, model, r2_threshold)
+            results["r2"] = r
+            flags["r2"] = d
+            drift_detected |= d
+
+            d, r = self.performance_degradation_test_mae(X, y, model, mae_threshold)
+            results["mae"] = r
+            flags["mae"] = d
+            drift_detected |= d
+
+            d, r = self.performance_degradation_test_mse(X, y, model, mse_threshold)
+            results["mse"] = r
+            flags["mse"] = d
+            drift_detected |= d
+        else:
+            raise ValueError("task must be 'classification' or 'regression'")
+
+        # Majority rule: drift if >= 50% of selected metrics flag drift
+        n = len(flags)
+        drift_detected = (n > 0 and sum(bool(v) for v in flags.values()) >= (n / 2.0))
+        return drift_detected, results, flags
 
 
     def performance_degradation_test_balanced_accuracy(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9):
@@ -221,6 +278,19 @@ class DriftDetector:
         """Performance degradation test using R2 score."""
         r2 = r2_score(y, model.predict(X))
         return r2 < threshold, {'R2': r2, 'threshold': threshold}
+
+    def performance_degradation_test_mae(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.2):
+        """Performance degradation test using MAE (Mean Absolute Error)."""
+        from sklearn.metrics import mean_absolute_error
+        y_pred = model.predict(X)
+        mae = mean_absolute_error(y, y_pred)
+        return mae > threshold, {'MAE': mae, 'threshold': threshold}
+
+    def performance_degradation_test_mse(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.4):
+        """Performance degradation test using MSE (Mean Squared Error)."""
+        y_pred = model.predict(X)
+        mse = mean_squared_error(y, y_pred)
+        return mse > threshold, {'MSE': mse, 'threshold': threshold}
 
     # ===========================
     # Comparative performance tests (previous vs current)
@@ -334,3 +404,4 @@ class DriftDetector:
         n = len(flags)
         drift_detected = (n > 0 and sum(bool(v) for v in flags.values()) >= (n / 2.0))
         return drift_detected, results, flags
+
