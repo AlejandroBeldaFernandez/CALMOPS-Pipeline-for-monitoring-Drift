@@ -22,6 +22,8 @@ Architecture Overview:
 """
 
 import os
+import logging
+
 import sys
 import time
 import json
@@ -29,14 +31,19 @@ import socket
 import shutil
 import threading
 import subprocess
-import logging
 from typing import Dict
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from pipeline.pipeline_stream import run_pipeline
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 
 # =========================
 # Centralized Logging Configuration
@@ -60,8 +67,7 @@ def configure_root_logging(level: int = logging.DEBUG) -> None:
     Args:
         level: Minimum logging level (default: INFO for production visibility)
     """
-    # Reduce TF/abseil/urllib3/etc noise if initialized later.
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # 0=all,1=INFO,2=WARNING,3=ERROR
+    
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -78,7 +84,7 @@ def configure_root_logging(level: int = logging.DEBUG) -> None:
     logging.captureWarnings(True)
 
     # Mute some common noisy loggers (optional)
-    for noisy in ("urllib3", "watchdog.observers.inotify_buffer", "PIL", "matplotlib"):
+    for noisy in ("urllib3", "watchdog.observers.inotify_buffer", "PIL", "matplotlib", "tensorflow"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
@@ -531,6 +537,7 @@ def start_monitor(
     port: int | None = None,
     persistence: str = "none",   # "none" | "pm2" | "docker"
 ):
+    print("DEBUG: start_monitor function entered.") # Added for debugging
     """
     Orchestrates the complete CalmOps monitoring ecosystem.
     
@@ -562,7 +569,7 @@ def start_monitor(
         [Additional ML pipeline parameters...]
     """
     # 0) Global logging with monitor format
-    configure_root_logging(logging.INFO)
+    configure_root_logging(logging.DEBUG)
 
     # Contextual logger per pipeline
     log = _get_logger(f"calmops.monitor.{pipeline_name}")
@@ -573,30 +580,33 @@ def start_monitor(
     persistence = (persistence or "none").lower()
     base_dir = _project_root()
 
+    # Always write the runner config
+    model_spec = _model_spec_from_instance(model_instance)
+    runner_cfg_obj = {
+        "pipeline_name": pipeline_name,
+        "data_dir": data_dir,
+        "preprocess_file": preprocess_file,
+        "thresholds_drift": thresholds_drift,
+        "thresholds_perf": thresholds_perf,
+        "retrain_mode": retrain_mode,
+        "fallback_mode": fallback_mode,
+        "random_state": random_state,
+        "param_grid": param_grid,
+        "cv": cv,
+        "custom_train_file": custom_train_file,
+        "custom_retrain_file": custom_retrain_file,
+        "custom_fallback_file": custom_fallback_file,
+        "delimiter": delimiter,
+        "target_file": target_file,
+        "window_size": window_size,
+        "port": port,
+        "model_spec": model_spec,
+        "monitor_type": "monitor",
+    }
+    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+
     if persistence in ("pm2", "docker"):
         # Delegate to production deployment strategies
-        model_spec = _model_spec_from_instance(model_instance)
-        runner_cfg_obj = {
-            "pipeline_name": pipeline_name,
-            "data_dir": data_dir,
-            "preprocess_file": preprocess_file,
-            "thresholds_drift": thresholds_drift,
-            "thresholds_perf": thresholds_perf,
-            "retrain_mode": retrain_mode,
-            "fallback_mode": fallback_mode,
-            "random_state": random_state,
-            "param_grid": param_grid,
-            "cv": cv,
-            "custom_train_file": custom_train_file,
-            "custom_retrain_file": custom_retrain_file,
-            "custom_fallback_file": custom_fallback_file,
-            "delimiter": delimiter,
-            "target_file": target_file,
-            "window_size": window_size,
-            "port": port,
-            "model_spec": model_spec,
-        }
-        runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
         runner_script = _write_runner_script(pipeline_name, runner_cfg_path, base_dir)
 
         if persistence == "pm2":
@@ -833,6 +843,8 @@ def start_monitor(
                 port = 8510
 
         log.info(f"Starting Streamlit dashboard on port {port}")
+        log.info(f"Starting Streamlit dashboard for pipeline {pipeline_name} ")
+        log.info(f"Local URL: http://localhost:{port}")
         try:
             streamlit_process = subprocess.Popen([
                 "streamlit", "run", dashboard_path,
@@ -925,11 +937,11 @@ def start_monitor(
         log.info(f"Processing {len(files_found)} existing data files")
         for file in files_found:
             try:
-                # Force processing of existing files on startup
+                # Do not force process existing files on startup; respect control file
                 file_path = os.path.join(data_dir, file)
                 if os.path.isfile(file_path):
                     log.info(f"Initial scan - processing existing file: {file}")
-                    execute_pipeline(file, force_process=True)
+                    execute_pipeline(file, force_process=False)
                 else:
                     log.warning(f"File {file} not accessible during initial scan")
             except Exception as e:
@@ -939,57 +951,6 @@ def start_monitor(
 
     threading.Thread(target=start_streamlit, args=(pipeline_name, port), daemon=True).start()
     start_watchdog()
-
-
-# =========================
-# Pipeline Management Utilities
-# =========================
-# Administrative functions for pipeline lifecycle management
-# with consistent logging and error handling patterns.
-
-def list_pipelines(base_dir="pipelines"):
-    """
-    Administrative utility for pipeline discovery and inventory.
-    
-    Provides operational visibility into deployed monitoring pipelines
-    for management and maintenance purposes.
-    """
-    log = _get_logger("calmops.monitor.utils")
-    try:
-        pipelines = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
-        if not pipelines:
-            log.info("No monitoring pipelines currently deployed")
-        else:
-            log.info("Currently deployed monitoring pipelines:")
-            for pipeline in pipelines:
-                log.info(f"- {pipeline}")
-    except Exception as e:
-        log.error(f"Pipeline discovery failed: {e}")
-
-
-def delete_pipeline(pipeline_name, base_dir="pipelines"):
-    """
-    Permanent pipeline removal with safety confirmation.
-    
-    Implements secure deletion with user confirmation to prevent
-    accidental removal of production monitoring configurations.
-    """
-    log = _get_logger("calmops.monitor.utils")
-    pipeline_path = os.path.join(base_dir, pipeline_name)
-    if not os.path.exists(pipeline_path):
-        log.error(f"Pipeline '{pipeline_name}' not found in deployment registry")
-        return
-    try:
-        confirmation = input(
-            f"Are you sure you want to delete the pipeline '{pipeline_name}'? This action is irreversible. (y/n): "
-        )
-        if confirmation.lower() != 'y':
-            log.info("Pipeline deletion cancelled by user")
-            return
-        shutil.rmtree(pipeline_path)
-        log.info(f"Pipeline '{pipeline_name}' successfully removed from system")
-    except Exception as e:
-        log.error(f"Pipeline deletion failed for '{pipeline_name}': {e}")
 
 
 # =========================
@@ -1029,36 +990,46 @@ def test_single_file():
         import traceback
         log.error(f"Traceback: {traceback.format_exc()}")
 
+def main():
+    """Main function to start the monitor with predefined arguments."""
+    from sklearn.ensemble import RandomForestClassifier
+
+    configure_root_logging(logging.DEBUG)
+
+    # Define parameters directly for start_monitor
+    pipeline_name = "my_pipeline_watchdog"
+    data_dir = "/home/alex/datos"
+    preprocess_file = "/home/alex/calmops/pipeline/preprocessing.py"
+    thresholds_perf = {"balanced_accuracy": 0.8}
+    thresholds_drift = {"balanced_accuracy": 0.8}
+    model_instance = RandomForestClassifier(random_state=42)
+    retrain_mode = 6
+    fallback_mode = 2
+    random_state = 42
+    param_grid = {"n_estimators": [50, 100], "max_depth": [None, 10, 20], "min_samples_split": [2, 5], "min_samples_leaf": [1, 2]}
+    cv = 3
+    delimiter = ","
+    window_size = 1000
+    port = None
+    persistence = "none"
+
+    start_monitor(
+        pipeline_name=pipeline_name,
+        data_dir=data_dir,
+        preprocess_file=preprocess_file,
+        thresholds_perf=thresholds_perf,
+        thresholds_drift=thresholds_drift,
+        model_instance=model_instance,
+        retrain_mode=retrain_mode,
+        fallback_mode=fallback_mode,
+        random_state=random_state,
+        param_grid=param_grid,
+        cv=cv,
+        delimiter=delimiter,
+        window_size=window_size,
+        port=port,
+        persistence=persistence
+    )
+
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        test_single_file()
-    else:
-        # Configure global logging also in direct invocation
-        configure_root_logging(logging.DEBUG)
-
-        # Minimal example: adapt paths and parameters to your environment.
-        from sklearn.ensemble import RandomForestClassifier
-
-        start_monitor(
-            pipeline_name="my_pipeline_watchdog",
-            data_dir="/home/alex/datos",
-            preprocess_file="/home/alex/calmops/pipeline/preprocessing.py",
-            thresholds_perf={"balanced_accuracy": 0.8},
-            thresholds_drift={"balanced_accuracy": 0.8},
-            model_instance=RandomForestClassifier(random_state=42),
-            retrain_mode=6,
-            fallback_mode=2,
-            random_state=42,
-            param_grid={
-                "n_estimators": [50, 100],
-                "max_depth": [None, 10, 20],
-                "min_samples_split": [2, 5],
-                "min_samples_leaf": [1, 2]
-            },
-            cv=3,
-            delimiter=",",
-            window_size=1000,
-            port=None,          # e.g., 8600 if you need a fixed port
-            persistence="none"  # "none" | "pm2" | "docker"
-        )
+    main()

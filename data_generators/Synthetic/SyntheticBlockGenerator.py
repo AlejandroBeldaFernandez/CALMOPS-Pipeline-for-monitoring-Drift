@@ -41,7 +41,8 @@ class SyntheticBlockGenerator:
                            random_state: int = None,
                            date_start: str = None,
                            date_step: dict = None,
-                           date_col: str = "timestamp"):
+                           date_col: str = "timestamp",
+                           generate_report: bool = True):
         """
         A simplified interface for generating block-structured datasets using string-based method names.
 
@@ -93,20 +94,11 @@ class SyntheticBlockGenerator:
         
         factory = GeneratorFactory()
         generators = []
-        param_to_seed = {}
-        next_seed = random_state
-
+        
         for i, params in enumerate(method_params):
             config_params = params.copy()
             if random_state is not None:
-                params_key = tuple(sorted(config_params.items()))
-                
-                if params_key not in param_to_seed:
-                    param_to_seed[params_key] = next_seed
-                    if next_seed is not None:
-                        next_seed += 1
-                
-                config_params['random_state'] = param_to_seed[params_key]
+                config_params['random_state'] = random_state + i
             
             config = GeneratorConfig(**config_params)
             generator_instance = factory.create_generator(method_mapping[methods[0]], config)
@@ -123,7 +115,8 @@ class SyntheticBlockGenerator:
             balance=balance,
             date_start=date_start,
             date_step=date_step,
-            date_col=date_col
+            date_col=date_col,
+            generate_report=generate_report
         )
 
     def _ensure_list(self, value, n_blocks):
@@ -150,7 +143,8 @@ class SyntheticBlockGenerator:
             balance: bool = False,
             date_start: str = None,
             date_step: dict = None,
-            date_col: str = "timestamp"
+            date_col: str = "timestamp",
+            generate_report: bool = True
         ) -> str:
         """
         Generates a block-structured dataset from a list of instantiated River generators.
@@ -167,6 +161,7 @@ class SyntheticBlockGenerator:
             date_start (str): Start date for block-aligned timestamp injection.
             date_step (dict): Time step between blocks (e.g., {'days': 7}).
             date_col (str): Name of the timestamp column.
+            generate_report (bool): If True, generates a comprehensive report for the dataset.
 
         Returns:
             str: The full path to the generated CSV file.
@@ -179,8 +174,7 @@ class SyntheticBlockGenerator:
 
         if sum(instances_per_block) != total_samples:
             raise ValueError(
-                f"Total samples ({total_samples}) must equal the sum of instances per block ({sum(instances_per_block)})"
-            )
+                f"Total samples ({total_samples}) must equal the sum of instances per block ({sum(instances_per_block)})")
 
         os.makedirs(output_path, exist_ok=True)
         full_path = os.path.join(output_path, filename)
@@ -200,6 +194,7 @@ class SyntheticBlockGenerator:
             
             block_df = synthetic_generator.generate(
                 generator_instance=gen,
+                metadata_generator_instance=gen,
                 output_path=output_path,
                 filename=f"block_{i+1}.csv",
                 n_samples=n_samples_block,
@@ -208,7 +203,8 @@ class SyntheticBlockGenerator:
                 date_start=block_dates[i].isoformat() if block_dates else None,
                 date_every=n_samples_block, # Assign the same date to the whole block
                 date_col=date_col,
-                save_dataset=False
+                save_dataset=False,
+                generate_report=False
             )
             block_df["block"] = i + 1
             all_data.append(block_df)
@@ -218,14 +214,15 @@ class SyntheticBlockGenerator:
 
         print(f"Generated {total_samples} samples in {n_blocks} blocks at: {full_path}")
 
-        reporter = SyntheticReporter(verbose=True)
-        reporter.generate_report(
-            synthetic_df=df,
-            generator_name="SyntheticBlockGenerator",
-            output_dir=output_path,
-            target_column=target_col,
-            block_column="block",
-            time_col=date_col
-        )
+        if generate_report:
+            reporter = SyntheticReporter(verbose=True)
+            reporter.generate_report(
+                synthetic_df=df,
+                generator_name="SyntheticBlockGenerator",
+                output_dir=output_path,
+                target_column=target_col,
+                block_column="block",
+                time_col=date_col
+            )
 
         return full_path

@@ -37,6 +37,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
+
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 try:
     # Python 3.9+
     from zoneinfo import ZoneInfo
@@ -65,7 +72,7 @@ def configure_root_logging(level: int = logging.INFO) -> None:
     Args:
         level: Logging level (default: INFO)
     """
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Suppress TensorFlow INFO/WARNING messages
+   
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -175,7 +182,7 @@ def _write_runner_config(pipeline_name: str, config_obj: dict, base_dir: str) ->
     """
     cfg_dir = os.path.join(base_dir, "pipelines", pipeline_name, "config")
     os.makedirs(cfg_dir, exist_ok=True)
-    cfg_path = os.path.join(cfg_dir, "runner_schedule_config.json")
+    cfg_path = os.path.join(cfg_dir, "runner_config.json")
     with open(cfg_path, "w") as f:
         json.dump(config_obj, f, indent=2)
     return cfg_path
@@ -740,34 +747,37 @@ def start_monitor_schedule(
     if schedule is None or "type" not in schedule or "params" not in schedule:
         _fatal("Schedule configuration requires 'type' and 'params' keys with valid scheduling parameters")
 
-    # Early persistence layer bootstrap for PM2/Docker deployment
     persistence = (persistence or "none").lower()
     base_dir = _project_root()
 
+    # Always write the runner config, regardless of persistence mode.
+    model_spec = _model_spec_from_instance(model_instance)
+    runner_cfg_obj = {
+        "pipeline_name": pipeline_name,
+        "data_dir": data_dir,
+        "preprocess_file": preprocess_file,
+        "thresholds_drift": thresholds_drift,
+        "thresholds_perf": thresholds_perf,
+        "retrain_mode": retrain_mode,
+        "fallback_mode": fallback_mode,
+        "random_state": random_state,
+        "param_grid": param_grid,
+        "cv": cv,
+        "custom_train_file": custom_train_file,
+        "custom_retrain_file": custom_retrain_file,
+        "custom_fallback_file": custom_fallback_file,
+        "delimiter": delimiter,
+        "schedule": schedule,
+        "window_size": window_size,
+        "early_start": early_start,
+        "port": port,
+        "model_spec": model_spec,
+        "monitor_type": "monitor_schedule",
+    }
+    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+
+    # --- persistence bootstrap (early exit if enabled) ---
     if persistence in ("pm2", "docker"):
-        model_spec = _model_spec_from_instance(model_instance)
-        runner_cfg_obj = {
-            "pipeline_name": pipeline_name,
-            "data_dir": data_dir,
-            "preprocess_file": preprocess_file,
-            "thresholds_drift": thresholds_drift,
-            "thresholds_perf": thresholds_perf,
-            "retrain_mode": retrain_mode,
-            "fallback_mode": fallback_mode,
-            "random_state": random_state,
-            "param_grid": param_grid,
-            "cv": cv,
-            "custom_train_file": custom_train_file,
-            "custom_retrain_file": custom_retrain_file,
-            "custom_fallback_file": custom_fallback_file,
-            "delimiter": delimiter,
-            "schedule": schedule,
-            "window_size": window_size,
-            "early_start": early_start,
-            "port": port,
-            "model_spec": model_spec,
-        }
-        runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
         runner_script = _write_runner_script_schedule(pipeline_name, runner_cfg_path, base_dir)
 
         if persistence == "pm2":
@@ -946,6 +956,8 @@ def start_monitor_schedule(
                 port = 8510
 
         log.info(f"Launching Streamlit dashboard on port {port}")
+        log.info(f"Starting Streamlit dashboard for pipeline {pipeline_name} ")
+        log.info(f"Local URL: http://localhost:{port}")
         try:
             streamlit_process = subprocess.Popen([
                 "streamlit", "run", DASHBOARD_PATH,
@@ -1082,29 +1094,51 @@ def delete_pipeline(pipeline_name, base_dir="pipelines"):
 # =========================
 
 if __name__ == "__main__":
-    # Configure unified logging for standalone execution
-    configure_root_logging(logging.INFO)
-
+    import argparse
     from sklearn.ensemble import RandomForestClassifier
 
-    start_monitor_schedule(
-        pipeline_name="my_pipeline_schedule",
-        data_dir="/home/alex/datos",
-        preprocess_file="/home/alex/calmops/pipeline/preprocessing.py",
-        thresholds_drift={"balanced_accuracy": 0.8},
-        thresholds_perf={"accuracy": 0.9, "balanced_accuracy": 0.9, "f1": 0.85},
-        model_instance=RandomForestClassifier(random_state=42),
-        retrain_mode=0,
-        fallback_mode=2,
-        random_state=42,
-        param_grid={"n_estimators": [50, 100], "max_depth": [None, 5, 10]},
-        cv=5,
-        delimiter=",",
-        schedule={
-            "type": "interval",            # Scheduling modes: 'interval' | 'cron' | 'date'
-            "params": {"minutes": 10}      # Interval parameters: minutes, seconds, hours, days
-        },
-        early_start=True,
-        port=None,                # Dashboard port (auto-allocated if None)
-        persistence="none"        # Deployment architecture: "none" | "pm2" | "docker"
-    )
+    def main():
+        configure_root_logging(logging.INFO)
+
+        parser = argparse.ArgumentParser(description="CalmOps Scheduled Monitor System")
+        parser.add_argument("--pipeline_name", default="my_pipeline_schedule", help="Name of the pipeline")
+        parser.add_argument("--data_dir", default="/home/alex/datos", help="Directory to monitor for data")
+        parser.add_argument("--preprocess_file", default="/home/alex/calmops/pipeline/preprocessing.py", help="Path to the preprocessing script")
+        parser.add_argument("--thresholds_drift", type=json.loads, default='{"balanced_accuracy": 0.8}', help='JSON string for drift thresholds')
+        parser.add_argument("--thresholds_perf", type=json.loads, default='{"accuracy": 0.9, "balanced_accuracy": 0.9, "f1": 0.85}', help='JSON string for performance thresholds')
+        parser.add_argument("--model_instance", default=None, help="(Not configurable from CLI, uses RandomForestClassifier by default)")
+        parser.add_argument("--retrain_mode", type=int, default=0, help="Retrain mode")
+        parser.add_argument("--fallback_mode", type=int, default=2, help="Fallback mode")
+        parser.add_argument("--random_state", type=int, default=42, help="Random state for reproducibility")
+        parser.add_argument("--param_grid", type=json.loads, default='{"n_estimators": [50, 100], "max_depth": [null, 5, 10]}', help='JSON string for param_grid')
+        parser.add_argument("--cv", type=int, default=5, help="Cross-validation folds")
+        parser.add_argument("--delimiter", default=",", help="CSV delimiter")
+        parser.add_argument("--schedule", type=json.loads, default='{"type": "interval", "params": {"minutes": 10}}', help='JSON string for schedule config')
+        parser.add_argument("--window_size", type=int, default=None, help="Window size for analysis")
+        parser.add_argument("--early_start", action='store_true', help="Run one check immediately on start")
+        parser.add_argument("--port", type=int, default=None, help="Port for the dashboard")
+        parser.add_argument("--persistence", default="none", choices=["none", "pm2", "docker"], help="Persistence mode")
+
+        args = parser.parse_args()
+
+        start_monitor_schedule(
+            pipeline_name=args.pipeline_name,
+            data_dir=args.data_dir,
+            preprocess_file=args.preprocess_file,
+            thresholds_drift=args.thresholds_drift,
+            thresholds_perf=args.thresholds_perf,
+            model_instance=RandomForestClassifier(random_state=args.random_state),
+            retrain_mode=args.retrain_mode,
+            fallback_mode=args.fallback_mode,
+            random_state=args.random_state,
+            param_grid=args.param_grid,
+            cv=args.cv,
+            delimiter=args.delimiter,
+            schedule=args.schedule,
+            window_size=args.window_size,
+            early_start=args.early_start,
+            port=args.port,
+            persistence=args.persistence
+        )
+
+    main()

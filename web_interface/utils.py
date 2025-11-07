@@ -4,7 +4,13 @@ from pathlib import Path
 import pandas as pd
 from scipy.io import arff
 import streamlit as st
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 def leer_registros(control_file: Path):
     registros = {}
     if control_file.exists():

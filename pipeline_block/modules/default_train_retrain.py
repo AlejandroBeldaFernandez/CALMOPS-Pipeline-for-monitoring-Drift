@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from sklearn.base import clone, is_classifier, is_regressor
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.metrics import (
     accuracy_score, f1_score, balanced_accuracy_score,
     r2_score, mean_squared_error, mean_absolute_error
@@ -245,6 +245,8 @@ def _train_report(
     X: pd.DataFrame,
     y: pd.Series,
     extra: Dict[str, Any] | None = None,
+    X_train_data: Optional[pd.DataFrame] = None,
+    y_train_data: Optional[pd.Series] = None,
 ) -> Dict[str, Any]:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     report: Dict[str, Any] = {
@@ -255,15 +257,22 @@ def _train_report(
         "block_col": block_col,
         "train_blocks": [str(b) for b in train_blocks],
         "eval_blocks": [str(b) for b in eval_blocks],
-        "train_size": int(X[X[block_col].astype(str).isin(train_blocks)].shape[0]),
-        "eval_size": int(X[X[block_col].astype(str).isin(eval_blocks)].shape[0]),
     }
+
+    # Use specific train/eval data if provided
+    X_tr = X_train_data if X_train_data is not None else X[X[block_col].astype(str).isin(train_blocks)]
+    y_tr = y_train_data if y_train_data is not None else y.loc[X_tr.index]
+
+    report["train_size"] = int(X_tr.shape[0])
+    report["eval_size"] = int(X[X[block_col].astype(str).isin(eval_blocks)].shape[0])
 
     # In-sample metrics per train block
     per_block_train: Dict[str, Dict[str, float]] = {}
     for b in train_blocks:
-        Xb = X[X[block_col].astype(str) == str(b)]
-        yb = y.loc[Xb.index]
+        Xb = X_tr[X_tr[block_col].astype(str) == str(b)]
+        if Xb.empty:
+            continue
+        yb = y_tr.loc[Xb.index]
         yhat = model.predict(Xb)
         per_block_train[str(b)] = _global_metrics(yb, yhat, model)
         per_block_train[str(b)]["n"] = int(Xb.shape[0])
@@ -307,6 +316,8 @@ def default_train(
     control_dir: Optional[str] = None,
     min_rows_per_block: int = 1,          # skip training per-block models smaller than this
     auto_init_new_blocks: bool = True,    # not used on train (all seen are "current"), kept for symmetry
+    split_within_blocks: bool = False,
+    train_percentage: float = 0.8,
 ) -> Tuple[BlockWiseModel, pd.DataFrame, pd.Series, Dict[str, Any]]:
     """
     TRAIN (BLOCK_WISE ONLY):
@@ -325,25 +336,70 @@ def default_train(
     if not all_blocks_sorted:
         raise RuntimeError("No block ids found.")
 
-    if test_blocks:
-        eval_blocks = [str(b) for b in test_blocks if str(b) in all_blocks_sorted]
-        if not eval_blocks:
-            eval_blocks = [all_blocks_sorted[-1]]
+    # Initialize report_params
+    report_params = {
+        "X": X,
+        "y": y,
+    }
+
+    if split_within_blocks:
+        logger.info(f"Splitting within blocks for training and evaluation ({train_percentage * 100}% train)." )
+        train_indices = []
+        eval_indices = []
+        for block_id in all_blocks_sorted:
+            block_indices = X[X[block_col].astype(str) == block_id].index
+            n_samples = len(block_indices)
+            n_train = int(n_samples * train_percentage)
+            # Shuffle indices before splitting to avoid ordered data issues
+            shuffled_block_indices = np.random.permutation(block_indices)
+            train_indices.extend(shuffled_block_indices[:n_train])
+            eval_indices.extend(shuffled_block_indices[n_train:])
+
+        X_train_data = X.loc[train_indices]
+        y_train_data = y.loc[train_indices]
+        X_eval = X.loc[eval_indices]
+        y_eval = y.loc[eval_indices]
+
+        train_blocks = all_blocks_sorted
+        eval_blocks = all_blocks_sorted
+
+        # Update report_params for split mode
+        report_params["X_train_data"] = X_train_data
+        report_params["y_train_data"] = y_train_data
+
+        # Best base estimator (optional GridSearch) with all TRAIN rows
+        Xg = X_train_data.drop(columns=[block_col], errors="ignore")
+        yg = y_train_data
+        best_est, extra = _fit_with_optional_gs(model_instance, Xg, yg, param_grid=param_grid, cv=cv, logger=logger)
+
+        # Block-wise model trained on the training split of the data
+        model = BlockWiseModel(best_est, block_col=block_col).fit(X_train_data, y_train_data, train_blocks=train_blocks, min_rows_per_block=min_rows_per_block)
+
     else:
-        eval_blocks = [all_blocks_sorted[-1]]
+        if test_blocks:
+            eval_blocks = [str(b) for b in test_blocks if str(b) in all_blocks_sorted]
+            if not eval_blocks:
+                eval_blocks = [all_blocks_sorted[-1]]
+        else:
+            eval_blocks = [all_blocks_sorted[-1]]
 
-    train_blocks = [b for b in all_blocks_sorted if b not in set(eval_blocks)]
-    if len(train_blocks) == 0:
-        # Safe fallback for single-block datasets
-        train_blocks = list(eval_blocks)
+        train_blocks = [b for b in all_blocks_sorted if b not in set(eval_blocks)]
+        if len(train_blocks) == 0:
+            # Safe fallback for single-block datasets
+            train_blocks = list(eval_blocks)
 
-    # Best base estimator (optional GridSearch) with all TRAIN rows
-    Xg = X[X[block_col].astype(str).isin(train_blocks)].drop(columns=[block_col], errors="ignore")
-    yg = y.loc[Xg.index]
-    best_est, extra = _fit_with_optional_gs(model_instance, Xg, yg, param_grid=param_grid, cv=cv, logger=logger)
+        # Best base estimator (optional GridSearch) with all TRAIN rows
+        Xg = X[X[block_col].astype(str).isin(train_blocks)].drop(columns=[block_col], errors="ignore")
+        yg = y.loc[Xg.index]
+        best_est, extra = _fit_with_optional_gs(model_instance, Xg, yg, param_grid=param_grid, cv=cv, logger=logger)
 
-    # Block-wise model
-    model = BlockWiseModel(best_est, block_col=block_col).fit(X, y, train_blocks=train_blocks, min_rows_per_block=min_rows_per_block)
+        # Block-wise model
+        model = BlockWiseModel(best_est, block_col=block_col).fit(X, y, train_blocks=train_blocks, min_rows_per_block=min_rows_per_block)
+
+        # Eval subset
+        eval_mask = X[block_col].astype(str).isin(eval_blocks)
+        X_eval = X.loc[eval_mask]
+        y_eval = y.loc[eval_mask]
 
     # Save per-block training cache (for replay)
     for b in train_blocks:
@@ -360,8 +416,8 @@ def default_train(
         block_col=block_col,
         train_blocks=train_blocks,
         eval_blocks=eval_blocks,
-        X=X, y=y,
-        extra=extra,
+        extra=extra if 'extra' in locals() else {},
+        **report_params
     )
     try:
         with open(train_json, "w") as f:
@@ -369,11 +425,7 @@ def default_train(
     except Exception:
         pass
 
-    # Eval subset
-    eval_mask = X[block_col].astype(str).isin(eval_blocks)
-    X_eval = X.loc[eval_mask]
-    y_eval = y.loc[eval_mask]
-    meta = {"test_blocks": pd.Series(X[block_col].loc[eval_mask])}
+    meta = {"test_blocks": pd.Series(X_eval[block_col]) if block_col in X_eval else None}
 
     return model, X_eval, y_eval, meta
 
@@ -519,156 +571,379 @@ def _retrain_block_strategy(
     new_model.fit(Xb, yb)
     return new_model
 
-
 def default_retrain(
+
     X: pd.DataFrame,
+
     y: pd.Series,
+
     last_processed_file: str,
+
     *,
+
     model_path: str,
+
     mode: int,
+
     random_state: int,
+
     logger,
+
     param_grid: dict = None,     # unused in block-wise selective retrain
+
     cv: int = None,              # unused in block-wise selective retrain
+
     output_dir: str = None,
+
     window_size: int = None,
+
     blocks: Optional[pd.Series] = None,
+
     block_col: Optional[str] = None,
+
     split_mode: Optional[str] = None,         # ignored
+
     test_size: Optional[float] = None,        # ignored
+
     n_test_blocks: Optional[int] = None,      # ignored
+
     test_blocks: Optional[List[str]] = None,  # eval blocks
+
     block_selection: Optional[str] = None,    # ignored
+
     drifted_blocks: Optional[List[str]] = None,
+
     control_dir: Optional[str] = None,
+
     # NEW
+
     min_rows_per_block: int = 1,          # do not train per-block if block has fewer rows
+
     auto_init_new_blocks: bool = True,    # automatically create models for brand-new blocks
+
+    split_within_blocks: bool = False,
+
+    train_percentage: float = 0.8,
+
 ) -> Tuple[BlockWiseModel, pd.DataFrame, pd.Series, Dict[str, Any]]:
+
     """
+
     SELECTIVE RETRAIN (BLOCK_WISE):
+
       - Retrains only `drifted_blocks` using the selected mode.
+
       - If `auto_init_new_blocks` is True, also initializes models for brand-new blocks.
+
       - Does NOT touch the global model.
+
       - Updates per-block training cache when applicable (replay).
+
     """
+
     assert block_col is not None, "block_col is required in block_wise mode."
+
     assert blocks is not None and blocks.size > 0, "A blocks Series is required."
+
     import joblib
 
+
+
     os.makedirs(output_dir or ".", exist_ok=True)
+
     train_json = os.path.join(output_dir or ".", "train_results.json")
 
+
+
     model: BlockWiseModel = joblib.load(model_path)
+
     all_blocks_sorted = _sorted_blocks(blocks.astype(str))
 
-    # Eval blocks (for building the output subset)
-    if test_blocks:
-        eval_blocks = [str(b) for b in test_blocks if str(b) in all_blocks_sorted]
-        if not eval_blocks:
-            eval_blocks = [all_blocks_sorted[-1]]
+
+
+    report_params = {
+
+        "X": X,
+
+        "y": y,
+
+    }
+
+
+
+    if split_within_blocks:
+
+        logger.info(f"Splitting within blocks for retraining and evaluation ({train_percentage * 100}% train).")
+
+        train_indices = []
+
+        eval_indices = []
+
+        for block_id in all_blocks_sorted:
+
+            block_indices = X[X[block_col].astype(str) == block_id].index
+
+            n_samples = len(block_indices)
+
+            n_train = int(n_samples * train_percentage)
+
+            shuffled_block_indices = np.random.permutation(block_indices)
+
+            train_indices.extend(shuffled_block_indices[:n_train])
+
+            eval_indices.extend(shuffled_block_indices[n_train:])
+
+
+
+        X_eval = X.loc[eval_indices]
+
+        y_eval = y.loc[eval_indices]
+
+        train_blocks = all_blocks_sorted
+
+        eval_blocks = all_blocks_sorted
+
+
+
+        report_params["X_train_data"] = X_train_data
+
+        report_params["y_train_data"] = y_train_data
+
+
+
     else:
-        eval_blocks = [all_blocks_sorted[-1]]
-    train_blocks = [b for b in all_blocks_sorted if b not in set(eval_blocks)]
+
+        if test_blocks:
+
+            eval_blocks = [str(b) for b in test_blocks if str(b) in all_blocks_sorted]
+
+            if not eval_blocks:
+
+                eval_blocks = [all_blocks_sorted[-1]]
+
+        else:
+
+            eval_blocks = [all_blocks_sorted[-1]]
+
+        train_blocks = [b for b in all_blocks_sorted if b not in set(eval_blocks)]
+
+        eval_mask = X[block_col].astype(str).isin(eval_blocks)
+
+        X_eval = X.loc[eval_mask]
+
+        y_eval = y.loc[eval_mask]
+
+
 
     # Compute brand-new blocks vs known per-block models
+
     known_blocks = set(model.per_block_models.keys())
+
     current_blocks = set(all_blocks_sorted)
+
     new_blocks = sorted(list(current_blocks - known_blocks))
 
+
+
     # Build the final list of blocks to train/update
+
     drifted_blocks = [str(b) for b in (drifted_blocks or []) if str(b) in train_blocks]
+
     new_blocks_init: List[str] = []
+
     if auto_init_new_blocks:
+
         # Only consider as trainable those new blocks that belong to TRAIN side
+
         for b in new_blocks:
+
             if str(b) in train_blocks:
+
                 # must also have enough rows
+
                 if X[X[block_col].astype(str) == str(b)].shape[0] >= int(min_rows_per_block):
+
                     if str(b) not in drifted_blocks:
+
                         drifted_blocks.append(str(b))
+
                     new_blocks_init.append(str(b))
 
+
+
     # Nature of the problem (classification/regression) based on global model
+
     is_clf = is_classifier(model.global_model) if model.global_model is not None else True
 
+
+
     # Windowing helper (mode 2)
+
     def _window_block_df(Xb: pd.DataFrame, yb: pd.Series, win: Optional[int]):
+
         if win is None or win <= 0 or len(Xb) <= win:
+
             return Xb, yb
+
         return Xb.tail(win), yb.tail(win)
 
+
+
     # Apply strategy block-by-block
+
     skipped_small: List[str] = []
+
     for b in drifted_blocks:
-        Xb_full = X[X[block_col].astype(str) == str(b)].drop(columns=[block_col], errors="ignore")
-        yb_full = y.loc[Xb_full.index]
+
+        if split_within_blocks:
+
+            # If splitting, train only on the training part of the drifted block
+
+            block_indices = X[X[block_col].astype(str) == str(b)].index
+
+            n_samples = len(block_indices)
+
+            n_train = int(n_samples * train_percentage)
+
+            train_block_indices = np.random.permutation(block_indices)[:n_train]
+
+            Xb_full = X.loc[train_block_indices].drop(columns=[block_col], errors="ignore")
+
+            yb_full = y.loc[train_block_indices]
+
+        else:
+
+            Xb_full = X[X[block_col].astype(str) == str(b)].drop(columns=[block_col], errors="ignore")
+
+            yb_full = y.loc[Xb_full.index]
+
+
 
         if Xb_full.shape[0] < int(min_rows_per_block):
+
             skipped_small.append(str(b))
+
             continue
 
+
+
         prev_m = model.get_block_model(b)
+
         if prev_m is None:
+
             # This is a brand-new block (or never had a per-block model)
+
             # Try to use cached training data to "warm" the previous estimator if available
+
             prev_m = clone(model.base_estimator)
+
             df_prev = _load_block_training_data(control_dir, b)
+
             if df_prev is not None and "__target__" in df_prev.columns:
+
                 X_prev, y_prev = df_prev.drop(columns=["__target__"]), df_prev["__target__"]
+
                 try:
+
                     prev_m.fit(X_prev, y_prev)
+
                 except Exception:
+
                     pass
 
+
+
         Xb_use, yb_use = (Xb_full, yb_full)
-        if mode == 2:
+
+        if mode == 2 and not split_within_blocks: # Windowing only makes sense when not splitting
+
             Xb_use, yb_use = _window_block_df(Xb_full, yb_full, window_size)
 
+
+
         new_block_model = _retrain_block_strategy(
+
             mode=mode,
+
             prev_model=prev_m,
+
             base_estimator=model.base_estimator,
+
             Xb=Xb_use,
+
             yb=yb_use,
+
             random_state=random_state,
+
             is_clf=is_clf,
+
             control_dir=control_dir,
+
             block_id=b,
+
         )
+
         model.set_block_model(b, new_block_model)
 
+
+
         # Update per-block cache
+
         _save_block_training_data(control_dir, b, Xb_use, yb_use)
 
+
+
     # Report
+
     extra_report = {
+
         "retrained_blocks": drifted_blocks,
+
         "mode": mode,
+
         "new_blocks_initialized": new_blocks_init,
+
         "skipped_small_blocks": skipped_small,
+
     }
+
     report = _train_report(
+
         kind="retrain",
+
         file=last_processed_file,
+
         model=model,
+
         block_col=block_col,
+
         train_blocks=train_blocks,
+
         eval_blocks=eval_blocks,
-        X=X, y=y,
+
         extra=extra_report,
+
+        **report_params
+
     )
+
     try:
+
         with open(train_json, "w") as f:
+
             json.dump(report, f, indent=2)
+
     except Exception:
+
         pass
 
-    # Eval subset
-    eval_mask = X[block_col].astype(str).isin(eval_blocks)
-    X_eval = X.loc[eval_mask]
-    y_eval = y.loc[eval_mask]
-    meta = {"test_blocks": pd.Series(X[block_col].loc[eval_mask])}
+
+
+    meta = {"test_blocks": pd.Series(X_eval[block_col]) if block_col in X_eval else None}
+
+
 
     return model, X_eval, y_eval, meta
+
+
+

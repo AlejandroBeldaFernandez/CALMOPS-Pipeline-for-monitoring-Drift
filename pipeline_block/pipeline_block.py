@@ -6,6 +6,8 @@ import json
 import logging
 import importlib.util
 from typing import Optional, List
+import functools
+import inspect
 
 import pandas as pd
 import joblib
@@ -118,6 +120,8 @@ def run_pipeline(
     breaker_backoff_minutes: int = 120,
     block_col: str | None = None,          # columna de bloque dentro del dataset (debe existir para block_wise)
     eval_blocks: list[str] | None = None,  # bloques a evaluar; si None => último bloque
+    split_within_blocks: bool = False, # Nuevo: si es True, divide cada bloque para entrenamiento y evaluación
+    train_percentage: float = 0.8,     # Nuevo: porcentaje para entrenamiento si split_within_blocks es True
 ) -> None:
     """
     Orquestación SOLO block_wise:
@@ -168,6 +172,9 @@ def run_pipeline(
         return
 
     # 2) Preprocesado -> X, y  (block_col debe quedar en X para identificar bloques de eval)
+    sig = inspect.signature(preprocess_func)
+    if 'block_cols' in sig.parameters:
+        preprocess_func = functools.partial(preprocess_func, block_cols=block_col)
     X, y = preprocess_func(df_full)
     if not isinstance(X, pd.DataFrame):
         raise TypeError("Preprocess must return X as a pandas DataFrame.")
@@ -190,14 +197,18 @@ def run_pipeline(
         logger.error("No se detectaron ids de bloque en los datos.")
         return
 
-    if eval_blocks:
-        eval_blocks = [str(b) for b in eval_blocks if str(b) in all_blocks_sorted]
-        if not eval_blocks:
-            eval_blocks = [all_blocks_sorted[-1]]
+    if split_within_blocks:
+        train_blocks = all_blocks_sorted
+        eval_blocks = all_blocks_sorted
     else:
-        eval_blocks = [all_blocks_sorted[-1]]
+        if eval_blocks:
+            eval_blocks = [str(b) for b in eval_blocks if str(b) in all_blocks_sorted]
+            if not eval_blocks:
+                eval_blocks = [all_blocks_sorted[-1]]
+        else:
+            eval_blocks = [all_blocks_sorted[-1]]
+        train_blocks = [b for b in all_blocks_sorted if b not in set(eval_blocks)]
 
-    train_blocks = [b for b in all_blocks_sorted if b not in set(eval_blocks)]
     logger.info(f"[BLOCKS] train_blocks={train_blocks} | eval_blocks={eval_blocks} | block_col={block_col}")
 
     # 3) check_drift (entre bloques). Pasa thresholds de PERFORMANCE (no thresholds_drift).
@@ -235,6 +246,8 @@ def run_pipeline(
                     blocks=blocks_series,
                     block_col=block_col,
                     test_blocks=eval_blocks,   # eval = último (o los que nos pasen)
+                    split_within_blocks=split_within_blocks,
+                    train_percentage=train_percentage,
                 )
 
             # Reinyectar columna de bloque en X_test por seguridad
@@ -262,7 +275,7 @@ def run_pipeline(
                 block_col=block_col,
                 evaluated_blocks=eval_blocks,
                 include_predictions=True,
-                max_pred_examples=100,
+                max_pred_examples=10,
                 mtime=mtime,
             )
 
@@ -283,14 +296,14 @@ def run_pipeline(
                 # flags estadísticos por bloque (si el bloque aparece en alguna pareja con drift)
                 stat_flags = (bw.get("by_block_stat_drift", {}) or {})
                 # flags de performance por bloque (dict de métricas -> bool)
-                perf_flags = ((bw.get("performance", {}) or {}).get("flags", {}) or {})
+                perf_flags = ((bw.get("performance", {}) or {}).get("current", {}) or {}).get("flags", {}) or {}
 
                 stat_set = {str(b) for b, flag in stat_flags.items() if bool(flag)}
                 perf_set = {
                     str(b) for b, mdict in perf_flags.items()
                     if isinstance(mdict, dict) and any(bool(v) for v in mdict.values())
                 }
-                drifted_blocks = sorted((stat_set | perf_set) & set(train_blocks))
+                drifted_blocks = sorted(perf_set & set(train_blocks))
             except Exception:
                 logger.warning("No se pudo leer drift_results.json para decidir bloques con drift.")
 
@@ -319,6 +332,8 @@ def run_pipeline(
                     block_col=block_col,
                     test_blocks=eval_blocks,
                     drifted_blocks=drifted_blocks,  # <--- clave: solo estos bloques
+                    split_within_blocks=split_within_blocks,
+                    train_percentage=train_percentage,
                 )
             else:
                 # No hay drift en bloques de train → NO-OP; preparamos eval en eval_blocks
@@ -353,7 +368,7 @@ def run_pipeline(
                 block_col=block_col,
                 evaluated_blocks=eval_blocks,
                 include_predictions=True,
-                max_pred_examples=100,
+                max_pred_examples=10,
                 mtime=mtime,
             )
 
@@ -404,7 +419,7 @@ def run_pipeline(
                     block_col=block_col,
                     evaluated_blocks=eval_blocks,
                     include_predictions=True,
-                    max_pred_examples=100,
+                    max_pred_examples=10,
                     mtime=mtime,
                 )
 
@@ -436,7 +451,7 @@ def run_pipeline(
                     block_col=block_col,
                     evaluated_blocks=eval_blocks,
                     include_predictions=True,
-                    max_pred_examples=100,
+                    max_pred_examples=10,
                     mtime=mtime,
                 )
 

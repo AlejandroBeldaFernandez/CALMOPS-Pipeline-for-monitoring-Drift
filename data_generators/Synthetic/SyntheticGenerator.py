@@ -83,29 +83,32 @@ class SyntheticGenerator:
         transition_width: Optional[int] = None,
         segment_label_ratios: Optional[List[Optional[Dict]]] = None,
         drift_generator: Optional[object] = None,
-        save_dataset: bool = True
+        save_dataset: bool = True,
+        generate_report: bool = True,
+        metadata_generator_instance: Optional[object] = None
     ) -> Union[pd.DataFrame, str]:
         """
         Main public method to generate a synthetic dataset.
 
         Args:
-            generator_instance: An instantiated River generator.
-            output_path (Optional[str]): Directory to save the output files. Defaults to `DEFAULT_OUTPUT_DIR`.
+            generator_instance: An instantiated River generator or an iterator.
+            output_path (Optional[str]): Directory to save the output files.
             filename (str): Name of the output CSV file.
             n_samples (int): Total number of samples to generate.
-            drift_type (str): Type of drift to inject ('none', 'virtual', 'gradual', 'abrupt', etc.).
+            drift_type (str): Type of drift to inject.
             position_of_drift (int): The sample index where the drift should occur.
             target_col (str): Name for the target variable column.
             balance (bool): If True, balances the class distribution.
             inconsistency (float): A factor to add random noise to gradual drift transitions.
-            drift_options (Optional[Dict]): Additional options for specific drift types (e.g., `missing_fraction`).
-            date_start (Optional[str]): Start date for timestamp injection (e.g., '2023-01-01').
+            drift_options (Optional[Dict]): Additional options for specific drift types.
+            date_start (Optional[str]): Start date for timestamp injection.
             date_every (int): Generate a new date every N rows.
-            date_step (Optional[Dict[str, int]]): Time step for date injection (e.g., {'days': 1}).
+            date_step (Optional[Dict[str, int]]): Time step for date injection.
             date_col (str): Name of the timestamp column.
-            drift_generator (Optional[object]): A second River generator instance for drift simulation.
-            save_dataset (bool): If True, saves the generated DataFrame to a CSV file and returns the path. 
-                                If False, returns the DataFrame directly.
+            drift_generator (Optional[object]): A second River generator instance for drift.
+            save_dataset (bool): If True, saves the DataFrame to a CSV file.
+            generate_report (bool): If True, generates a JSON report.
+            metadata_generator_instance (Optional[object]): An optional generator instance to use for metadata inference.
 
         Returns:
             Union[pd.DataFrame, str]: The generated DataFrame or the path to the saved CSV file.
@@ -113,6 +116,7 @@ class SyntheticGenerator:
         out_dir = self._resolve_output_dir(output_path)
         df = self._generate_internal(
             generator_instance=generator_instance,
+            metadata_generator_instance=metadata_generator_instance,
             output_path=out_dir,
             filename=filename,
             n_samples=n_samples,
@@ -138,6 +142,7 @@ class SyntheticGenerator:
             samples_per_second=samples_per_second,
             transition_width=transition_width,
             segment_label_ratios=segment_label_ratios,
+            generate_report=generate_report
         )
         if save_dataset:
             full_csv_path = os.path.join(out_dir, filename)
@@ -192,19 +197,33 @@ class SyntheticGenerator:
              data = (self._generate_balanced(data_gen_instance, n_samples)
                     if balance else self._generate_data(data_gen_instance, n_samples))
 
+        # Infer column names
+        columns = []
         try:
-            first_sample = next(iter(generator_instance.take(1)))
-            columns = list(first_sample[0].keys()) + [target_col]
-        except Exception:
-            n_features = len(data[0]) - 1 if data else 0
-            columns = [f"x{i}" for i in range(n_features)] + [target_col]
-            logger.warning("Could not infer feature names; using x0..xK")
+            # Use the specific metadata generator if provided, otherwise fallback to the main one.
+            gen_for_meta = kwargs.get("metadata_generator_instance") or kwargs["generator_instance"]
+            
+            if hasattr(gen_for_meta, 'take'):
+                first_sample_features, _ = next(iter(gen_for_meta.take(1)))
+                columns = list(first_sample_features.keys())
+            else:
+                raise AttributeError("Metadata generator is an iterator and does not have .take() method.")
 
-        df = pd.DataFrame(data, columns=columns)
+        except Exception as e:
+            logger.warning(f"Could not infer feature names from generator: {e}. Falling back to generic names.")
+            if data:
+                n_features = len(data[0]) - 1
+                columns = [f"x{i}" for i in range(n_features)]
+        
+        final_columns = columns + [kwargs["target_col"]]
+        df = pd.DataFrame(data, columns=final_columns)
         df = self._inject_dates(df, kwargs["date_col"], kwargs["date_start"], kwargs["date_every"], kwargs["date_step"])
 
-        report_kwargs = {k: v for k, v in kwargs.items() if k != 'save_dataset'}
-        self._save_report_json(df=df, output_dir=kwargs["output_path"], **report_kwargs)
+        if kwargs.get("generate_report", True):
+            report_kwargs = {k: v for k, v in kwargs.items() if k != 'save_dataset'}
+            # Ensure the report gets the actual generator instance, not the iterator
+            report_kwargs["generator_instance"] = kwargs.get("metadata_generator_instance") or kwargs["generator_instance"]
+            self._save_report_json(df=df, output_dir=kwargs["output_path"], **report_kwargs)
         return df
 
     def _virtual_drift_generator(self, generator: Iterator, position_of_drift: int, missing_fraction: float, feature_cols: Optional[List[str]]) -> Iterator[Tuple[Dict, int]]:

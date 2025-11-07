@@ -6,7 +6,13 @@ import pandas as pd
 from sklearn.base import is_classifier, is_regressor
 import sys
 from pathlib import Path
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 # Add config path to import defaults
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from config.defaults import DRIFT_DETECTION

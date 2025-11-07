@@ -27,7 +27,13 @@ from .modules.data_loader import data_loader
 from .modules.check_drift import check_drift
 from .modules.evaluador import evaluator
 from .modules.default_train_retrain import default_train, default_retrain
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 
 # ===============================================================================
 # CIRCUIT BREAKER IMPLEMENTATION

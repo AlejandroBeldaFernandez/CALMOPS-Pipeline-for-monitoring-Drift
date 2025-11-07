@@ -323,6 +323,19 @@ def evaluate_model(
     if logger:
         logger.info("[evaluator] eval_results.json saved.")
 
+    # Save a copy to history
+    try:
+        history_dir = os.path.join(metrics_dir, "eval_history")
+        os.makedirs(history_dir, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        history_fname = f"eval_results_{ts}.json"
+        _save_json(results, history_dir, history_fname)
+        if logger:
+            logger.info(f"[evaluator] Saved historical eval to {history_fname}")
+    except Exception as e:
+        if logger:
+            logger.warning(f"[evaluator] Could not save historical eval: {e}")
+
     # Update control_file.txt if globally approved
     if approved_flag and data_file:
         try:

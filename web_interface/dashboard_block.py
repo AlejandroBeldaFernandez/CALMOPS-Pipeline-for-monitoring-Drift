@@ -12,7 +12,13 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 from utils import (
     _load_any_dataset,
     dashboard_data_loader
@@ -222,10 +228,8 @@ def _sorted_blocks(series: pd.Series):
 # =========================
 # Dataset Tab
 # =========================
-def show_dataset_section(data_dir, pipeline_name):
+def show_dataset_section(df: pd.DataFrame, last_file: str, pipeline_name: str, block_col: Optional[str]):
     st.subheader("Dataset (block_wise)")
-    control_dir = os.path.join("pipelines", pipeline_name, "control")
-    df, last_file = dashboard_data_loader(data_dir, control_dir)
 
     if df.empty or not last_file:
         st.warning("⚠ No processed dataset found yet.")
@@ -233,7 +237,8 @@ def show_dataset_section(data_dir, pipeline_name):
 
     _safe_write(f"*Last processed dataset:* {_sanitize_text(last_file)}")
 
-    block_col = _detect_block_col(pipeline_name, df)
+    df_to_display = df
+
     if block_col and block_col in df.columns:
         _safe_markdown(f"🔢 Block column detected: **{_sanitize_text(block_col)}**")
         blocks = _sorted_blocks(df[block_col])
@@ -252,20 +257,38 @@ def show_dataset_section(data_dir, pipeline_name):
             )
             _safe_plot(fig)
 
-        sel = st.selectbox("Preview block", options=["(All)"] + [str(b) for b in blocks], index=0, key="ds_focus_block")
-        df_view = df if sel == "(All)" else df[df[block_col].astype(str) == sel]
+        # Add a selectbox for block selection
+        selected_block = st.selectbox(
+            'Select a block to inspect',
+            options=["(All)"] + blocks,
+            index=0,
+            key="dataset_block_selector"
+        )
+
+        # Filter the dataframe based on the selection
+        if selected_block != "(All)":
+            df_to_display = df[df[block_col].astype(str) == str(selected_block)]
+        else:
+            df_to_display = df
+
     else:
         _safe_markdown("No block column detected. Showing global info.")
-        df_view = df
         block_col = None
+        df_to_display = df
 
     _safe_markdown("### 👀 Preview (head)")
-    _safe_table(df_view.head(10))
+    _safe_table(df_to_display.head(10))
+
+    _safe_markdown("### 📝 Descriptive Statistics")
+    try:
+        _safe_table(df_to_display.describe())
+    except Exception as e:
+        st.warning(f"Could not generate descriptive statistics: {e}")
 
     # Missingness quick view
     _safe_markdown("### 🕳 Missingness (fraction by column)")
     try:
-        nan_frac = df_view.isna().mean().sort_values(ascending=False)
+        nan_frac = df_to_display.isna().mean().sort_values(ascending=False)
         if not nan_frac.empty:
             fig_nan = px.bar(
                 x=nan_frac.index.map(_sanitize_text),
@@ -283,7 +306,7 @@ def show_dataset_section(data_dir, pipeline_name):
     try:
         st.download_button(
             "⬇ Download preview (CSV)",
-            data=df_view.to_csv(index=False).encode("utf-8"),
+            data=df_to_display.to_csv(index=False).encode("utf-8"),
             file_name="preview.csv",
             mime="text/csv",
         )
@@ -292,12 +315,58 @@ def show_dataset_section(data_dir, pipeline_name):
 
     _safe_markdown("### Dataset Info")
     info_df = pd.DataFrame({
-        "Column": df_view.columns,
-        "Non-Null Count": df_view.notnull().sum().values,
-        "Unique Values": df_view.nunique(dropna=True).values,
-        "Dtype": df_view.dtypes.astype(str).values,
+        "Column": df_to_display.columns,
+        "Non-Null Count": df_to_display.notnull().sum().values,
+        "Unique Values": df_to_display.nunique(dropna=True).values,
+        "Dtype": df_to_display.dtypes.astype(str).values,
     })
     _safe_table(info_df)
+
+    # Top categorical values
+    _safe_markdown("### 📊 Top Categorical Values")
+    cat_cols = df_to_display.select_dtypes(include=['object', 'category']).columns
+    if len(cat_cols) > 0:
+        col = st.selectbox("Select column to see top values", options=cat_cols, index=0, key="cat_val_selector")
+        if col:
+            top_n = st.slider("Top N values", min_value=5, max_value=50, value=10, step=5, key="cat_val_slider")
+            val_counts = df_to_display[col].value_counts(dropna=False).head(top_n)
+            
+            fig = px.bar(
+                val_counts, 
+                x=val_counts.index.map(_sanitize_text), 
+                y=val_counts.values,
+                title=_sanitize_text(f"Top {top_n} values for {col}"),
+                labels={'x': _sanitize_text(col), 'y': 'Count'}
+            )
+            _safe_plot(fig)
+    else:
+        _safe_markdown("No categorical columns found in the dataset.")
+
+    # Processed Files History
+    _safe_markdown("### 📂 Processed Files History")
+    control_dir = os.path.join("pipelines", pipeline_name, "control")
+    control_file_path = os.path.join(control_dir, "control_file.txt")
+    if os.path.exists(control_file_path):
+        processed_files_data = []
+        with open(control_file_path, "r") as f:
+            for line in f:
+                parts = line.strip().split(",", 1)
+                if len(parts) == 2:
+                    fname, mtime = parts
+                    try:
+                        processed_files_data.append({"File Name": fname, "Processed At": pd.to_datetime(float(mtime), unit='s')})
+                    except ValueError:
+                        processed_files_data.append({"File Name": fname, "Processed At": "Invalid Timestamp"})
+        
+        if processed_files_data:
+            df_processed = pd.DataFrame(processed_files_data)
+            df_processed = df_processed.sort_values(by="Processed At", ascending=True).reset_index(drop=True)
+            _safe_table(df_processed)
+        else:
+            _safe_markdown("No files recorded in control_file.txt yet.")
+    else:
+        _safe_markdown("control_file.txt not found. No processing history available.")
+
 
 # =========================
 # Evaluator Tab
@@ -307,6 +376,17 @@ def show_evaluator_section(pipeline_name):
 
     base_dir = os.path.join("pipelines", pipeline_name)
     metrics_dir = os.path.join(base_dir, "metrics")
+    run_config_path = os.path.join(metrics_dir, "run_config.json")
+
+    # Display run configuration
+    run_config = _read_json_cached(run_config_path, _mtime(run_config_path)) or {}
+    if run_config:
+        st.markdown("### Run Configuration")
+        if run_config.get('split_within_blocks'):
+            st.info(f"Evaluation mode: Split within blocks ({run_config.get('train_percentage', 0) * 100}% train)")
+        else:
+            st.info(f"Evaluation mode: By block (eval blocks: {run_config.get('eval_blocks')})")
+
     candidates_dir = os.path.join(base_dir, "candidates")
     eval_path = os.path.join(metrics_dir, "eval_results.json")
     health_path = os.path.join(metrics_dir, "health.json")
@@ -389,15 +469,19 @@ def show_evaluator_section(pipeline_name):
                     df_line = df_line.sort_values("block")
                 except Exception:
                     df_line["block"] = df_line["block"].astype(str)
+                
+                df_line["block_str"] = df_line["block"].astype(str)
 
                 if df_line.shape[0] <= 1:
-                    fig = px.bar(df_line, x="block", y=metric_to_plot,
+                    fig = px.bar(df_line, x="block_str", y=metric_to_plot,
                                  title=_sanitize_text(f"{metric_to_plot} (selected blocks)"),
-                                 labels={"block": _sanitize_text("Block"), metric_to_plot: _sanitize_text(metric_to_plot)})
+                                 labels={"block_str": _sanitize_text("Block"), metric_to_plot: _sanitize_text(metric_to_plot)})
                 else:
-                    fig = px.line(df_line, x="block", y=metric_to_plot, markers=True,
+                    fig = px.line(df_line, x="block_str", y=metric_to_plot, markers=True,
                                   title=_sanitize_text(f"{metric_to_plot} by block"),
-                                  labels={"block": _sanitize_text("Block"), metric_to_plot: _sanitize_text(metric_to_plot)})
+                                  labels={"block_str": _sanitize_text("Block"), metric_to_plot: _sanitize_text(metric_to_plot)})
+                
+                fig.update_xaxes(type='category')
 
                 thr = results.get("thresholds", {}).get(metric_to_plot)
                 if thr is not None:
@@ -499,6 +583,53 @@ def show_evaluator_section(pipeline_name):
     else:
         _safe_markdown("No circuit breaker state found yet (health.json).")
 
+    # Candidates overview
+    _safe_markdown("## 🕵️ Candidates (Non-Approved Models)")
+    if not os.path.exists(candidates_dir):
+        _safe_markdown("No candidates directory yet.")
+        return None
+
+    candidates = []
+    try:
+        for entry in sorted(
+            [os.path.join(candidates_dir, d) for d in os.listdir(candidates_dir) if os.path.isdir(os.path.join(candidates_dir, d))],
+            key=lambda p: os.path.getmtime(p),
+            reverse=True
+        )[:10]:
+            meta_path = os.path.join(entry, "meta.json")
+            eval_p = os.path.join(entry, "eval_results.json")
+            row = {"path": entry, "timestamp": None, "file": None, "approved": False, "key_metric": None, "metric_value": None}
+            try:
+                if os.path.exists(meta_path):
+                    meta = _read_json_cached(meta_path, _mtime(meta_path))
+                    row["approved"] = bool(meta.get("approved", False))
+                    row["file"] = meta.get("file")
+                    row["timestamp"] = meta.get("timestamp")
+                if os.path.exists(eval_p):
+                    ev = _read_json_cached(eval_p, _mtime(eval_p))
+                    m = ev.get("metrics", {})
+                    if "accuracy" in m:
+                        row["key_metric"] = "accuracy"; row["metric_value"] = m.get("accuracy")
+                    elif "f1" in m:
+                        row["key_metric"] = "f1"; row["metric_value"] = m.get("f1")
+                    elif "r2" in m:
+                        row["key_metric"] = "r2"; row["metric_value"] = m.get("r2")
+            except Exception:
+                pass
+            candidates.append(row)
+
+        if candidates:
+            df_cand = pd.DataFrame(candidates)
+            if "timestamp" in df_cand.columns:
+                df_cand = df_cand.sort_values(by="timestamp", ascending=False, na_position="last")
+            show_cols = ["timestamp", "file", "approved", "key_metric", "metric_value", "path"]
+            _safe_table(df_cand[show_cols])
+            _safe_caption("Showing up to 10 latest candidates. Each folder contains `model.pkl` and `eval_results.json`.")
+        else:
+            _safe_markdown("No candidates have been saved yet.")
+    except Exception as e:
+        st.warning(f"Could not enumerate candidates: {e}")
+
     return None
 
 def show_drift_section(pipeline_name):
@@ -537,12 +668,30 @@ def show_drift_section(pipeline_name):
     block_col = blk.get("block_col")
     pairwise = blk.get("pairwise", {}) or {}
     by_test = results.get("drift", {}).get("by_test", {}) or {}
+    by_block_stat_drift = blk.get("by_block_stat_drift", {}) or {}
 
     # --- Header KPIs
-    cols = st.columns(3)
+    total_pairs = len(blocks_all) * (len(blocks_all) - 1) // 2
+    pairs_with_drift = 0
+    if pairwise:
+        # Sum of drift flags over all tests
+        all_pairs = set()
+        for test_name, test_results in pairwise.items():
+            for pair, result in test_results.items():
+                if result.get("drift"):
+                    # Normalize pair to avoid double counting (e.g., "1|2" and "2|1")
+                    sorted_pair = "|".join(sorted(pair.split("|")))
+                    all_pairs.add(sorted_pair)
+        pairs_with_drift = len(all_pairs)
+
+    blocks_with_drift = sum(1 for v in by_block_stat_drift.values() if v)
+
+    cols = st.columns(5)
     cols[0].metric("Block column", _sanitize_text(str(block_col)))
     cols[1].metric("Num blocks", len(blocks_all))
     cols[2].metric("Tests with drift", sum(1 for v in by_test.values() if v))
+    cols[3].metric("Pairs with drift", f"{pairs_with_drift} / {total_pairs}")
+    cols[4].metric("Blocks with drift", f"{blocks_with_drift} / {len(blocks_all)}")
 
     # --- Block selector (like Train)
     if blocks_all:
@@ -727,9 +876,9 @@ def show_drift_section(pipeline_name):
             drift_counts = {b: int(F.loc[b].sum(skipna=True)) if b in F.index else 0 for b in M.index}
             df_dc = pd.DataFrame({"block": list(drift_counts.keys()), "pairs_with_drift": list(drift_counts.values())})
             fig_dc = px.bar(
-                df_dc, x="block", y="pairs_with_drift",
+                df_dc, x=[str(b) for b in df_dc["block"]], y="pairs_with_drift",
                 title=_sanitize_text(f"Blocks with drift pairs – {tsel}"),
-                labels={"block": _sanitize_text("Block"), "pairs_with_drift": _sanitize_text("Pairs with drift")},
+                labels={"x": _sanitize_text("Block"), "pairs_with_drift": _sanitize_text("Pairs with drift")},
             )
             _safe_plot(fig_dc)
 
@@ -811,9 +960,9 @@ def show_drift_section(pipeline_name):
         if rows:
             df_flags = pd.DataFrame(rows)
             fig_flags = px.bar(
-                df_flags, x="block", y="flag",
+                df_flags, x=[str(b) for b in df_flags["block"]], y="flag",
                 title=_sanitize_text("Blocks flagged in any pairwise test"),
-                labels={"block": _sanitize_text("Block"), "flag": _sanitize_text("Flag")}
+                labels={"x": _sanitize_text("Block"), "flag": _sanitize_text("Flag")}
             )
             _safe_plot(fig_flags)
 
@@ -917,9 +1066,85 @@ def show_drift_section(pipeline_name):
         _safe_plot(fig)
 
 
+def show_historical_performance_section(pipeline_name: str):
+    st.subheader("Historical Performance (block-wise)")
+
+    base_dir = os.path.join("pipelines", pipeline_name)
+    metrics_dir = os.path.join(base_dir, "metrics")
+    eval_history_dir = os.path.join(metrics_dir, "eval_history")
+
+    if not os.path.exists(eval_history_dir):
+        _safe_markdown("No evaluation history found.")
+        return
+
+    history_files = sorted([f for f in os.listdir(eval_history_dir) if f.startswith("eval_results_") and f.endswith(".json")])
+
+    if not history_files:
+        _safe_markdown("No historical evaluation data found.")
+        return
+
+    all_results = []
+    for file_name in history_files:
+        file_path = os.path.join(eval_history_dir, file_name)
+        try:
+            results = _read_json_cached(file_path, _mtime(file_path))
+            if not results:
+                continue
+            
+            timestamp_str = file_name.replace("eval_results_", "").replace(".json", "")
+            timestamp = pd.to_datetime(timestamp_str, format="%Y%m%d_%H%M%S")
+            results["timestamp"] = timestamp
+            all_results.append(results)
+        except Exception as e:
+            st.warning(f"Could not read or parse {file_name}: {e}")
+    
+    if not all_results:
+        st.warning("No valid historical evaluation data could be loaded.")
+        return
+
+    # Extract per-block performance data
+    block_performance_data = []
+    for result in all_results:
+        timestamp = result["timestamp"]
+        blocks_info = result.get("blocks", {})
+        per_block_metrics = blocks_info.get("per_block_metrics_full", {})
+        if per_block_metrics:
+            for block, metrics in per_block_metrics.items():
+                row = {"timestamp": timestamp, "block": block}
+                row.update(metrics)
+                block_performance_data.append(row)
+
+    if not block_performance_data:
+        _safe_markdown("No per-block performance data found in history.")
+        return
+
+    df_history = pd.DataFrame(block_performance_data)
+    df_history = df_history.sort_values(by=["timestamp", "block"]).reset_index(drop=True)
+
+    st.dataframe(df_history)
+
+    # Plot performance over time
+    available_metrics = [col for col in df_history.columns if col not in ["timestamp", "block"]]
+    if not available_metrics:
+        _safe_markdown("No metrics available to plot.")
+        return
+
+    metric_to_plot = st.selectbox("Select Metric to Plot", options=available_metrics)
+
+    if metric_to_plot:
+        fig = px.line(df_history, x="timestamp", y=metric_to_plot, color="block", markers=True,
+                      title=f"Historical {metric_to_plot} by Block")
+        fig.update_traces(connectgaps=True)  # Connect points over gaps
+        _safe_plot(fig)
+
+
 def show_train_section(pipeline_name):
     st.subheader("🤖 Training / Retraining Results (block_wise)")
-    train_path = os.path.join("pipelines", pipeline_name, "metrics", "train_results.json")
+    metrics_dir = os.path.join("pipelines", pipeline_name, "metrics")
+    train_path = os.path.join(metrics_dir, "train_results.json")
+    run_config_path = os.path.join(metrics_dir, "run_config.json")
+
+    run_config = _read_json_cached(run_config_path, _mtime(run_config_path)) or {}
 
     if not os.path.exists(train_path):
         _safe_markdown("No training results found yet.")
@@ -929,6 +1154,14 @@ def show_train_section(pipeline_name):
     if not results:
         _safe_markdown("Empty training results.")
         return
+
+    # Display run configuration
+    if run_config:
+        st.markdown("### Run Configuration")
+        if run_config.get('split_within_blocks'):
+            st.info(f"Evaluation mode: Split within blocks ({run_config.get('train_percentage', 0) * 100}% train)")
+        else:
+            st.info(f"Evaluation mode: By block (eval blocks: {run_config.get('eval_blocks')})")
 
     # Download JSON
     try:
@@ -1019,11 +1252,15 @@ def show_train_section(pipeline_name):
                     df_line = df_line.sort_values("block")
                 except Exception:
                     df_line["block"] = df_line["block"].astype(str)
+                
+                df_line["block_str"] = df_line["block"].astype(str)
+
                 fig = px.line(
-                    df_line, x="block", y=metric_for_line, markers=True,
+                    df_line, x="block_str", y=metric_for_line, markers=True,
                     title=_sanitize_text(f"{metric_for_line} by block (Train subset)"),
-                    labels={"block": _sanitize_text("Block"), metric_for_line: _sanitize_text(metric_for_line)}
+                    labels={"block_str": _sanitize_text("Block"), metric_for_line: _sanitize_text(metric_for_line)}
                 )
+                fig.update_xaxes(type='category')
                 _safe_plot(fig)
     else:
         _safe_markdown("No per-block training metrics found in the report.")
@@ -1126,7 +1363,16 @@ if not data_dir:
     st.error(_sanitize_text("data_dir missing in config.json."))
     st.stop()
 
-tabs = st.tabs(["Dataset", "Evaluator", "Drift", "Train/Retrain", "Logs"])
+# =========================
+# Global controls & data loading
+# =========================
+control_dir = os.path.join("pipelines", pipeline_name, "control")
+df, last_file = dashboard_data_loader(data_dir, control_dir)
+block_col = _detect_block_col(pipeline_name, df)
+
+
+
+tabs = st.tabs(["Dataset", "Evaluator", "Drift", "Historical Performance", "Train/Retrain", "Logs"])
 # =========================
 # Auto-refresh on control_file change
 # =========================
@@ -1142,7 +1388,7 @@ if current_mtime != st.session_state.control_file_mtime:
     st.session_state.control_file_mtime = current_mtime
     st.experimental_rerun()
 with tabs[0]:
-    show_dataset_section(data_dir, pipeline_name)
+    show_dataset_section(df, last_file, pipeline_name, block_col)
 
 with tabs[1]:
     show_evaluator_section(pipeline_name)
@@ -1151,7 +1397,10 @@ with tabs[2]:
     show_drift_section(pipeline_name)
 
 with tabs[3]:
-    show_train_section(pipeline_name)
+    show_historical_performance_section(pipeline_name)
 
 with tabs[4]:
+    show_train_section(pipeline_name)
+
+with tabs[5]:
     show_logs_section(pipeline_name)

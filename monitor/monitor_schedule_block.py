@@ -25,7 +25,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
     _TZ_EUROPE_MADRID = ZoneInfo("Europe/Madrid")
@@ -48,7 +54,7 @@ def configure_root_logging(level: int = logging.INFO) -> None:
     el formato del monitor. Limpia handlers previos, captura warnings
     y reduce verbosidad de librerías ruidosas.
     """
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # suprime INFO/WARNING de TF
+    
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -548,6 +554,7 @@ def start_monitor_schedule_block(
             "port": port,
             "model_spec": model_spec,
             "block_col": block_col,
+            "monitor_type": "monitor_schedule_block",
         }
         runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
         runner_script = _write_runner_script(pipeline_name, runner_cfg_path, base_dir)
@@ -683,6 +690,8 @@ def start_monitor_schedule_block(
                 port = 8510
 
         log.info(f"[STREAMLIT] Launching blocks dashboard on port {port}...")
+        log.info(f"Starting Streamlit dashboard for pipeline {pipeline_name} ")
+        log.info(f"Local URL: http://localhost:{port}")
         try:
             streamlit_process = subprocess.Popen([
                 "streamlit", "run", dashboard_path,

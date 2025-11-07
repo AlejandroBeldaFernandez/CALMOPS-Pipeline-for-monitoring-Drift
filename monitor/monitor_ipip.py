@@ -29,7 +29,13 @@ from watchdog.events import FileSystemEventHandler
 
 # IPIP pipeline
 from IPIP.pipeline_ipip import run_pipeline
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 
 # =========================
 # Logging 
@@ -37,7 +43,7 @@ from IPIP.pipeline_ipip import run_pipeline
 _LOG_FORMAT = "[%(levelname)s] %(asctime)s - %(name)s - %(message)s"
 
 def configure_root_logging(level: int = logging.INFO) -> None:
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
     root = logging.getLogger()
     root.setLevel(level)
     for h in list(root.handlers):
@@ -89,7 +95,7 @@ def _model_spec_from_instance(model_instance):
 def _write_runner_config(pipeline_name: str, config_obj: dict, base_dir: str) -> str:
     cfg_dir = os.path.join(base_dir, "pipelines", pipeline_name, "config")
     os.makedirs(cfg_dir, exist_ok=True)
-    cfg_path = os.path.join(cfg_dir, "runner_ipip_config.json")
+    cfg_path = os.path.join(cfg_dir, "runner_config.json")
     with open(cfg_path, "w") as f:
         json.dump(config_obj, f, indent=2)
     return cfg_path
@@ -314,7 +320,6 @@ module.exports = {{
 
     logger.info(f"[PM2] App '{app_name}' started and saved. Autorestart enabled.")
 
-
 def _launch_with_docker(pipeline_name: str, runner_script: str, base_dir: str, port: int | None):
     if not _which("docker"):
         _fatal(
@@ -362,31 +367,34 @@ def start_monitor_ipip(
     global log
     log = _get_logger(f"calmops.monitor.ipip.{pipeline_name}")
 
-    # --- persistence (early exit) ---
     persistence = (persistence or "none").lower()
     base_dir = _project_root()
 
+    # Always write the runner config, regardless of persistence mode.
+    model_spec = _model_spec_from_instance(model_instance)
+    runner_cfg_obj = {
+        "pipeline_name": pipeline_name,
+        "data_dir": data_dir,
+        "preprocess_file": preprocess_file,
+        "thresholds_drift": thresholds_drift,
+        "thresholds_perf": thresholds_perf,
+        "retrain_mode": retrain_mode,
+        "random_state": random_state,
+        "custom_train_file": custom_train_file,
+        "custom_retrain_file": custom_retrain_file,
+        "delimiter": delimiter,
+        "target_file": target_file,
+        "window_size": window_size,
+        "port": port,
+        "block_col": block_col,
+        "ipip_config": ipip_config,
+        "model_spec": model_spec,
+        "monitor_type": "monitor_ipip",
+    }
+    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+
+    # --- persistence (early exit) ---
     if persistence in ("pm2", "docker"):
-        model_spec = _model_spec_from_instance(model_instance)
-        runner_cfg_obj = {
-            "pipeline_name": pipeline_name,
-            "data_dir": data_dir,
-            "preprocess_file": preprocess_file,
-            "thresholds_drift": thresholds_drift,
-            "thresholds_perf": thresholds_perf,
-            "retrain_mode": retrain_mode,
-            "random_state": random_state,
-            "custom_train_file": custom_train_file,
-            "custom_retrain_file": custom_retrain_file,
-            "delimiter": delimiter,
-            "target_file": target_file,
-            "window_size": window_size,
-            "port": port,
-            "block_col": block_col,
-            "ipip_config": ipip_config,
-            "model_spec": model_spec,
-        }
-        runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
         runner_script = _write_runner_script(pipeline_name, runner_cfg_path, base_dir)
 
         if persistence == "pm2":
@@ -522,6 +530,8 @@ def start_monitor_ipip(
                 port = 8510
 
         log.info(f"[STREAMLIT] Launching IPIP dashboard on port {port}...")
+        log.info(f"Starting Streamlit dashboard for pipeline {pipeline_name} ")
+        log.info(f"Local URL: http://localhost:{port}")
         try:
             streamlit_process = subprocess.Popen([
                 "streamlit", "run", dashboard_path,
@@ -559,27 +569,43 @@ def start_monitor_ipip(
 
 
 if __name__ == "__main__":
-    configure_root_logging(logging.INFO)
+    import argparse
     from sklearn.ensemble import RandomForestClassifier
 
-    start_monitor_ipip(
-        pipeline_name="my_pipeline_ipip",
-        data_dir="/home/alex/datos",
-        preprocess_file="/home/alex/calmops/IPIP/preprocessing.py",
-        thresholds_perf={"balanced_accuracy": 0.6},   
-        thresholds_drift={"balanced_accuracy": 0.6},                         
-        model_instance=RandomForestClassifier(random_state=42),
-        retrain_mode=6,
-        random_state=42,
-        delimiter=",",
-        block_col="chunk",
-        ipip_config={
-            "p": 20,
-            "b": 5,
-            "prop_majoritaria": 0.55,   # proportion
-            "val_size": 0.20,
-            "prop_minor_frac": 0.75
-        },
-        port=8501,
-        persistence="none"
-    )
+    def main():
+        configure_root_logging(logging.INFO)
+
+        parser = argparse.ArgumentParser(description="CalmOps IPIP Monitor System")
+        parser.add_argument("--pipeline_name", default="my_pipeline_ipip", help="Name of the pipeline")
+        parser.add_argument("--data_dir", default="/home/alex/datos", help="Directory to monitor for data")
+        parser.add_argument("--preprocess_file", default="/home/alex/calmops/IPIP/preprocessing.py", help="Path to the preprocessing script")
+        parser.add_argument("--thresholds_perf", type=json.loads, default='{"balanced_accuracy": 0.6}', help='JSON string for performance thresholds')
+        parser.add_argument("--thresholds_drift", type=json.loads, default='{"balanced_accuracy": 0.6}', help='JSON string for drift thresholds')
+        parser.add_argument("--retrain_mode", type=int, default=6, help="Retrain mode")
+        parser.add_argument("--random_state", type=int, default=42, help="Random state for reproducibility")
+        parser.add_argument("--delimiter", default=",", help="CSV delimiter")
+        parser.add_argument("--block_col", default="chunk", help="Column name for blocks")
+        parser.add_argument("--ipip_config", type=json.loads, default='{"p": 20, "b": 5, "prop_majoritaria": 0.55, "val_size": 0.20, "prop_minor_frac": 0.75}', help='JSON string for IPIP config')
+        parser.add_argument("--port", type=int, default=8501, help="Port for the dashboard")
+        parser.add_argument("--persistence", default="none", choices=["none", "pm2", "docker"], help="Persistence mode")
+
+        args = parser.parse_args()
+
+        start_monitor_ipip(
+            pipeline_name=args.pipeline_name,
+            data_dir=args.data_dir,
+            preprocess_file=args.preprocess_file,
+            thresholds_perf=args.thresholds_perf,
+            thresholds_drift=args.thresholds_drift,
+            model_instance=RandomForestClassifier(random_state=args.random_state),
+            retrain_mode=args.retrain_mode,
+            random_state=args.random_state,
+            delimiter=args.delimiter,
+            block_col=args.block_col,
+            ipip_config=args.ipip_config,
+            port=args.port,
+            persistence=args.persistence
+        )
+
+    main()
+

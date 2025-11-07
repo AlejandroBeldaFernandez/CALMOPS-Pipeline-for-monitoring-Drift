@@ -28,7 +28,13 @@ from typing import Dict, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 # IPIP pipeline
 try:
     from IPIP.pipeline_ipip import run_pipeline
@@ -41,7 +47,7 @@ except Exception:
 _LOG_FORMAT = "[%(levelname)s] %(asctime)s - %(name)s - %(message)s"
 
 def configure_root_logging(level: int = logging.INFO) -> None:
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    
     root = logging.getLogger()
     root.setLevel(level)
     for h in list(root.handlers):
@@ -91,7 +97,7 @@ def _model_spec_from_instance(model_instance):
 def _write_runner_config(pipeline_name: str, config_obj: dict, base_dir: str) -> str:
     cfg_dir = os.path.join(base_dir, "pipelines", pipeline_name, "config")
     os.makedirs(cfg_dir, exist_ok=True)
-    cfg_path = os.path.join(cfg_dir, "runner_ipip_schedule_config.json")
+    cfg_path = os.path.join(cfg_dir, "runner_config.json")
     with open(cfg_path, "w") as f:
         json.dump(config_obj, f, indent=2)
     return cfg_path
@@ -334,29 +340,33 @@ def start_monitor_schedule_ipip(
     persistence = (persistence or "none").lower()
     base_dir = _project_root()
 
+    # Always write the runner config, regardless of persistence mode.
+    model_spec = _model_spec_from_instance(model_instance)
+    runner_cfg_obj = {
+        "pipeline_name": pipeline_name,
+        "data_dir": data_dir,
+        "preprocess_file": preprocess_file,
+        "thresholds_drift": thresholds_drift,
+        "thresholds_perf": thresholds_perf,
+        "retrain_mode": retrain_mode,
+        "random_state": random_state,
+        "custom_train_file": custom_train_file,
+        "custom_retrain_file": custom_retrain_file,
+        "delimiter": delimiter,
+        "target_file": target_file,
+        "window_size": window_size,
+        "schedule": schedule or {"type": "interval", "params": {"minutes": 5}},
+        "early_start": bool(early_start),
+        "port": port,
+        "block_col": block_col,
+        "ipip_config": ipip_config,
+        "model_spec": model_spec,
+        "monitor_type": "monitor_schedule_ipip",
+    }
+    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+
+    # --- persistence (early exit) ---
     if persistence in ("pm2", "docker"):
-        model_spec = _model_spec_from_instance(model_instance)
-        runner_cfg_obj = {
-            "pipeline_name": pipeline_name,
-            "data_dir": data_dir,
-            "preprocess_file": preprocess_file,
-            "thresholds_drift": thresholds_drift,
-            "thresholds_perf": thresholds_perf,
-            "retrain_mode": retrain_mode,
-            "random_state": random_state,
-            "custom_train_file": custom_train_file,
-            "custom_retrain_file": custom_retrain_file,
-            "delimiter": delimiter,
-            "target_file": target_file,
-            "window_size": window_size,
-            "schedule": schedule or {"type": "interval", "params": {"minutes": 5}},
-            "early_start": bool(early_start),
-            "port": port,
-            "block_col": block_col,
-            "ipip_config": ipip_config,
-            "model_spec": model_spec,
-        }
-        runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
         runner_script = _write_runner_script(pipeline_name, runner_cfg_path, base_dir)
 
         if persistence == "pm2":
@@ -463,6 +473,8 @@ def start_monitor_schedule_ipip(
                 port = 8510
 
         log.info(f"[STREAMLIT] Launching IPIP dashboard on port {port}...")
+        log.info(f"Starting Streamlit dashboard for pipeline {pipeline_name} ")
+        log.info(f"Local URL: http://localhost:{port}")
         try:
             streamlit_process = subprocess.Popen([
                 "streamlit", "run", dashboard_path,
@@ -493,24 +505,49 @@ def start_monitor_schedule_ipip(
 
 # Ejemplo de uso directo
 if __name__ == "__main__":
-    configure_root_logging(logging.INFO)
     from sklearn.ensemble import RandomForestClassifier
 
-    start_monitor_schedule_ipip(
-        pipeline_name="my_pipeline_ipip_schedule",
-        data_dir="/path/to/data",
-        preprocess_file="/path/to/preprocessing_ipip.py",
-        thresholds_drift={"balanced_accuracy": 0.8},
-        thresholds_perf={"balanced_accuracy": 0.8},
-        model_instance=RandomForestClassifier(random_state=42),
-        retrain_mode=6,
-        random_state=42,
-        delimiter=",",
-        target_file=None,
-        schedule={"type": "interval", "params": {"minutes": 2}},
-        early_start=True,
-        block_col="chunk",
-        ipip_config={"p": 20, "b": 5, "prop_majoritaria": 0.55, "val_size": 0.20, "prop_minor_frac": 0.75},
-        port=8600,
-        persistence="none"
-    )
+    def main():
+        """Main function to start the monitor with predefined arguments."""
+        configure_root_logging(logging.INFO)
+
+        # Define parameters directly for start_monitor
+        pipeline_name = "my_pipeline_ipip_schedule"
+        data_dir = "/path/to/data"
+        preprocess_file = "/path/to/preprocessing_ipip.py"
+        thresholds_drift = {"balanced_accuracy": 0.8}
+        thresholds_perf = {"balanced_accuracy": 0.8}
+        model_instance = RandomForestClassifier(random_state=42)
+        retrain_mode = 6
+        random_state = 42
+        delimiter = ","
+        target_file = None
+        window_size = None
+        schedule = {"type": "interval", "params": {"minutes": 2}}
+        early_start = True
+        port = 8600
+        persistence = "none"
+        block_col = "chunk"
+        ipip_config = {"p": 20, "b": 5, "prop_majoritaria": 0.55, "val_size": 0.20, "prop_minor_frac": 0.75}
+
+        start_monitor_schedule_ipip(
+            pipeline_name=pipeline_name,
+            data_dir=data_dir,
+            preprocess_file=preprocess_file,
+            thresholds_drift=thresholds_drift,
+            thresholds_perf=thresholds_perf,
+            model_instance=model_instance,
+            retrain_mode=retrain_mode,
+            random_state=random_state,
+            delimiter=delimiter,
+            target_file=target_file,
+            window_size=window_size,
+            schedule=schedule,
+            early_start=early_start,
+            port=port,
+            persistence=persistence,
+            block_col=block_col,
+            ipip_config=ipip_config
+        )
+
+    main()

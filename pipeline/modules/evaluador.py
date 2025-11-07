@@ -9,6 +9,13 @@ from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score, f1_score, classification_report,
     mean_squared_error, mean_absolute_error, r2_score, roc_curve, auc
 )
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
+
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 
 def _upsert_control_entry(control_file: Path, file_path: str, mtime, logger=None):
     """
@@ -80,6 +87,10 @@ def save_eval_results(results: dict, output_dir: str, logger=None):
         - Creates output directory if it doesn't exist
         - Results include timestamp, metrics, thresholds, and sample predictions
     """
+    # Ensure datetime is serializable
+    if "timestamp" in results and isinstance(results["timestamp"], datetime):
+        results["timestamp"] = results["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+
     eval_path = os.path.join(output_dir, "eval_results.json")
 
     def make_serializable(obj):
@@ -99,6 +110,17 @@ def save_eval_results(results: dict, output_dir: str, logger=None):
 
     if logger:
         logger.info(f"Evaluation results persisted to {eval_path}")
+
+    # Save historical results with timestamp if model was approved
+    if results.get("approved", False):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        eval_history_dir = os.path.join(output_dir, "eval_history")
+        os.makedirs(eval_history_dir, exist_ok=True)
+        historical_eval_path = os.path.join(eval_history_dir, f"eval_results_{timestamp}.json")
+        with open(historical_eval_path, "w") as f:
+            json.dump(serializable_results, f, indent=4)
+        if logger:
+            logger.info(f"Historical evaluation results saved to {historical_eval_path}")
 
 
 def calculate_metrics(model, X_test, y_test, is_classification: bool):

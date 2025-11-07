@@ -24,8 +24,10 @@ from Detector.drift_detector import DriftDetector
 def _jsonable(obj):
     """Make Python/numpy objects JSON-serializable."""
     if isinstance(obj, (np.bool_, bool)): return bool(obj)
-    if isinstance(obj, (np.integer,)):   return int(obj)
-    if isinstance(obj, (np.floating,)):  return float(obj)
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
     if isinstance(obj, (np.ndarray, list, tuple)):
         return [_jsonable(x) for x in obj]
     if isinstance(obj, dict):
@@ -181,7 +183,7 @@ def check_drift(
         det = DriftDetector()
 
         pair_tests = {
-            "KS": {}, "MWU": {}, "CVM": {}, "PSI": {}, "Hellinger": {}, "EMD": {}, "MMD": {}, "Energy": {}
+            "KS": {}, "MWU": {}, "PSI": {}
         }
         per_block_stat_flag = {b: False for b in blocks}
 
@@ -225,14 +227,12 @@ def check_drift(
                 # Univariate tests
                 ks_flag, ks_detail = det.kolmogorov_smirnov_test(XiN, XjN, alpha=alpha)
                 mwu_flag, mwu_detail = det.mann_whitney_test(XiN, XjN, alpha=alpha)
-                cvm_flag, cvm_detail = det.cramervonmises_test(XiN, XjN, alpha=alpha)
 
                 pmin = lambda detail: None if not isinstance(detail, dict) else \
                     (min([float(v.get("p_value")) for v in detail.values() if v.get("p_value") is not None], default=None))
 
                 pair_tests["KS"][key]  = {"p_min": pmin(ks_detail),  "alpha": alpha, "drift": bool(ks_flag)}
                 pair_tests["MWU"][key] = {"p_min": pmin(mwu_detail), "alpha": alpha, "drift": bool(mwu_flag)}
-                pair_tests["CVM"][key] = {"p_min": pmin(cvm_detail), "alpha": alpha, "drift": bool(cvm_flag)}
 
                 psi_flag, psi_detail = det.population_stability_index_test(XiN, XjN, psi_threshold=psi_threshold, num_bins=10)
                 psi_max = 0.0
@@ -243,28 +243,9 @@ def check_drift(
                             psi_max = max(psi_max, float(v))
                 pair_tests["PSI"][key] = {"psi_max": psi_max, "threshold": psi_threshold, "drift": bool(psi_flag)}
 
-                hell_flag, hell_detail = det.hellinger_distance_test(XiN, XjN, num_bins=30, threshold=hellinger_threshold)
-                h_max = 0.0
-                if isinstance(hell_detail, dict):
-                    for payload in hell_detail.values():
-                        v = payload.get("hellinger_distance")
-                        if v is not None:
-                            h_max = max(h_max, float(v))
-                pair_tests["Hellinger"][key] = {"distance_max": h_max, "threshold": hellinger_threshold, "drift": bool(hell_flag)}
-
-                emd_flag, emd_detail = det.earth_movers_distance_test(XiN, XjN, threshold=emd_threshold)
-                e_max, thr_used = 0.0, None
-                if isinstance(emd_detail, dict):
-                    for payload in emd_detail.values():
-                        v = payload.get("emd_distance")
-                        if v is not None:
-                            e_max = max(e_max, float(v))
-                        thr_used = payload.get("threshold", thr_used)
-                pair_tests["EMD"][key] = {"distance_max": e_max, "threshold": thr_used, "drift": bool(emd_flag)}
-
   
 
-                if any([ks_flag, mwu_flag, cvm_flag, psi_flag, hell_flag, emd_flag]):
+                if any([ks_flag, mwu_flag, psi_flag]):
                     per_block_stat_flag[bi] = True
                     per_block_stat_flag[bj] = True
 
@@ -413,4 +394,3 @@ def check_drift(
         results["decision"] = "end_error"
         _save_results(results, drift_path, logger)
         return "end_error"
-

@@ -1,4 +1,4 @@
-# monitor/monitor_schedule_block.py
+# monitor/monitor_block.py
 # -*- coding: utf-8 -*-
 
 """
@@ -28,7 +28,13 @@ from watchdog.events import FileSystemEventHandler
 
 # Import the pipeline for BLOCKS (leave this import as you have it in your project)
 from pipeline_block.pipeline_block import run_pipeline as run_pipeline_blocks
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 
 # =========================
 # Logging (unified format)
@@ -42,7 +48,7 @@ def configure_root_logging(level: int = logging.INFO) -> None:
     the monitor's format. Clears previous handlers, captures warnings,
     and reduces verbosity of noisy libraries.
     """
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Suppress TF INFO/WARNING
+    
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -71,7 +77,7 @@ def _get_logger(name: str | None = None) -> logging.Logger:
     return logger
 
 
-# Default module logger; it is renamed by pipeline inside start_monitor_schedule_block()
+# Default module logger; it is renamed by pipeline inside start_monitor_block()
 log = _get_logger()
 
 
@@ -115,74 +121,201 @@ def _write_runner_config(pipeline_name: str, config_obj: dict, base_dir: str) ->
     """Write JSON with runner config."""
     cfg_dir = os.path.join(base_dir, "pipelines", pipeline_name, "config")
     os.makedirs(cfg_dir, exist_ok=True)
-    cfg_path = os.path.join(cfg_dir, "runner_schedule_blocks_config.json")
+    cfg_path = os.path.join(cfg_dir, "runner_config.json")
     with open(cfg_path, "w") as f:
         json.dump(config_obj, f, indent=2)
     return cfg_path
 
 
 def _write_runner_script(pipeline_name: str, runner_cfg_path: str, base_dir: str) -> str:
+
+
     """
-    Create a runner script that rebuilds the model and calls start_monitor_schedule_block
+
+
+    Create a runner script that rebuilds the model and calls start_monitor_block
+
+
     with persistence='none' (avoids recursion in PM2/Docker).
+
+
     """
+
+
     pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
+
+
     os.makedirs(pipeline_dir, exist_ok=True)
+
+
     runner_path = os.path.join(pipeline_dir, f"run_{pipeline_name}_blocks_watchdog.py")
 
+
+
+
+
     content = f'''# Auto-generated runner (watchdog, blocks) for pipeline: {pipeline_name}
+
+
 import os, json, importlib, sys
+
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
 if ROOT not in sys.path:
+
+
     sys.path.insert(0, ROOT)
 
-from monitor.monitor_schedule_block import start_monitor_schedule_block
+
+
+
+
+from monitor.monitor_block import start_monitor_block
+
+
+
+
 
 def _load_cfg(path):
+
+
     with open(path, "r") as f:
+
+
         return json.load(f)
 
+
 def _build_model(spec):
+
+
     if not spec or not spec.get("module") or not spec.get("class"):
+
+
         return None
+
+
     mod = importlib.import_module(spec["module"])
+
+
     cls = getattr(mod, spec["class"])
+
+
     params = spec.get("params", {{}})
+
+
     try:
+
+
         return cls(**params)
+
+
     except Exception:
+
+
         return cls()
 
+
+
+
+
 if __name__ == "__main__":
+
+
     cfg_path = r"{runner_cfg_path}"
+
+
     cfg = _load_cfg(cfg_path)
+
+
     model_instance = _build_model(cfg.get("model_spec"))
 
-    start_monitor_schedule_block(
+
+
+
+
+    start_monitor_block(
+
+
         pipeline_name=cfg["pipeline_name"],
+
+
         data_dir=cfg["data_dir"],
+
+
         preprocess_file=cfg["preprocess_file"],
+
+
         thresholds_drift=cfg["thresholds_drift"],
+
+
         thresholds_perf=cfg["thresholds_perf"],
+
+
         model_instance=model_instance,
+
+
         retrain_mode=cfg["retrain_mode"],
+
+
         fallback_mode=cfg["fallback_mode"],
+
+
         random_state=cfg["random_state"],
+
+
         param_grid=cfg.get("param_grid"),
+
+
         cv=cfg.get("cv"),
+
+
         custom_train_file=cfg.get("custom_train_file"),
+
+
         custom_retrain_file=cfg.get("custom_retrain_file"),
+
+
         custom_fallback_file=cfg.get("custom_fallback_file"),
+
+
         delimiter=cfg.get("delimiter"),
+
+
         window_size=cfg.get("window_size"),
+
+
         port=cfg.get("port"),
+
+
         persistence="none",
+
+
         block_col=cfg.get("block_col"),
-        blocks_eval=cfg.get("blocks_eval")
+
+
+        blocks_eval=cfg.get("blocks_eval"),
+
+
+        split_within_blocks=cfg.get("split_within_blocks"),
+
+
+        train_percentage=cfg.get("train_percentage")
+
+
     )
+
+
 '''
+
+
     with open(runner_path, "w") as f:
+
+
         f.write(content)
+
+
     return runner_path
 
 
@@ -404,7 +537,7 @@ def docker_delete_pipeline(pipeline_name: str, base_dir: str = "pipelines") -> N
 # Main monitor (Watchdog, BLOQUES)
 # =========================
 
-def start_monitor_schedule_block(
+def start_monitor_block(
     *,
     pipeline_name: str,
     data_dir: str,
@@ -427,6 +560,8 @@ def start_monitor_schedule_block(
     # --- BLOCKS ---
     block_col: Optional[str] = None,
     blocks_eval: Optional[List[str]] = None,  # list of blocks to evaluate; passed as eval_blocks to the pipeline
+    split_within_blocks: Optional[bool] = False, # New parameter for splitting within blocks
+    train_percentage: Optional[float] = 0.8,    # New parameter for train percentage
 ):
     """
     BLOCK monitoring system (Watchdog):
@@ -439,36 +574,41 @@ def start_monitor_schedule_block(
 
     # Logger specific to the pipeline
     global log
-    log = _get_logger(f"calmops.monitor.schedule_blocks.{pipeline_name}")
+    log = _get_logger(f"calmops.monitor.blocks.{pipeline_name}")
 
-    # --- persistence bootstrap (early) ---
     persistence = (persistence or "none").lower()
     base_dir = _project_root()
 
+    # Always write the runner config, regardless of persistence mode.
+    model_spec = _model_spec_from_instance(model_instance)
+    runner_cfg_obj = {
+        "pipeline_name": pipeline_name,
+        "data_dir": data_dir,
+        "preprocess_file": preprocess_file,
+        "thresholds_drift": thresholds_drift,
+        "thresholds_perf": thresholds_perf,
+        "retrain_mode": retrain_mode,
+        "fallback_mode": fallback_mode,
+        "random_state": random_state,
+        "param_grid": param_grid,
+        "cv": cv,
+        "custom_train_file": custom_train_file,
+        "custom_retrain_file": custom_retrain_file,
+        "custom_fallback_file": custom_fallback_file,
+        "delimiter": delimiter,
+        "window_size": window_size,
+        "port": port,
+        "model_spec": model_spec,
+        "block_col": block_col,
+        "blocks_eval": blocks_eval,
+        "monitor_type": "monitor_block",
+        "split_within_blocks": split_within_blocks, # Add to config
+        "train_percentage": train_percentage,       # Add to config
+    }
+    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+
+    # --- persistence bootstrap (early exit if enabled) ---
     if persistence in ("pm2", "docker"):
-        model_spec = _model_spec_from_instance(model_instance)
-        runner_cfg_obj = {
-            "pipeline_name": pipeline_name,
-            "data_dir": data_dir,
-            "preprocess_file": preprocess_file,
-            "thresholds_drift": thresholds_drift,
-            "thresholds_perf": thresholds_perf,
-            "retrain_mode": retrain_mode,
-            "fallback_mode": fallback_mode,
-            "random_state": random_state,
-            "param_grid": param_grid,
-            "cv": cv,
-            "custom_train_file": custom_train_file,
-            "custom_retrain_file": custom_retrain_file,
-            "custom_fallback_file": custom_fallback_file,
-            "delimiter": delimiter,
-            "window_size": window_size,
-            "port": port,
-            "model_spec": model_spec,
-            "block_col": block_col,
-            "blocks_eval": blocks_eval,
-        }
-        runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
         runner_script = _write_runner_script(pipeline_name, runner_cfg_path, base_dir)
 
         if persistence == "pm2":
@@ -483,13 +623,10 @@ def start_monitor_schedule_block(
             app_name = f"calmops-{pipeline_name}-blocks"
             python_exec = sys.executable
 
-            # IMPORTANT: no backslashes inside f-string expressions.
-            # We normalize to POSIX paths before mounting the text.
             runner_script_posix = runner_script.replace("\\", "/")
             python_exec_posix = python_exec.replace("\\", "/")
             base_dir_posix = base_dir.replace("\\", "/")
 
-            # We build the content without putting backslashes in expressions {…}
             ecosystem_lines = [
                 "module.exports = {",
                 "  apps: [{",
@@ -611,6 +748,8 @@ def start_monitor_schedule_block(
                 window_size=window_size,
                 block_col=block_col,
                 eval_blocks=blocks_eval,   # passes block evaluation to the pipeline
+                split_within_blocks=split_within_blocks, # Pass new parameter
+                train_percentage=train_percentage        # Pass new parameter
             )
             log.info(f"[PIPELINE] (blocks) Completed for {file}")
         except Exception as e:
@@ -673,6 +812,8 @@ def start_monitor_schedule_block(
                 port = 8510
 
         log.info(f"[STREAMLIT] Launching blocks dashboard on port {port}...")
+        log.info(f"Starting Streamlit dashboard for pipeline {pipeline_name} ")
+        log.info(f"Local URL: http://localhost:{port}")
         try:
             streamlit_process = subprocess.Popen([
                 "streamlit", "run", dashboard_path,
@@ -750,31 +891,50 @@ def delete_pipeline(pipeline_name, base_dir="pipelines"):
 # =========================
 
 if __name__ == "__main__":
-   
-    configure_root_logging(logging.INFO)
-
     from sklearn.ensemble import RandomForestClassifier
 
-    start_monitor_schedule_block(
-        pipeline_name="my_pipeline_blocks_watchdog",
-        data_dir="/home/alex/datos",
-        preprocess_file="/home/alex/calmops/pipeline_block/preprocessing.py",
-        thresholds_drift={"balanced_accuracy": 0.6},
-        thresholds_perf={"balanced_accuracy": 0.6},
-        model_instance=RandomForestClassifier(random_state=42),
-        retrain_mode=6,
-        fallback_mode=2,
-        random_state=42,
-        param_grid={
-            "n_estimators": [50, 100],
-            "max_depth": [None, 10, 20],
-            "min_samples_split": [2, 5],
-            "min_samples_leaf": [1, 2]
-        },
-        cv=3,
-        delimiter=",",
-        port=None,             # e.g. 8600 if you want a fixed port
-        persistence="none",    # "none" | "pm2" | "docker"
-        block_col="chunk",     # if None, the pipeline will try to detect "block"/"block_id"
-        blocks_eval=["6"]      # evaluates only these blocks (passed as eval_blocks to the pipeline)
-    )
+    def main():
+        """Main function to start the monitor with predefined arguments."""
+        configure_root_logging(logging.INFO)
+
+        # Define parameters directly for start_monitor
+        pipeline_name = "my_pipeline_blocks_watchdog"
+        data_dir = "/home/alex/datos"
+        preprocess_file = "/home/alex/calmops/pipeline_block/preprocessing.py"
+        thresholds_drift = {"balanced_accuracy": 0.6}
+        thresholds_perf = {"balanced_accuracy": 0.6}
+        model_instance = RandomForestClassifier(random_state=42)
+        retrain_mode = 6
+        fallback_mode = 2
+        random_state = 42
+        param_grid = {"n_estimators": [50, 100], "max_depth": [None, 10, 20], "min_samples_split": [2, 5], "min_samples_leaf": [1, 2]}
+        cv = 3
+        delimiter = ","
+        port = None
+        persistence = "none"
+        block_col = "block"
+        blocks_eval = ["6"]
+
+        start_monitor_block(
+            pipeline_name=pipeline_name,
+            data_dir=data_dir,
+            preprocess_file=preprocess_file,
+            thresholds_drift=thresholds_drift,
+            thresholds_perf=thresholds_perf,
+            model_instance=model_instance,
+            retrain_mode=retrain_mode,
+            fallback_mode=fallback_mode,
+            random_state=random_state,
+            param_grid=param_grid,
+            cv=cv,
+            delimiter=delimiter,
+            port=port,
+            persistence=persistence,
+            block_col=block_col,
+            blocks_eval=blocks_eval,
+            split_within_blocks=True,  # Enable splitting within blocks for testing
+            train_percentage=0.8       # Set train percentage for testing
+        )
+
+    main()
+

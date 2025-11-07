@@ -9,7 +9,13 @@ import plotly.express as px
 import streamlit as st
 import joblib
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 st.set_page_config(page_title="IPIP Dashboard", layout="wide")
 st.title("Dashboard — IPIP (embedded approval in Train)")
 

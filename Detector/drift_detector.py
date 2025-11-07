@@ -13,7 +13,7 @@ from frouros.detectors.data_drift.batch.distance_based import (
     PSI as PSI_Detector
 )
 from frouros.detectors.data_drift.batch.statistical_test import (
-    KSTest, MannWhitneyUTest, ChiSquareTest
+    KSTest, MannWhitneyUTest, ChiSquareTest, CVMTest
 )
 
 

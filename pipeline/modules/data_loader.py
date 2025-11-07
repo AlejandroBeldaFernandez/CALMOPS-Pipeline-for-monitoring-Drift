@@ -3,7 +3,13 @@ import pandas as pd
 from pathlib import Path
 from scipy.io import arff
 import logging
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 
 def load_file(path, delimiter=None):
     """
@@ -166,7 +172,7 @@ def data_loader(logger, data_dir, control_dir, delimiter=None, target_file=None)
         current_mtime = os.path.getmtime(file_path)
 
         # Incremental processing logic: check if file is new or has been modified
-        if filename not in records or current_mtime > records.get(filename, 0):
+        if filename not in records or int(current_mtime) > int(records.get(filename, 0)):
             try:
                 # Attempt to load the new/modified file
                 df = load_file(file_path, delimiter)

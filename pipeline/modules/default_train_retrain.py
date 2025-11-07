@@ -16,7 +16,13 @@ from sklearn.ensemble import VotingClassifier, VotingRegressor, StackingClassifi
 from sklearn.linear_model import LogisticRegression, RidgeCV
 from sklearn.calibration import CalibratedClassifierCV
 import pandas as pd
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
 
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+tf.get_logger().setLevel('ERROR')
 def _merge_train_results_retrain(results_base: dict, extra_info: dict) -> dict:
     # No permitimos que default_train pise etiquetas de retrain
     extra_info = dict(extra_info)  # copia defensiva
