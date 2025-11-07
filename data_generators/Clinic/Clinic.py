@@ -94,7 +94,7 @@ class ClinicGenerator:
             date_column_name (str, optional): Name for a new date column. If provided, date_value must also be provided.
             date_value (str, optional): The date value to fill the new date column with (e.g., '2023-01-15').
             class_assignment_function (callable, optional): A function that takes the generated demographic DataFrame 
-                and returns a binary array (0 or 1) for class assignment. If None, defaults to propensity score method.
+                and returns a Series of strings (for subgroups) or a binary array (0 or 1) for class assignment.
 
         Returns:
             (pd.DataFrame, pd.DataFrame): A tuple containing:
@@ -163,13 +163,18 @@ class ClinicGenerator:
             except ValueError:
                 df_temp[date_column_name] = date_value
 
-        # --- Group Assignment ---
+        # --- Group and Subgroup Assignment ---
         if class_assignment_function:
-            group_final = class_assignment_function(df_temp)
-            if not isinstance(group_final, (np.ndarray, pd.Series)) or group_final.shape[0] != n_samples:
+            subgroups = class_assignment_function(df_temp)
+            if not isinstance(subgroups, (np.ndarray, pd.Series)) or subgroups.shape[0] != n_samples:
                 raise ValueError("The class_assignment_function must return a numpy array or pandas Series of length n_samples.")
-            if not np.all(np.isin(group_final, [0, 1])):
-                raise ValueError("The class_assignment_function must return values of 0 or 1.")
+            
+            # Store detailed subgroups
+            df_temp['Subgrupo_Enfermedad'] = subgroups
+            
+            # For backward compatibility, create the binary 'Grupo' column
+            group_final = (subgroups != 'Control').astype(int)
+
         else:
             propensity_scores = df_temp['Propension'].values
             n_control = int(n_samples * control_disease_ratio)
@@ -177,6 +182,7 @@ class ClinicGenerator:
             sorted_indices = np.argsort(propensity_scores)
             group_final = np.zeros(n_samples, dtype=int)
             group_final[sorted_indices[-n_disease:]] = 1
+            df_temp['Subgrupo_Enfermedad'] = np.where(group_final == 1, 'Enfermedad', 'Control')
 
         df_temp['Grupo_Binario'] = group_final
         df_temp['Grupo'] = df_temp['Grupo_Binario'].map({0: 'Control', 1: 'Enfermedad'})
@@ -185,6 +191,8 @@ class ClinicGenerator:
         raw_demographic_data = df_temp.copy()
         if 'Grupo' in raw_demographic_data.columns:
             raw_demographic_data = raw_demographic_data.drop(columns=['Grupo'])
+        if 'Subgrupo_Enfermedad' in raw_demographic_data.columns:
+            raw_demographic_data = raw_demographic_data.drop(columns=['Subgrupo_Enfermedad'])
         if 'Propension' in raw_demographic_data.columns:
             raw_demographic_data = raw_demographic_data.drop(columns=['Propension'])
         if 'Sexo' in raw_demographic_data.columns and 'Sexo_Binario' in raw_demographic_data.columns:
@@ -255,7 +263,8 @@ class ClinicGenerator:
                            raw_demographic_data: pd.DataFrame = None, 
                            gene_correlations: np.ndarray = None,
                            demographic_gene_correlations: np.ndarray = None,
-                           disease_effects_config: list = None, # New parameter
+                           disease_effects_config: dict = None, # New parameter
+                           subgroup_col: str = None, # New parameter for subgroup-based effects
                            gene_mean_log_center: float = np.log(80), # For RNA-Seq
                            gene_mean_loc_center: float = 7.0, # For Microarray
                            control_disease_ratio: float = 0.5,
@@ -305,106 +314,133 @@ class ClinicGenerator:
 
         # --- 4. Apply Heterogeneous Disease Effects via Subgroups ---
         if disease_effects_config and len(idx_disease) > 0:
-            # Backward compatibility: if config is a list, convert it to the new structure
-            if isinstance(disease_effects_config, list):
-                effect_definitions = {effect['name']: effect for effect in disease_effects_config}
-                subgroups = [{
-                    'name': 'all_disease',
-                    'remainder': True,
-                    'apply_effects': list(effect_definitions.keys())
-                }]
-            elif isinstance(disease_effects_config, dict):
-                effect_definitions = disease_effects_config['effects']
-                subgroups = disease_effects_config['patient_subgroups']
-            else:
-                raise TypeError("disease_effects_config must be a list (old format) or a dict (new format).")
-
-            all_disease_patient_ids = patient_ids[idx_disease].copy()
-            np.random.shuffle(all_disease_patient_ids) # Shuffle for random assignment
-            patient_idx_start = 0
-            
-            # Process subgroups
-            for subgroup in subgroups:
-                n_total_disease = len(all_disease_patient_ids)
+            # --- New logic for subgroup-based effect application ---
+            if subgroup_col and demographic_df is not None:
+                if subgroup_col not in demographic_df.columns:
+                    raise ValueError(f"subgroup_col '{subgroup_col}' not found in demographic_df.")
                 
-                # Determine patient slice for this subgroup
-                if 'count' in subgroup:
-                    num_patients = subgroup['count']
-                elif 'percentage' in subgroup:
-                    num_patients = int(subgroup['percentage'] * n_total_disease)
-                elif 'remainder' in subgroup and subgroup['remainder']:
-                    num_patients = n_total_disease - patient_idx_start
-                else:
-                    continue # Skip subgroup if no size is defined
-                
-                patient_idx_end = patient_idx_start + num_patients
-                subgroup_patient_ids = all_disease_patient_ids[patient_idx_start:patient_idx_end]
-                patient_idx_start = patient_idx_end
+                effect_definitions = disease_effects_config.get('effects', {})
+                patient_subgroups_config = disease_effects_config.get('patient_subgroups', [])
 
-                if len(subgroup_patient_ids) == 0: continue
-
-                # Apply all effects listed for this subgroup
-                for effect_name in subgroup.get('apply_effects', []):
-                    effect = effect_definitions.get(effect_name)
-                    if not effect: raise ValueError(f"Effect '{effect_name}' not found in definitions.")
-
-                    indices = effect['indices']
-                    effect_type = effect['effect_type']
-                    effect_value = effect['effect_value']
-                    gene_cols_to_affect = df_genes.columns[indices]
-                    n_subgroup = len(subgroup_patient_ids)
-
-                    # --- Apply actual effect logic ---
-                    if effect_type in ["additive_shift", "fold_change", "power_transform"]:
-                        if isinstance(effect_value, list) and len(effect_value) == 2:
-                            patient_offsets = np.random.uniform(effect_value[0], effect_value[1], size=n_subgroup)
-                        else:
-                            scale = abs(effect_value) * 0.1 + 1e-6
-                            patient_offsets = np.random.normal(loc=effect_value, scale=scale, size=n_subgroup)
-                        
-                        if effect_type == "additive_shift":
-                            df_genes.loc[subgroup_patient_ids, gene_cols_to_affect] += patient_offsets[:, np.newaxis]
-                        elif effect_type == "fold_change":
-                            if np.any(patient_offsets <= 0):
-                                patient_offsets[patient_offsets <= 0] = 1e-6 # Ensure positive
-                            df_genes.loc[subgroup_patient_ids, gene_cols_to_affect] *= patient_offsets[:, np.newaxis]
-                        elif effect_type == "power_transform":
-                            df_genes.loc[subgroup_patient_ids, gene_cols_to_affect] **= patient_offsets[:, np.newaxis]
+                for sub_config in patient_subgroups_config:
+                    subgroup_name = sub_config['name']
+                    effects_to_apply = sub_config.get('apply_effects', [])
                     
-                    elif effect_type == "variance_scale":
-                        if isinstance(effect_value, list) and len(effect_value) == 2:
-                            scaling_factors = np.random.uniform(effect_value[0], effect_value[1], size=len(gene_cols_to_affect))
-                        else:
-                            scaling_factors = effect_value
+                    # Find patients belonging to this subgroup
+                    subgroup_patient_ids = demographic_df[demographic_df[subgroup_col] == subgroup_name].index
+                    subgroup_patient_ids = subgroup_patient_ids.intersection(df_genes.index) # Ensure they are in the current gene df
 
-                        X_mod = df_genes.loc[subgroup_patient_ids, gene_cols_to_affect]
-                        mean = X_mod.mean(axis=0)
-                        std = X_mod.std(axis=0)
-                        Z = (X_mod - mean) / (std + 1e-8)
-                        X_new = Z * (std * scaling_factors) + mean
-                        df_genes.loc[subgroup_patient_ids, gene_cols_to_affect] = X_new
+                    if subgroup_patient_ids.empty: continue
 
-                    elif effect_type == "log_transform":
-                        epsilon = effect_value if isinstance(effect_value, (int, float)) else 1e-8
-                        df_genes.loc[subgroup_patient_ids, gene_cols_to_affect] = np.log(df_genes.loc[subgroup_patient_ids, gene_cols_to_affect] + epsilon)
+                    # Apply all effects listed for this subgroup
+                    for effect_name in effects_to_apply:
+                        effect = effect_definitions.get(effect_name)
+                        if not effect: raise ValueError(f"Effect '{effect_name}' not found in definitions.")
+                        self._apply_effect_to_patients(df_genes, subgroup_patient_ids, effect)
 
-                    elif effect_type == "polynomial_transform":
-                        p = np.poly1d(effect_value)
-                        df_genes.loc[subgroup_patient_ids, gene_cols_to_affect] = p(df_genes.loc[subgroup_patient_ids, gene_cols_to_affect])
+            # --- Old logic for random assignment (backward compatibility) ---
+            else:
+                if isinstance(disease_effects_config, list):
+                    effect_definitions = {effect['name']: effect for effect in disease_effects_config}
+                    subgroups = [{
+                        'name': 'all_disease',
+                        'remainder': True,
+                        'apply_effects': list(effect_definitions.keys())
+                    }]
+                elif isinstance(disease_effects_config, dict):
+                    effect_definitions = disease_effects_config['effects']
+                    subgroups = disease_effects_config['patient_subgroups']
+                else:
+                    raise TypeError("disease_effects_config must be a list (old format) or a dict (new format).")
 
-                    elif effect_type == "sigmoid_transform":
-                        X_mod = df_genes.loc[subgroup_patient_ids, gene_cols_to_affect]
-                        k = effect_value.get('k', 1)
-                        x0 = effect_value.get('x0', X_mod.mean().mean())
-                        df_genes.loc[subgroup_patient_ids, gene_cols_to_affect] = 1 / (1 + np.exp(-k * (X_mod - x0)))
-
+                all_disease_patient_ids = patient_ids[idx_disease].copy()
+                np.random.shuffle(all_disease_patient_ids) # Shuffle for random assignment
+                patient_idx_start = 0
+                
+                for subgroup in subgroups:
+                    n_total_disease = len(all_disease_patient_ids)
+                    
+                    if 'count' in subgroup:
+                        num_patients = subgroup['count']
+                    elif 'percentage' in subgroup:
+                        num_patients = int(subgroup['percentage'] * n_total_disease)
+                    elif 'remainder' in subgroup and subgroup['remainder']:
+                        num_patients = n_total_disease - patient_idx_start
                     else:
-                        raise ValueError(f"Unsupported effect_type '{effect_type}'.")
+                        continue
+                    
+                    patient_idx_end = patient_idx_start + num_patients
+                    subgroup_patient_ids = all_disease_patient_ids[patient_idx_start:patient_idx_end]
+                    patient_idx_start = patient_idx_end
+
+                    if len(subgroup_patient_ids) == 0: continue
+
+                    for effect_name in subgroup.get('apply_effects', []):
+                        effect = effect_definitions.get(effect_name)
+                        if not effect: raise ValueError(f"Effect '{effect_name}' not found in definitions.")
+                        self._apply_effect_to_patients(df_genes, subgroup_patient_ids, effect)
 
         if gene_type.lower() == "rna-seq":
             df_genes = df_genes.round(0).astype(int)
             
         return df_genes
+
+    def _apply_effect_to_patients(self, df_omics, patient_ids, effect_config):
+        """Helper function to apply a single defined effect to a given set of patients."""
+        indices = effect_config['indices']
+        effect_type = effect_config['effect_type']
+        effect_value = effect_config['effect_value']
+        omics_cols_to_affect = df_omics.columns[indices]
+        n_patients = len(patient_ids)
+
+        if n_patients == 0: return
+
+        # --- Apply actual effect logic ---
+        if effect_type in ["additive_shift", "fold_change", "power_transform"]:
+            if isinstance(effect_value, list) and len(effect_value) == 2:
+                patient_offsets = np.random.uniform(effect_value[0], effect_value[1], size=n_patients)
+            else:
+                scale = abs(effect_value) * 0.1 + 1e-6
+                patient_offsets = np.random.normal(loc=effect_value, scale=scale, size=n_patients)
+            
+            if effect_type == "additive_shift":
+                df_omics.loc[patient_ids, omics_cols_to_affect] += patient_offsets[:, np.newaxis]
+            elif effect_type == "fold_change":
+                if np.any(patient_offsets <= 0):
+                    patient_offsets[patient_offsets <= 0] = 1e-6 # Ensure positive
+                df_omics.loc[patient_ids, omics_cols_to_affect] *= patient_offsets[:, np.newaxis]
+            elif effect_type == "power_transform":
+                df_omics.loc[patient_ids, omics_cols_to_affect] **= patient_offsets[:, np.newaxis]
+        
+        elif effect_type == "variance_scale":
+            if isinstance(effect_value, list) and len(effect_value) == 2:
+                scaling_factors = np.random.uniform(effect_value[0], effect_value[1], size=len(omics_cols_to_affect))
+            else:
+                scaling_factors = effect_value
+
+            X_mod = df_omics.loc[patient_ids, omics_cols_to_affect]
+            mean = X_mod.mean(axis=0)
+            std = X_mod.std(axis=0)
+            Z = (X_mod - mean) / (std + 1e-8)
+            X_new = Z * (std * scaling_factors) + mean
+            df_omics.loc[patient_ids, omics_cols_to_affect] = X_new
+
+        elif effect_type == "log_transform":
+            epsilon = effect_value if isinstance(effect_value, (int, float)) else 1e-8
+            df_omics.loc[patient_ids, omics_cols_to_affect] = np.log(df_omics.loc[patient_ids, omics_cols_to_affect] + epsilon)
+
+        elif effect_type == "polynomial_transform":
+            p = np.poly1d(effect_value)
+            df_omics.loc[patient_ids, omics_cols_to_affect] = p(df_omics.loc[patient_ids, omics_cols_to_affect])
+
+        elif effect_type == "sigmoid_transform":
+            X_mod = df_omics.loc[patient_ids, omics_cols_to_affect]
+            k = effect_value.get('k', 1)
+            x0 = effect_value.get('x0', X_mod.mean().mean())
+            df_omics.loc[patient_ids, omics_cols_to_affect] = 1 / (1 + np.exp(-k * (X_mod - x0)))
+
+        else:
+            raise ValueError(f"Unsupported effect_type '{effect_type}'.")
 
     def generate_protein_data(self,
                               n_proteins: int,

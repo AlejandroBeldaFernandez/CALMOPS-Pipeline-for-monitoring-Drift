@@ -157,7 +157,7 @@ class TestClinicGenerator(unittest.TestCase):
         n_samples = 20
 
         def assign_by_age(df):
-            return (df['Edad'] > 65).astype(int)
+            return np.where(df['Edad'] > 65, 'Enfermedad', 'Control')
 
         df_demo, _ = self.generator.generate_demographic_data(
             n_samples=n_samples,
@@ -170,6 +170,105 @@ class TestClinicGenerator(unittest.TestCase):
                 self.assertEqual(row['Grupo'], 'Enfermedad')
             else:
                 self.assertEqual(row['Grupo'], 'Control')
+
+    def test_subgroup_assignment_and_gene_effects(self):
+        """
+        Tests the new functionality:
+        1. Assigning patients to specific subgroups using a custom function.
+        2. Applying gene effects based on those assigned subgroups.
+        """
+        n_samples = 60
+        n_genes = 30
+
+        # 1. Define the class assignment function with detailed subgroups
+        def assign_disease_subgroups(df):
+            subgroups = pd.Series('Control', index=df.index)
+            # Assign subgroups based on age
+            subgroups.loc[(df['Edad'] > 40) & (df['Edad'] <= 50)] = 'Grupo_A'
+            subgroups.loc[(df['Edad'] > 50) & (df['Edad'] <= 60)] = 'Grupo_B'
+            subgroups.loc[df['Edad'] > 60] = 'Grupo_C'
+            return subgroups
+
+        # 2. Generate demographic data with these subgroups
+        df_demo, raw_demo = self.generator.generate_demographic_data(
+            n_samples=n_samples,
+            class_assignment_function=assign_disease_subgroups
+        )
+
+        self.assertIn('Subgrupo_Enfermedad', df_demo.columns)
+        self.assertIn('Grupo_A', df_demo['Subgrupo_Enfermedad'].unique())
+        self.assertIn('Grupo_B', df_demo['Subgrupo_Enfermedad'].unique())
+        self.assertIn('Grupo_C', df_demo['Subgrupo_Enfermedad'].unique())
+
+        # 3. Define gene effects linked to these subgroups
+        gene_effects_config = {
+            'effects': {
+                'Efecto_A': {'indices': list(range(0, 10)), 'effect_type': 'additive_shift', 'effect_value': 2.0},
+                'Efecto_B': {'indices': list(range(10, 20)), 'effect_type': 'additive_shift', 'effect_value': -2.0},
+                'Efecto_C': {'indices': list(range(20, 30)), 'effect_type': 'fold_change', 'effect_value': 3.0}
+            },
+            'patient_subgroups': [
+                {'name': 'Grupo_A', 'apply_effects': ['Efecto_A']},
+                {'name': 'Grupo_B', 'apply_effects': ['Efecto_A', 'Efecto_B']},
+                {'name': 'Grupo_C', 'apply_effects': ['Efecto_C']}
+            ]
+        }
+
+        # 4. Generate baseline gene data (all control) to establish a baseline
+        df_genes_control = self.generator.generate_gene_data(
+            n_genes=n_genes,
+            gene_type="Microarray",
+            demographic_df=df_demo,
+            demographic_id_col=df_demo.index.name,
+            disease_effects_config=None # No effects
+        )
+
+        # 5. Generate gene data with effects applied based on subgroups
+        df_genes_effects = self.generator.generate_gene_data(
+            n_genes=n_genes,
+            gene_type="Microarray",
+            demographic_df=df_demo,
+            demographic_id_col=df_demo.index.name,
+            disease_effects_config=gene_effects_config,
+            subgroup_col='Subgrupo_Enfermedad' # IMPORTANT: Link the effects to the subgroup column
+        )
+
+        # 6. Verify the effects were applied correctly
+        # Get patient IDs for each subgroup
+        pids_grupo_a = df_demo[df_demo['Subgrupo_Enfermedad'] == 'Grupo_A'].index
+        pids_grupo_b = df_demo[df_demo['Subgrupo_Enfermedad'] == 'Grupo_B'].index
+        pids_grupo_c = df_demo[df_demo['Subgrupo_Enfermedad'] == 'Grupo_C'].index
+        pids_control = df_demo[df_demo['Subgrupo_Enfermedad'] == 'Control'].index
+
+        # Check Group A: Genes 0-9 should be higher
+        if not pids_grupo_a.empty:
+            mean_effect_a = df_genes_effects.loc[pids_grupo_a, 'G_0':'G_9'].mean().mean()
+            mean_control_a = df_genes_control.loc[pids_grupo_a, 'G_0':'G_9'].mean().mean()
+            self.assertGreater(mean_effect_a, mean_control_a + 1.0) # Check if significantly higher
+
+        # Check Group B: Genes 0-9 higher, 10-19 lower
+        if not pids_grupo_b.empty:
+            mean_effect_b1 = df_genes_effects.loc[pids_grupo_b, 'G_0':'G_9'].mean().mean()
+            mean_control_b1 = df_genes_control.loc[pids_grupo_b, 'G_0':'G_9'].mean().mean()
+            self.assertGreater(mean_effect_b1, mean_control_b1 + 1.0)
+
+            mean_effect_b2 = df_genes_effects.loc[pids_grupo_b, 'G_10':'G_19'].mean().mean()
+            mean_control_b2 = df_genes_control.loc[pids_grupo_b, 'G_10':'G_19'].mean().mean()
+            self.assertLess(mean_effect_b2, mean_control_b2 - 1.0)
+
+        # Check Group C: Genes 20-29 should be higher (fold change)
+        if not pids_grupo_c.empty:
+            mean_effect_c = df_genes_effects.loc[pids_grupo_c, 'G_20':'G_29'].mean().mean()
+            mean_control_c = df_genes_control.loc[pids_grupo_c, 'G_20':'G_29'].mean().mean()
+            # Avoid division by zero if control mean is near zero
+            if abs(mean_control_c) > 0.1:
+                self.assertGreater(mean_effect_c / mean_control_c, 2.0)
+
+        # Check Control group: No significant change
+        if not pids_control.empty:
+            mean_effect_control = df_genes_effects.loc[pids_control].mean().mean()
+            mean_control_control = df_genes_control.loc[pids_control].mean().mean()
+            self.assertAlmostEqual(mean_effect_control, mean_control_control, delta=0.5)
 
     def test_generate_gene_data_microarray(self):
         n_samples = 10
