@@ -21,3 +21,7 @@ data/
 .DS_Store
 .vscode/
 .idea/
+
+# Gemini specific files
+GEMINI.md
+.gemini/
