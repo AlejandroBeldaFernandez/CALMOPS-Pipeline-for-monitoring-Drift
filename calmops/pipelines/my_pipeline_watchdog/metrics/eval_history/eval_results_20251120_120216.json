@@ -1,0 +1,142 @@
+{
+    "timestamp": "2025-11-20 12:02:16",
+    "file": "data1.csv",
+    "approved": true,
+    "model_role": "Champion",
+    "metrics": {
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "f1": 1.0,
+        "classification_report": {
+            "0": {
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1-score": 1.0,
+                "support": 993.0
+            },
+            "1": {
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1-score": 1.0,
+                "support": 1007.0
+            },
+            "accuracy": 1.0,
+            "macro avg": {
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1-score": 1.0,
+                "support": 2000.0
+            },
+            "weighted avg": {
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1-score": 1.0,
+                "support": 2000.0
+            }
+        },
+        "roc_auc": 1.0,
+        "roc_curve": {
+            "fpr": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0030211480362537764,
+                0.004028197381671702,
+                0.007049345417925478,
+                0.014098690835850957,
+                0.04028197381671702,
+                0.10473313192346426,
+                0.3413897280966767,
+                1.0
+            ],
+            "tpr": [
+                0.0,
+                0.6623634558093346,
+                0.8937437934458788,
+                0.9721946375372393,
+                0.9870903674280039,
+                0.9940417080436942,
+                0.9990069513406157,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ]
+        }
+    },
+    "thresholds": {
+        "balanced_accuracy": 0.8
+    },
+    "predictions": [
+        {
+            "y_true": 0,
+            "y_pred": 0,
+            "y_pred_proba_0": 1.0,
+            "y_pred_proba_1": 0.0
+        },
+        {
+            "y_true": 1,
+            "y_pred": 1,
+            "y_pred_proba_0": 0.0,
+            "y_pred_proba_1": 1.0
+        },
+        {
+            "y_true": 1,
+            "y_pred": 1,
+            "y_pred_proba_0": 0.0,
+            "y_pred_proba_1": 1.0
+        },
+        {
+            "y_true": 0,
+            "y_pred": 0,
+            "y_pred_proba_0": 0.98,
+            "y_pred_proba_1": 0.02
+        },
+        {
+            "y_true": 1,
+            "y_pred": 1,
+            "y_pred_proba_0": 0.02,
+            "y_pred_proba_1": 0.98
+        },
+        {
+            "y_true": 1,
+            "y_pred": 1,
+            "y_pred_proba_0": 0.0,
+            "y_pred_proba_1": 1.0
+        },
+        {
+            "y_true": 1,
+            "y_pred": 1,
+            "y_pred_proba_0": 0.0,
+            "y_pred_proba_1": 1.0
+        },
+        {
+            "y_true": 0,
+            "y_pred": 0,
+            "y_pred_proba_0": 1.0,
+            "y_pred_proba_1": 0.0
+        },
+        {
+            "y_true": 0,
+            "y_pred": 0,
+            "y_pred_proba_0": 1.0,
+            "y_pred_proba_1": 0.0
+        },
+        {
+            "y_true": 0,
+            "y_pred": 0,
+            "y_pred_proba_0": 0.98,
+            "y_pred_proba_1": 0.02
+        }
+    ]
+}

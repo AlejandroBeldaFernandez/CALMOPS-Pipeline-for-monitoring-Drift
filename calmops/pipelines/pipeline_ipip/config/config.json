@@ -1,0 +1,1 @@
+{"pipeline_name": "pipeline_ipip", "data_dir": "/home/alex/datos", "preprocess_file": "/home/alex/calmops/calmops/IPIP/preprocessing.py", "block_col": "block", "mode": "ipip"}

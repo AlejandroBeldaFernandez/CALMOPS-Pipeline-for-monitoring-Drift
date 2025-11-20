@@ -1,0 +1,14 @@
+{
+    "thresholds": {
+        "balanced_accuracy": 0.8
+    },
+    "tests": {},
+    "drift": {},
+    "metrics": {},
+    "info": "First model deployment, drift analysis skipped",
+    "decision": "train",
+    "files_compared": {
+        "reference_file": null,
+        "current_file": "/home/alex/datos/data1.csv"
+    }
+}

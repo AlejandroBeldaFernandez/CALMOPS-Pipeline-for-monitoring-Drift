@@ -1,0 +1,1 @@
+{"pipeline_name": "my_pipeline_watchdog", "data_dir": "/home/alex/datos", "preprocess_file": "/home/alex/calmops/calmops/pipeline/preprocessing.py"}

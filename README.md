@@ -1,83 +1,155 @@
-# CALMOPS – Pipeline for Monitoring Drift
+# CALMOPS – A Pipeline for Monitoring Drift
 
-**CalmOps** es un pipeline completo basado en Python para monitorizar *data drift* y *model drift* en sistemas de machine learning. Está diseñado para ser una herramienta MLOps robusta y lista para producción.
+**CalmOps** is a comprehensive, Python-based pipeline for monitoring *data drift* and *model drift* in machine learning systems. It is designed to be a robust and production-ready MLOps tool.
 
-El núcleo del proyecto es un pipeline que se puede activar con nuevos datos, que luego realiza un análisis de drift y una evaluación del modelo. Los resultados se visualizan en un dashboard web basado en Streamlit.
+The core of the project is a pipeline that can be triggered with new data, which then performs drift analysis and model evaluation. The results are visualized in a web dashboard based on Streamlit.
 
-## Características
+## Features
 
-- **Detección de Drift:** Detectores univariantes y multivariantes de data drift y model drift usando la librería `frouros`.
-- **Comparativa de Modelos:** Estrategia de promoción de modelos Champion/Challenger.
-- **Re-entrenamiento:** Varios modos de re-entrenamiento:
-    - `full`: Re-entrenamiento completo con los nuevos datos.
-    - `incremental`: Entrenamiento incremental.
-    - `window`: Entrenamiento con una ventana deslizante de datos.
-    - `stacking`: Stacking de modelos.
-    - `replay mix`: Combinación de datos antiguos y nuevos.
-    - `recalibration`: Recalibración del modelo.
-- **Dashboard Interactivo:** Visualización de resultados en un dashboard de Streamlit.
-- **Monitorización de Ficheros:** Monitorización del sistema de ficheros para nuevos datos usando `watchdog`.
-- **Despliegue en Producción:** Soporte para despliegue en producción con PM2 y Docker.
-- **Manejo de Errores:** Patrón de Circuit Breaker para evitar fallos repetidos.
-- **Logging:** Logging completo para cada pipeline.
+-   **Drift Detection:** Univariate and multivariate data drift and model drift detectors using the `frouros` library.
+-   **Model Comparison:** Implements a Champion/Challenger model promotion strategy to ensure production stability.
+-   **Flexible Re-training:** Supports various re-training modes:
+    -   `full`: Full re-training with new data.
+    -   `incremental`: Incremental model training.
+    -   `window`: Training with a sliding window of data.
+    -   `stacking`: Model stacking.
+    -   `replay mix`: Combination of old and new data.
+    -   `recalibration`: Model recalibration.
+-   **Multiple Pipeline Types:** Supports different data processing strategies:
+    -   **Stream:** Processes data file by file as it arrives.
+    -   **Block:** Processes data in discrete blocks or chunks.
+    -   **IPIP:** A specialized pipeline with an adaptive model that continuously retrains.
+-   **Interactive Dashboard:** Visualization of results in a real-time Streamlit dashboard.
+-   **File-based Triggering:** Uses a `watchdog`-based file system monitor to automatically trigger pipelines when new data arrives.
+-   **Production Deployment:** Supports production deployment with PM2 and Docker for persistence and scalability.
+-   **Resilience:** Implements a Circuit Breaker pattern to prevent the system from being overwhelmed by repeated failures.
+-   **Prediction-Only Mode:** Allows running a pre-trained model for inference without a target variable, drift detection, or re-training.
+-   **Comprehensive Logging:** Provides detailed logs for each pipeline run.
+-   **CLI for Management:** A command-line interface to list, delete, update, and relaunch pipelines.
 
-## Arquitectura
+## Architecture
 
-El proyecto está estructurado en varios componentes clave:
+The project is structured into several key components that work together to create a full MLOps cycle.
 
-- **`monitor`:** Responsable de monitorizar el sistema de ficheros para nuevos datos y activar el pipeline principal.
-- **`pipeline`:** Orquesta todo el proceso de carga de datos, preprocesamiento, detección de drift, entrenamiento/re-entrenamiento y evaluación.
-- **`Detector`:** Contiene la lógica para la detección de drift.
-- **`web_interface`:** Contiene el dashboard de Streamlit.
-- **`data_generators`:** Scripts para generar datasets sintéticos para pruebas y desarrollo.
-- **`config`:** Ficheros de configuración para el pipeline.
+-   **`calmops/monitor`:** This is the entry point for running pipelines. It monitors the file system for new data and triggers the appropriate pipeline orchestrator.
+-   **`calmops/pipeline` (and `pipeline_block`, `IPIP`):** These directories contain the core logic for orchestrating the ML process: data loading, preprocessing, drift detection, training/re-training, and evaluation.
+-   **`calmops/pipelines`:** This is the root directory where all created pipeline instances are stored, each with its own configuration, models, logs, and metrics.
+-   **`calmops/Detector`:** Contains the logic for drift detection, leveraging the `frouros` library.
+-   **`calmops/web_interface`:** Contains the Streamlit dashboard for visualizing pipeline metrics, model performance, and drift results.
+-   **`calmops/server.py`**: A Flask-based prediction server to expose trained models via a REST API.
+-   **`calmops/cli.py`**: A command-line interface for managing the lifecycle of the pipelines.
 
-## Tecnologías Principales
+For a more detailed explanation of the architecture, please refer to the **[MLOps Architecture Documentation](calmops/MLOPS_README.md)**.
 
-- **Python:** Lenguaje principal del proyecto.
-- **scikit-learn:** Para entrenamiento y evaluación de modelos de machine learning.
-- **frouros:** Para la detección de drift.
-- **Streamlit:** Para el dashboard de monitorización.
-- **pandas:** Para manipulación y análisis de datos.
-- **NumPy:** Para operaciones numéricas.
-- **watchdog:** Para monitorizar el sistema de ficheros.
-- **PM2 & Docker:** Para despliegue en producción.
+## Data Generation
 
-## Instalación
+The project includes a powerful set of data generators for creating synthetic and realistic datasets for testing and development. These tools can simulate various types of data and concept drift.
 
-1.  Instalar las dependencias del proyecto usando pip:
+-   **`Synthetic`**: Generates synthetic data based on well-known generators from the `river` library (e.g., SEA, Agrawal, Hyperplane).
+-   **`Real`**: Synthesizes new data that mimics the statistical properties of a real-world dataset.
+-   **`Clinic`**: A specialized generator for creating synthetic clinical data with multi-omics and longitudinal drift.
+-   **`DriftInjection`**: A tool to inject various types of drift (abrupt, gradual, etc.) into an existing dataset.
+
+For a complete guide on how to use them, see the **[Data Generators Documentation](calmops/data_generators/README.md)**.
+
+## Main Technologies
+
+-   **Python:** The main language of the project.
+-   **scikit-learn:** For training and evaluating machine learning models.
+-   **frouros:** For drift detection.
+-   **Streamlit:** For the monitoring dashboard.
+-   **pandas:** For data manipulation and analysis.
+-   **NumPy:** For numerical operations.
+-   **watchdog:** For monitoring the file system.
+-   **PM2 & Docker:** For production deployment.
+-   **Flask:** For the prediction server.
+
+## Installation
+
+1.  Install the project dependencies using pip:
 
     ```bash
     pip install -r requirements.txt
     ```
 
-## Uso
+## Usage
 
-1.  **Ejecutar el Pipeline:**
+### Running a Pipeline
 
-    El punto de entrada principal para ejecutar el pipeline es el script `monitor/monitor.py`.
+The main entry point for running a pipeline is the `calmops/cli.py` script, which allows you to launch and manage monitors. The monitors, in turn, execute the pipelines.
 
+For example, to relaunch an existing pipeline named `my_pipeline_watchdog`:
+
+```bash
+python calmops/cli.py relaunch my_pipeline_watchdog
+```
+
+### Managing Pipelines with the CLI
+
+The CLI provides several commands to manage your pipelines:
+
+-   **List all pipelines:**
     ```bash
-    python monitor/monitor.py
+    python calmops/cli.py list
     ```
 
-    Esto iniciará el monitor del sistema de ficheros y el dashboard de Streamlit. Cuando un nuevo fichero de datos se añade al directorio de datos especificado, el pipeline se activará automáticamente.
+-   **Relaunch a pipeline:**
+    ```bash
+    python calmops/cli.py relaunch <pipeline_name>
+    ```
 
-2.  **Ver el Dashboard:**
+-   **Update a pipeline's configuration:**
+    ```bash
+    python calmops/cli.py update <pipeline_name> --port 8502 --retrain_mode 2
+    ```
 
-    El dashboard de Streamlit estará disponible en `http://localhost:8501` por defecto. El puerto se puede configurar en el script `monitor/monitor.py`.
+-   **Delete a pipeline:**
+    ```bash
+    python calmops/cli.py delete <pipeline_name>
+    ```
 
-## Despliegue en Producción
+-   **Serve a model for predictions:**
+    ```bash
+    python calmops/cli.py serve <pipeline_name> --port 5001
+    ```
 
-El proyecto soporta despliegue en producción usando PM2 y Docker. Puedes configurar el modo de persistencia en el script `monitor/monitor.py`:
+### Viewing the Dashboard
+
+Once a pipeline is running, its Streamlit dashboard will be available at `http://localhost:8501` by default. The port can be configured when the pipeline is created or updated.
+
+## Recent Changes
+
+### Prediction-Only Mode
+
+A "prediction-only" mode has been added to all pipelines. This mode allows running the pipeline without a target variable, performing only predictions with a pre-trained model.
+
+To activate this mode, the `prediction_only=True` argument must be passed to the `run_pipeline` function. In this mode, the pipeline will not perform drift detection or model training.
+
+### IPIP Pipeline Changes
+
+The IPIP pipeline has been updated to reflect its adaptive nature:
+
+-   **No Performance Thresholds:** Performance thresholds (`thresholds_perf`) have been removed. The IPIP model adapts automatically.
+-   **No Drift Detection:** Drift detection (`check_drift`) has been removed. The pipeline now always re-trains with new data.
+-   **Updated Dashboard:** The IPIP dashboard has been updated to remove the "Drift" tab.
+
+### Log Correction
+
+An issue that prevented the generation of log files in the IPIP pipeline has been fixed. Now, logs are generated correctly for all pipelines.
+
+## Production Deployment
+
+The project supports production deployment using PM2 and Docker. You can configure the persistence mode when launching a monitor:
 
 -   **PM2:** `persistence="pm2"`
 -   **Docker:** `persistence="docker"`
 
-## Convenciones de Desarrollo
+When a pipeline is launched with one of these modes, the system will automatically generate the necessary configuration files (`ecosystem.config.js` for PM2, `Dockerfile` and `docker-compose.yml` for Docker) and deploy the pipeline as a persistent service.
 
-- **Estructura Modular:** El proyecto está organizado en módulos con responsabilidades específicas.
-- **Configuración:** El pipeline se configura a través de scripts de Python y ficheros de configuración.
-- **Personalización:** El pipeline está diseñado para ser personalizable. Puedes proporcionar tus propias funciones personalizadas para entrenamiento, re-entrenamiento y estrategias de fallback.
-- **Logging:** El proyecto usa el módulo `logging` para un logging completo. Cada pipeline tiene su propio fichero de log.
-- **Manejo de Errores:** El proyecto incluye un manejo de errores robusto, incluyendo un patrón de Circuit Breaker para prevenir fallos repetidos.
+## Development Conventions
+
+-   **Modular Structure:** The project is organized into modules with specific responsibilities.
+-   **Configuration:** The pipeline is configured through Python scripts and configuration files.
+-   **Customization:** The pipeline is designed to be customizable. You can provide your own custom functions for training, re-training, and fallback strategies.
+-   **Logging:** The project uses the `logging` module for complete logging. Each pipeline has its own log file.
+-   **Error Handling:** The project includes robust error handling, including a Circuit Breaker pattern to prevent repeated failures.

@@ -1,0 +1,134 @@
+# `ClinicGenerator` Documentation
+
+The `ClinicGenerator` is a powerful tool for creating synthetic clinical datasets, including demographic information, gene expression data (RNA-Seq and Microarray), and protein expression data. It is designed to be flexible, allowing for the generation of complex datasets with various types of correlations and disease effects.
+
+## Installation
+
+The `ClinicGenerator` is part of the `calmops` package and does not require separate installation. Ensure that the `calmops` package and its dependencies are correctly installed in your environment.
+
+## Basic Usage
+
+To use the `ClinicGenerator`, you first need to import it and create an instance:
+
+```python
+from calmops.data_generators.Clinic.Clinic import ClinicGenerator
+
+# Initialize the generator with a seed for reproducibility
+generator = ClinicGenerator(seed=42)
+```
+
+## Main Features
+
+The `ClinicGenerator` provides several methods to generate different types of data:
+
+### 1. Generating Demographic Data
+
+The `generate_demographic_data` method allows you to create a synthetic patient cohort with various demographic and clinical features.
+
+```python
+import scipy.stats as stats
+
+demographic_df, raw_demographic_data = generator.generate_demographic_data(
+    n_samples=150,
+    control_disease_ratio=0.6,
+    custom_demographic_columns={
+        'Biomarker_A': stats.norm(loc=10, scale=2),
+        'Treatment_Group': stats.binom(n=1, p=0.5)
+    },
+    date_column_name="Recruitment_Date",
+    date_value="2024-01-01"
+)
+
+print(demographic_df.head())
+```
+
+### 2. Generating Gene Expression Data
+
+You can generate two types of gene expression data: `RNA-Seq` and `Microarray`. The `generate_gene_data` method allows you to specify disease effects to simulate biological conditions.
+
+```python
+# Example for RNA-Seq data with disease effects
+gene_effects_config = {
+    'effects': {
+        'up_regulated': {'indices': list(range(10)), 'effect_type': 'fold_change', 'effect_value': 2.5},
+        'down_regulated': {'indices': list(range(10, 20)), 'effect_type': 'fold_change', 'effect_value': 0.5}
+    },
+    'patient_subgroups': [
+        {'name': 'Subgroup1', 'percentage': 0.5, 'apply_effects': ['up_regulated']},
+        {'name': 'Subgroup2', 'remainder': True, 'apply_effects': ['down_regulated']}
+    ]
+}
+
+rna_seq_df = generator.generate_gene_data(
+    n_genes=50,
+    gene_type="RNA-Seq",
+    demographic_df=demographic_df,
+    demographic_id_col=demographic_df.index.name,
+    disease_effects_config=gene_effects_config
+)
+
+print(rna_seq_df.head())
+```
+
+### 3. Generating Protein Expression Data
+
+Similar to gene data, you can generate protein expression data with specified disease effects.
+
+```python
+protein_effects_config = [
+    {'name': 'Protein_Effect_1', 'indices': list(range(5)), 'effect_type': 'additive_shift', 'effect_value': 1.5}
+]
+
+protein_df = generator.generate_protein_data(
+    n_proteins=30,
+    demographic_df=demographic_df,
+    demographic_id_col=demographic_df.index.name,
+    disease_effects_config=protein_effects_config
+)
+
+print(protein_df.head())
+```
+
+### 4. Injecting Data Drift
+
+The `ClinicGenerator` provides methods to simulate data drift, which is crucial for testing the robustness of machine learning models over time.
+
+#### Group Transition Drift
+
+This method simulates patients transitioning from one group to another (e.g., 'Control' to 'Disease').
+
+```python
+# Concatenate omics data
+omics_df = pd.concat([rna_seq_df, protein_df], axis=1)
+
+transition_drift_config = {
+    'transition_type': 'control_to_disease',
+    'selection_criteria': {'percentage': 0.2},
+    'omics_type': 'both',
+    'disease_gene_indices': list(range(10)),
+    'disease_protein_indices': list(range(5)),
+    'disease_effect_type': 'fold_change',
+    'disease_effect_value': 2.0
+}
+
+drifted_demographic_df, drifted_omics_df = generator.inject_drift_group_transition(
+    demographic_df=demographic_df,
+    omics_data_df=omics_df,
+    n_genes_total=50,
+    n_proteins_total=30,
+    gene_type="RNA-Seq",
+    **transition_drift_config
+)
+
+print(f"Number of transitions: {(drifted_demographic_df['Grupo'] != demographic_df['Grupo']).sum()}")
+```
+
+## Example Script
+
+For a complete, executable example of how to use the `ClinicGenerator`, please refer to the `generate_genes.py` script located in the root of the project. This script demonstrates the generation of a full dataset with demographic, gene, and protein data, as well as drift injection, and saves the output to CSV files.
+
+To run the example:
+```bash
+python generate_genes.py
+```
+This will create a directory named `clinic_generator_output` containing the generated datasets.

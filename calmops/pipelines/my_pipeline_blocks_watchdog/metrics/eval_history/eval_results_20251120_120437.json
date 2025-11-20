@@ -1,0 +1,174 @@
+{
+    "timestamp": "2025-11-20 12:04:37",
+    "task": "classification",
+    "approved": true,
+    "metrics": {
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "f1": 1.0,
+        "classification_report": {
+            "0": {
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1-score": 1.0,
+                "support": 392.0
+            },
+            "1": {
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1-score": 1.0,
+                "support": 808.0
+            },
+            "accuracy": 1.0,
+            "macro avg": {
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1-score": 1.0,
+                "support": 1200.0
+            },
+            "weighted avg": {
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1-score": 1.0,
+                "support": 1200.0
+            }
+        }
+    },
+    "thresholds": {
+        "balanced_accuracy": 0.6
+    },
+    "blocks": {
+        "block_col": "block",
+        "evaluated_blocks": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+        ],
+        "reference_blocks": [],
+        "new_blocks_detected": [],
+        "missing_reference_blocks": [],
+        "per_block_metrics_full": {
+            "1": {
+                "accuracy": 1.0,
+                "balanced_accuracy": 1.0,
+                "f1": 1.0
+            },
+            "2": {
+                "accuracy": 1.0,
+                "balanced_accuracy": 1.0,
+                "f1": 1.0
+            },
+            "3": {
+                "accuracy": 1.0,
+                "balanced_accuracy": 1.0,
+                "f1": 1.0
+            },
+            "4": {
+                "accuracy": 1.0,
+                "balanced_accuracy": 1.0,
+                "f1": 1.0
+            },
+            "5": {
+                "accuracy": 1.0,
+                "balanced_accuracy": 1.0,
+                "f1": 1.0
+            },
+            "6": {
+                "accuracy": 1.0,
+                "balanced_accuracy": 1.0,
+                "f1": 1.0
+            }
+        },
+        "per_block_approved": {
+            "1": true,
+            "2": true,
+            "3": true,
+            "4": true,
+            "5": true,
+            "6": true
+        },
+        "approved_blocks_count": 6,
+        "rejected_blocks_count": 0,
+        "top_worst_blocks": [
+            {
+                "block": "1",
+                "balanced_accuracy": 1.0
+            },
+            {
+                "block": "2",
+                "balanced_accuracy": 1.0
+            },
+            {
+                "block": "3",
+                "balanced_accuracy": 1.0
+            },
+            {
+                "block": "4",
+                "balanced_accuracy": 1.0
+            },
+            {
+                "block": "5",
+                "balanced_accuracy": 1.0
+            }
+        ]
+    },
+    "predictions": [
+        {
+            "y_true": 1,
+            "y_pred": 1.0,
+            "block": "1"
+        },
+        {
+            "y_true": 0,
+            "y_pred": 0.0,
+            "block": "1"
+        },
+        {
+            "y_true": 1,
+            "y_pred": 1.0,
+            "block": "1"
+        },
+        {
+            "y_true": 1,
+            "y_pred": 1.0,
+            "block": "1"
+        },
+        {
+            "y_true": 0,
+            "y_pred": 0.0,
+            "block": "1"
+        },
+        {
+            "y_true": 0,
+            "y_pred": 0.0,
+            "block": "1"
+        },
+        {
+            "y_true": 1,
+            "y_pred": 1.0,
+            "block": "1"
+        },
+        {
+            "y_true": 0,
+            "y_pred": 0.0,
+            "block": "1"
+        },
+        {
+            "y_true": 1,
+            "y_pred": 1.0,
+            "block": "1"
+        },
+        {
+            "y_true": 0,
+            "y_pred": 0.0,
+            "block": "1"
+        }
+    ],
+    "model_info": {
+        "type": "RandomForestClassifier",
+        "is_router": true
+    }
+}
