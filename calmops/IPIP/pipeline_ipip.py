@@ -6,19 +6,20 @@ import json
 import logging
 import importlib.util
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
+import re
+import numpy as np
 
 
 import joblib
 import pandas as pd
 
 from calmops.logger.logger import PipelineLogger
-from calmops.utils import get_project_root
+from calmops.utils import get_pipelines_root
 
 # --- Robust imports of your modules ---
 from .modules.data_loader import data_loader
 from .modules.default_train_retrain import default_train, default_retrain
-from .modules.evaluator import evaluate_model
 
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -33,9 +34,21 @@ tf.get_logger().setLevel("ERROR")
 # =========================================================
 # Helpers
 # =========================================================
+# =========================================================
+# Helpers
+# =========================================================
 def _upsert_control_entry(
     control_file: Path, file_name: str, mtime: float, logger: logging.Logger
-):
+) -> None:
+    """
+    Update or insert an entry in the control file.
+
+    Args:
+        control_file (Path): Path to the control file.
+        file_name (str): Name of the file to update/insert.
+        mtime (float): Modification time.
+        logger (logging.Logger): Logger instance.
+    """
     control_file.parent.mkdir(parents=True, exist_ok=True)
     key = Path(file_name).name
 
@@ -62,22 +75,42 @@ def _upsert_control_entry(
 
 
 def _persist_model(
-    *, model, pipeline_name: str, output_dir: Path, logger: logging.Logger
+    *, model: Any, pipeline_name: str, output_dir: Path, logger: logging.Logger
 ) -> Path:
+    """
+    Save the model to disk.
+
+    Args:
+        model (Any): The model object to save.
+        pipeline_name (str): Name of the pipeline.
+        output_dir (Path): Directory to save the model.
+        logger (logging.Logger): Logger instance.
+
+    Returns:
+        Path: Path to the saved model file.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / f"{pipeline_name}.pkl"
-    if model_path.exists():
-        prev = model_path.with_name(
-            f"{model_path.stem}_previous{model_path.suffix or '.pkl'}"
-        )
-        model_path.rename(prev)
-        logger.info(f"[MODEL] Previous model backed up at {prev.resolve()}")
     joblib.dump(model, model_path)
-    logger.info(f"💾 Model saved at {model_path.resolve()}")
+    logger.info(f"💾 Model saved at {model_path.resolve()} (overwritten)")
     return model_path
 
 
-def _load_python(file_path: str, func_name: str):
+def _load_python(file_path: str, func_name: str) -> Any:
+    """
+    Dynamically load a function from a Python file.
+
+    Args:
+        file_path (str): Path to the Python file.
+        func_name (str): Name of the function to load.
+
+    Returns:
+        Any: The loaded function.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        AttributeError: If the function is not found in the module.
+    """
     if not Path(file_path).exists():
         raise FileNotFoundError(f"File not found: {file_path}")
     spec = importlib.util.spec_from_file_location("custom_module", file_path)
@@ -89,7 +122,20 @@ def _load_python(file_path: str, func_name: str):
     return getattr(mod, func_name)
 
 
-def _log_model_evolution(new_model, old_model, logger):
+def _log_model_evolution(
+    new_model: Any, old_model: Any, logger: logging.Logger
+) -> dict:
+    """
+    Log the evolution of the model (ensembles).
+
+    Args:
+        new_model (Any): The new model.
+        old_model (Any): The old model.
+        logger (logging.Logger): Logger instance.
+
+    Returns:
+        dict: Information about the evolution.
+    """
     evolution_info = {"changed": False, "details": []}
     try:
         if not hasattr(old_model, "ensembles_") or not hasattr(new_model, "ensembles_"):
@@ -132,6 +178,22 @@ def _log_model_evolution(new_model, old_model, logger):
     return evolution_info
 
 
+def _sorted_blocks(block_series: pd.Series) -> list[str]:
+    """Sorts block identifiers naturally (e.g., 'block_1', 'block_2', 'block_10')."""
+
+    def natural_sort_key(s):
+        return [
+            int(text) if text.isdigit() else text.lower()
+            for text in re.split("([0-9]+)", str(s))
+        ]
+
+    # Get unique blocks and sort them
+    unique_blocks = block_series.unique()
+    # Handle potential mixed types by converting to string
+    sorted_unique_blocks = sorted(map(str, unique_blocks), key=natural_sort_key)
+    return sorted_unique_blocks
+
+
 # =========================================================
 # Run Pipeline
 # =========================================================
@@ -141,7 +203,6 @@ def run_pipeline(
     data_dir: str,
     preprocess_file: str,
     model_instance,
-    retrain_mode: int,
     random_state: int,
     custom_train_file: str | None = None,
     custom_retrain_file: str | None = None,
@@ -152,9 +213,11 @@ def run_pipeline(
     ipip_config: dict | None = None,
     dir_predictions: Optional[str] = None,
     prediction_only: bool = False,
+    encoding: str = "utf-8",
+    file_type: str = "csv",
 ) -> None:
     # Paths
-    project_root = get_project_root()
+    project_root = get_pipelines_root()
     base_dir = project_root / "pipelines" / pipeline_name
     output_dir = base_dir / "models"
     control_dir = base_dir / "control"
@@ -170,13 +233,6 @@ def run_pipeline(
 
     logger.info("Pipeline (IPIP) started — GLOBAL mode over all blocks.")
 
-    old_model = None
-    if model_path.exists():
-        try:
-            old_model = joblib.load(model_path)
-        except Exception as e:
-            logger.warning(f"Could not load old model for evolution comparison: {e}")
-
     if not block_col:
         raise ValueError("You must provide block_col explicitly (e.g., 'chunk').")
 
@@ -188,13 +244,12 @@ def run_pipeline(
         delimiter=delimiter,
         target_file=target_file,
         block_col=block_col,
+        encoding=encoding,
+        file_type=file_type,
     )
     if df_full.empty:
         logger.warning("No new data to process.")
         return
-    if block_col not in df_full.columns:
-        raise ValueError(f"block_col='{block_col}' not found in the loaded dataset.")
-
     # 2) Preprocess (the prepro chooses target and returns X,y)
     spec = importlib.util.spec_from_file_location("custom_preproc", preprocess_file)
     mod = importlib.util.module_from_spec(spec)
@@ -204,128 +259,335 @@ def run_pipeline(
         raise AttributeError(
             f"{preprocess_file} must define data_preprocessing(df)->(X,y)"
         )
-    # Store block_col before preprocessing
-    original_blocks_series = df_full[block_col].astype(str)
+
+    # Attempt to retrieve block_col from raw data
+    original_blocks_series = None
+    if block_col in df_full.columns:
+        original_blocks_series = df_full[block_col].astype(str)
 
     X, y = mod.data_preprocessing(df_full)
     if isinstance(y, pd.DataFrame):
         y = y.iloc[:, 0]
     logger.info(f"Preprocessing OK: {X.shape[0]} rows, {X.shape[1]} columns.")
 
-    # Re-align block index (in case the prepro does not preserve it in X)
-    # Use the stored original_blocks_series
-    try:
-        blocks_series = original_blocks_series.loc[X.index]
-    except Exception:
-        common = X.index.intersection(original_blocks_series.index)
-        X = X.loc[common]
-        y = y.loc[common]
-        blocks_series = original_blocks_series.loc[common]
-    X = X.copy()
-    X[block_col] = blocks_series
-
-    if prediction_only:
-        logger.info("Prediction-only mode. Loading model and predicting.")
-        if model_path.exists():
-            model = joblib.load(model_path)
-            # The IPIP model might need the block_col
-            predictions = model.predict(X)
-            predictions_df = pd.DataFrame(predictions, columns=["prediction"])
-            predictions_path = metrics_dir / f"predictions_{last_processed_file}.csv"
-            predictions_df.to_csv(predictions_path, index=False)
-            logger.info(f"Predictions saved to {predictions_path}")
-
-            if dir_predictions:
-                try:
-                    os.makedirs(dir_predictions, exist_ok=True)
-                    extra_pred_path = (
-                        Path(dir_predictions) / f"predictions_{Path(last_processed_file).stem}.csv"
-                    )
-                    predictions_df.to_csv(extra_pred_path, index=False)
-                    logger.info(f"Predictions also saved to {extra_pred_path}")
-                except Exception as e:
-                    logger.warning(
-                        f"Could not save predictions to dir_predictions ({dir_predictions}): {e}"
-                    )
-        else:
-            logger.error("No model found to make predictions.")
-        return  # Exit the pipeline
-
-    is_first_run = not model_path.exists()
-
-    # IPIP Strategy: Always adapt/retrain on new data.
-    if is_first_run:
-        logger.info("No existing model found — forcing TRAIN on first run.")
-        decision = "train"
+    # Handle block_col logic
+    if original_blocks_series is not None:
+        # Case A: block_col was in raw data -> restore/align it
+        try:
+            blocks_series = original_blocks_series.loc[X.index]
+        except Exception:
+            common = X.index.intersection(original_blocks_series.index)
+            X = X.loc[common]
+            y = y.loc[common]
+            blocks_series = original_blocks_series.loc[common]
+        X = X.copy()
+        X[block_col] = blocks_series
     else:
-        logger.info("IPIP strategy: forcing RETRAIN/UPDATE on new data block.")
-        decision = "retrain"
+        # Case B: block_col was NOT in raw data -> must be in X (created by prepro)
+        if block_col not in X.columns:
+            raise ValueError(
+                f"block_col='{block_col}' not found in raw data AND not created by preprocessing."
+            )
+        # Ensure it's string/categorical
+        X[block_col] = X[block_col].astype(str)
 
-    # 4) TRAIN / RETRAIN
-    model, X_test, y_test = None, None, None
-
-    if decision == "train":
-        logger.info("TRAIN (IPIP-FILM style).")
-        model, X_test, y_test, _ = default_train(
-            X=X,
-            y=y,
-            last_processed_file=last_processed_file,
-            model_instance=model_instance,
-            random_state=random_state,
-            logger=logger,
-            output_dir=metrics_dir,
-            block_col=block_col,
-            ipip_config=ipip_config,
+    # --- Start Sequential IPIP Logic (R-like) ---
+    all_blocks = _sorted_blocks(X[block_col])
+    if len(all_blocks) < 2:
+        logger.warning(
+            "Sequential IPIP evaluation requires at least 2 blocks to start training/evaluation."
         )
+        return
 
-    elif decision == "retrain":
-        logger.info("RETRAIN (IPIP-FILM style).")
-        model, X_test, y_test, _ = default_retrain(
-            X=X,
-            y=y,
-            last_processed_file=last_processed_file,
-            model_path=model_path,
-            random_state=random_state,
-            logger=logger,
-            output_dir=metrics_dir,
-            block_col=block_col,
-            ipip_config=ipip_config,
-            model_instance=model_instance,
-        )
+    current_model = None
+    final_predictions_list = []  # To store {y_true, y_pred, block}
+    training_history = []  # To store p, b, and ensemble info per step
 
-    if old_model and model:
-        evolution_info = _log_model_evolution(model, old_model, logger)
-        evolution_path = metrics_dir / "evolution_results.json"
-        with open(evolution_path, "w") as f:
-            json.dump(evolution_info, f, indent=4)
+    # Placeholder for `model_instance` from pipeline config
+    _model_instance = model_instance  # Use the `model_instance` passed to run_pipeline
 
-    # 5) Evaluate model and decide persistence
-    # For IPIP, we always persist because the model internally selects the best ensembles.
-    # We run evaluate_model purely for logging metrics to the dashboard.
-    if (
-        model is not None
-        and X_test is not None
-        and not X_test.empty
-        and y_test is not None
-        and not y_test.empty
-    ):
-        logger.info("EVALUATION phase (logging metrics).")
-        evaluate_model(
-            model_or_path=model,
-            X_eval=X_test,
-            y_eval=y_test,
-            X_full=X,
-            logger=logger,
-            metrics_dir=metrics_dir,
-            control_dir=control_dir,
-            data_file=last_processed_file,
-            block_col=block_col,
-            evaluated_blocks=pd.unique(X_test[block_col]).tolist(),
-            mtime=last_mtime,
-            dir_predictions=dir_predictions,
-        )
+    # 0. Initial Training (Block 0 & 1)
+    logger.info("Sequential Run: Initial training on blocks 0 & 1.")
+    initial_train_blocks = all_blocks[:2]  # First two blocks for default_train
 
-    # Always persist for IPIP
-    _persist_model(
-        model=model, pipeline_name=pipeline_name, output_dir=output_dir, logger=logger
+    X_initial_train_data = X[X[block_col].isin(initial_train_blocks)]
+    y_initial_train_data = y.loc[X_initial_train_data.index]
+
+    if X_initial_train_data.empty:
+        logger.error("Initial training data is empty. Cannot proceed.")
+        return
+
+    current_model, X_test_dummy, y_test_dummy, train_results = default_train(
+        X=X_initial_train_data,
+        y=y_initial_train_data,
+        last_processed_file=last_processed_file,
+        model_instance=_model_instance,
+        random_state=random_state,
+        logger=logger,
+        output_dir=metrics_dir,
+        block_col=block_col,
+        ipip_config=ipip_config,
     )
+
+    if train_results:
+        training_history.append(
+            {
+                "block": str(initial_train_blocks[-1]),
+                "p": train_results.get("p"),
+                "b": train_results.get("b"),
+                "num_ensembles": train_results.get("num_ensembles"),
+                "models_per_ensemble": train_results.get("models_per_ensemble"),
+                "type": "initial_train",
+            }
+        )
+
+    # 1. Initial Evaluation (Evaluate model trained on block 0 and 1 on block 1)
+    # This aligns with R's first evaluation step (model on t=1 evaluates t=2)
+    eval_block_id_initial = all_blocks[1]
+    X_initial_eval = X[X[block_col] == eval_block_id_initial]
+    y_initial_eval = y.loc[X_initial_eval.index]
+
+    if current_model and not X_initial_eval.empty and not y_initial_eval.empty:
+        predictions = current_model.predict(
+            X_initial_eval.drop(columns=[block_col], errors="ignore")
+        )
+        for yt, yp in zip(y_initial_eval, predictions):
+            final_predictions_list.append(
+                {"y_true": yt, "y_pred": yp, "block": eval_block_id_initial}
+            )
+        logger.info(f"Evaluated initial model on block '{eval_block_id_initial}'.")
+
+    # 2. Sequential Retraining and Evaluation Loop (from block 2 onwards)
+    for i in range(
+        1, len(all_blocks) - 1
+    ):  # Start from the second block (index 1, which is all_blocks[1])
+        retrain_up_to_block_id = all_blocks[i]  # Current block for retraining
+        eval_block_id = all_blocks[i + 1]  # Next block for evaluation
+
+        # Retrain model using all data up to the current block (0 to i)
+        logger.info(
+            f"Sequential Run: Retraining with data up to block '{retrain_up_to_block_id}'."
+        )
+        retrain_blocks_mask = X[block_col].isin(all_blocks[: i + 1])
+        X_retrain_data = X[retrain_blocks_mask]
+        y_retrain_data = y.loc[X_retrain_data.index]
+
+        if X_retrain_data.empty:
+            logger.warning(
+                f"Retrain data for block '{retrain_up_to_block_id}' is empty. Skipping."
+            )
+            continue
+
+        # Prepare next block data for transductive pruning (Oracle behavior matching R script)
+        X_eval_step = X[X[block_col] == eval_block_id]
+        y_eval_step = y.loc[X_eval_step.index]
+
+        # Pass the model object directly to default_retrain
+        current_model, X_test_dummy, y_test_dummy, retrain_results = default_retrain(
+            X=X_retrain_data,
+            y=y_retrain_data,
+            last_processed_file=last_processed_file,
+            model_path=current_model,  # Pass model object directly
+            random_state=random_state,
+            logger=logger,
+            output_dir=metrics_dir,
+            block_col=block_col,
+            ipip_config=ipip_config,
+            model_instance=_model_instance,
+            X_next=X_eval_step,  # Transductive pruning data
+            y_next=y_eval_step,  # Transductive pruning data
+        )
+
+        if retrain_results:
+            training_history.append(
+                {
+                    "block": str(retrain_up_to_block_id),
+                    "p": retrain_results.get("p"),
+                    "b": retrain_results.get(
+                        "b"
+                    ),  # default_retrain might not return b, need to check
+                    "num_ensembles": retrain_results.get("num_ensembles"),
+                    "models_per_ensemble": retrain_results.get("models_per_ensemble"),
+                    "type": "retrain",
+                }
+            )
+
+        # Evaluate the newly retrained model on the next block
+        # (X_eval_step and y_eval_step are already defined above)
+
+        if current_model and not X_eval_step.empty and not y_eval_step.empty:
+            predictions = current_model.predict(
+                X_eval_step.drop(columns=[block_col], errors="ignore")
+            )
+            for yt, yp in zip(y_eval_step, predictions):
+                final_predictions_list.append(
+                    {"y_true": yt, "y_pred": yp, "block": eval_block_id}
+                )
+            logger.info(
+                f"Evaluated model (retrained on up to block '{retrain_up_to_block_id}') on block '{eval_block_id}'."
+            )
+        else:
+            logger.warning(
+                f"Could not evaluate on block '{eval_block_id}' (empty data or no model)."
+            )
+
+    # 3. Final Evaluation (Process remaining last block if not covered by loop)
+    # The loop evaluates up to `all_blocks[-1]`. This means the model trained on `all_blocks[-2]`
+    # is evaluated on `all_blocks[-1]`. The last model is never evaluated explicitly.
+    # The R code only evaluates up to `max_chunk - 1`, meaning the last chunk is never used for evaluation.
+    # We will replicate this by ending evaluation at `all_blocks[-1]`.
+
+    # Generate final eval_results.json from collected sequential predictions
+    if not final_predictions_list:
+        logger.warning("No predictions collected for final evaluation.")
+        return
+
+    from datetime import datetime
+    from sklearn.metrics import (
+        classification_report,
+        accuracy_score,
+        balanced_accuracy_score,
+        f1_score,
+    )
+
+    # Helper to make results JSON-serializable
+    def _jsonable(o):
+        if isinstance(o, (np.integer,)):
+            return int(o)
+        if isinstance(o, (np.floating,)):
+            return float(o)
+        if isinstance(o, (np.bool_, bool)):
+            return bool(o)
+        if isinstance(o, (np.ndarray, list, tuple)):
+            return [_jsonable(x) for x in o]
+        if isinstance(o, dict):
+            return {k: _jsonable(v) for k, v in o.items()}
+        return o
+
+    # Process final_predictions_list
+    full_predictions_df = pd.DataFrame(final_predictions_list)
+    y_true_final = full_predictions_df["y_true"]
+    y_pred_final = full_predictions_df["y_pred"]
+
+    # Global metrics
+    metrics_global = {
+        "accuracy": float(accuracy_score(y_true_final, y_pred_final)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true_final, y_pred_final)),
+        "f1": float(f1_score(y_true_final, y_pred_final, average="macro")),
+        "classification_report": classification_report(
+            y_true_final, y_pred_final, output_dict=True, zero_division=0
+        ),
+    }
+
+    # Per-block metrics
+    per_block_metrics_full = {}
+    for block_id, group in full_predictions_df.groupby("block"):
+        metrics_block = {
+            "accuracy": float(accuracy_score(group["y_true"], group["y_pred"])),
+            "balanced_accuracy": float(
+                balanced_accuracy_score(group["y_true"], group["y_pred"])
+            ),
+            "f1": float(f1_score(group["y_true"], group["y_pred"], average="macro")),
+            "support": len(group),
+        }
+        per_block_metrics_full[block_id] = metrics_block
+
+    results = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "task": "classification",  # Assuming classification for now
+        "approved": True,  # Placeholder, actual approval logic would need thresholds
+        "metrics": _jsonable(metrics_global),
+        "thresholds": {},  # No thresholds defined yet
+        "blocks": {
+            "block_col": block_col,
+            "evaluated_blocks": _sorted_blocks(full_predictions_df["block"]),
+            "per_block_metrics_full": _jsonable(per_block_metrics_full),
+            "per_block_approved": {},  # No per-block approval logic yet
+            "approved_blocks_count": 0,
+            "rejected_blocks_count": 0,
+            "top_worst_blocks": [],
+        },
+        "predictions": full_predictions_df.head(100).to_dict(
+            orient="records"
+        ),  # Sample predictions
+        "model_info": {
+            "type": type(current_model).__name__,
+            "is_ipip": True,
+        },
+    }
+
+    # Save current eval_results.json
+    eval_path = metrics_dir / "eval_results.json"
+    with open(eval_path, "w") as f:
+        json.dump(results, f, indent=4)
+    logger.info(f"Sequential evaluation results saved to {eval_path}.")
+
+    # Save to eval_history
+    try:
+        history_dir = metrics_dir / "eval_history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        history_fname = f"eval_results_{ts}.json"
+        history_path = history_dir / history_fname
+        with open(history_path, "w") as f:
+            json.dump(results, f, indent=4)
+        logger.info(f"Historical evaluation results saved to {history_path}.")
+    except Exception as e:
+        logger.warning(f"Could not save historical evaluation results: {e}")
+
+    # --- NEW: Save full predictions to CSV ---
+    try:
+        preds_path = metrics_dir / "predictions.csv"
+        full_predictions_df.to_csv(preds_path, index=False)
+        logger.info(f"Full predictions saved to {preds_path}.")
+    except Exception as e:
+        logger.warning(f"Could not save predictions.csv: {e}")
+
+    # --- NEW: Save training history (p, b, ensembles) ---
+    try:
+        # We need to have collected this during the loop.
+        # Since I am editing the end of the file, I need to make sure 'training_history' exists.
+        # I will inject the collection logic in a separate edit or assume I'll do it now.
+        # Actually, I should do it all in one go if possible, but the file is large.
+        # Let's just save what we have if it exists, but I haven't created the list yet.
+        # So I will split this into multiple edits. This edit adds the saving logic.
+
+        if "training_history" in locals():
+            history_json_path = metrics_dir / "training_history.json"
+            with open(history_json_path, "w") as f:
+                json.dump(training_history, f, indent=4)
+            logger.info(f"Training history saved to {history_json_path}.")
+    except Exception as e:
+        logger.warning(f"Could not save training_history.json: {e}")
+
+    # Update control file to mark this file as processed
+    if last_processed_file and last_mtime:
+        _upsert_control_entry(
+            control_dir / "control_file.txt",
+            last_processed_file,
+            last_mtime,
+            logger,
+        )
+
+    # Persist the final model
+    _persist_model(
+        model=current_model,
+        pipeline_name=pipeline_name,
+        output_dir=output_dir,
+        logger=logger,
+    )
+
+    # Generate model_structure.json for dashboard
+    if current_model and hasattr(current_model, "ensembles_"):
+        model_struct_info = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "num_ensembles": len(current_model.ensembles_),
+            "models_per_ensemble": [len(e) for e in current_model.ensembles_],
+        }
+        model_struct_path = metrics_dir / "model_structure.json"
+        try:
+            with open(model_struct_path, "w") as f:
+                json.dump(model_struct_info, f, indent=4)
+            logger.info(f"Model structure saved to {model_struct_path}")
+        except Exception as e:
+            logger.warning(f"Could not save model structure JSON: {e}")

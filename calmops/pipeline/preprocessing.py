@@ -1,6 +1,19 @@
 import pandas as pd
+from typing import Tuple
 
-def data_preprocessing(df):
+
+def data_preprocessing(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    """
+    Preprocesses the input DataFrame by separating features and target.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame containing both features and the target column 'class'.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.Series]: A tuple containing:
+            - X (pd.DataFrame): The features DataFrame.
+            - y (pd.Series): The target Series.
+    """
     if df.empty:
         return pd.DataFrame(), pd.Series(dtype=int)
 

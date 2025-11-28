@@ -26,6 +26,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from calmops.utils import get_project_root, get_pipelines_root
+
+# Import the pipeline by BLOCKS
+from calmops.pipeline_block.pipeline_block import run_pipeline as run_pipeline_blocks
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf
@@ -40,10 +44,6 @@ try:
     _TZ_EUROPE_MADRID = ZoneInfo("Europe/Madrid")
 except Exception:
     _TZ_EUROPE_MADRID = None
-
-# Import the pipeline by BLOCKS
-from calmops.pipeline_block.pipeline_block import run_pipeline as run_pipeline_blocks
-from calmops.utils import get_project_root
 
 
 # =========================
@@ -125,7 +125,7 @@ def _model_spec_from_instance(model_instance):
 
 def _write_runner_config(pipeline_name: str, config_obj: dict, base_dir: Path) -> Path:
     """Writes JSON with the runner's config."""
-    cfg_dir = base_dir / "pipelines" / pipeline_name / "config"
+    cfg_dir = base_dir / pipeline_name / "config"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = cfg_dir / "runner_config.json"
     with open(cfg_path, "w") as f:
@@ -140,7 +140,7 @@ def _write_runner_script(
     Creates a runner script that reconstructs the model and calls start_monitor_schedule_block
     with persistence='none' (avoids recursion in PM2/Docker).
     """
-    pipeline_dir = base_dir / "pipelines" / pipeline_name
+    pipeline_dir = base_dir / pipeline_name
     pipeline_dir.mkdir(parents=True, exist_ok=True)
     runner_path = pipeline_dir / f"run_{pipeline_name}_blocks_schedule.py"
 
@@ -279,7 +279,7 @@ def _docker_install_hint() -> str:
 def _write_docker_files(
     pipeline_name: str, runner_script_abs: str, base_dir: str, port: int | None
 ):
-    pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
+    pipeline_dir = os.path.join(base_dir, pipeline_name)
     os.makedirs(pipeline_dir, exist_ok=True)
 
     dockerfile_path = os.path.join(pipeline_dir, "Dockerfile")
@@ -349,7 +349,7 @@ def _launch_with_docker(
 
     _write_docker_files(pipeline_name, runner_script, base_dir, port or 8501)
 
-    pipeline_dir = os.path.join(base_dir, "pipelines", pipeline_name)
+    pipeline_dir = os.path.join(base_dir, pipeline_name)
     try:
         if (
             _which("docker")
@@ -458,7 +458,6 @@ def _launch_with_pm2(
     Launch a pipeline with PM2.
     Works on Linux/macOS. On Windows, PM2 can run but automatic startup on boot won't work.
     """
-    import os, sys, subprocess, logging
 
     if logger is None:
         logger = logging.getLogger("calmops.monitor")
@@ -471,7 +470,7 @@ def _launch_with_pm2(
         )
 
     eco_path = os.path.join(
-        base_dir, "pipelines", pipeline_name, "ecosystem.blocks.schedule.config.js"
+        base_dir, pipeline_name, "ecosystem.blocks.schedule.config.js"
     )
     app_name = f"calmops-schedule-{pipeline_name}-blocks"
 
@@ -583,52 +582,55 @@ def start_monitor_schedule_block(
 
     # --- persistence bootstrap (early) ---
     persistence = (persistence or "none").lower()
-    base_dir = get_project_root()
+    pipelines_root = get_pipelines_root()
+    project_root = get_project_root()
 
     # The runner configuration is always written, regardless of the persistence mode.
     model_spec = _model_spec_from_instance(model_instance)
     runner_cfg_obj = {
-        {
-            "pipeline_name": pipeline_name,
-            "data_dir": data_dir,
-            "preprocess_file": preprocess_file,
-            "thresholds_drift": thresholds_drift,
-            "thresholds_perf": thresholds_perf,
-            "retrain_mode": retrain_mode,
-            "fallback_mode": fallback_mode,
-            "random_state": random_state,
-            "param_grid": param_grid,
-            "cv": cv,
-            "custom_train_file": custom_train_file,
-            "custom_retrain_file": custom_retrain_file,
-            "custom_fallback_file": custom_fallback_file,
-            "delimiter": delimiter,
-            "schedule": schedule,
-            "window_size": window_size,
-            "early_start": early_start,
-            "port": port,
-            "model_spec": model_spec,
-            "block_col": block_col,
-            "blocks_eval": blocks_eval,
-            "split_within_blocks": split_within_blocks,
-            "train_percentage": train_percentage,
-            "fallback_strategy": fallback_strategy,
-            "monitor_type": "monitor_schedule_block",
-            "dir_predictions": dir_predictions,
-        }
+        "pipeline_name": pipeline_name,
+        "data_dir": data_dir,
+        "preprocess_file": preprocess_file,
+        "thresholds_drift": thresholds_drift,
+        "thresholds_perf": thresholds_perf,
+        "retrain_mode": retrain_mode,
+        "fallback_mode": fallback_mode,
+        "random_state": random_state,
+        "param_grid": param_grid,
+        "cv": cv,
+        "custom_train_file": custom_train_file,
+        "custom_retrain_file": custom_retrain_file,
+        "custom_fallback_file": custom_fallback_file,
+        "delimiter": delimiter,
+        "schedule": schedule,
+        "window_size": window_size,
+        "early_start": early_start,
+        "port": port,
+        "model_spec": model_spec,
+        "block_col": block_col,
+        "blocks_eval": blocks_eval,
+        "split_within_blocks": split_within_blocks,
+        "train_percentage": train_percentage,
+        "fallback_strategy": fallback_strategy,
+        "monitor_type": "monitor_schedule_block",
+        "dir_predictions": dir_predictions,
     }
-    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+    runner_cfg_path = _write_runner_config(
+        pipeline_name, runner_cfg_obj, pipelines_root
+    )
 
     if persistence in ("pm2", "docker"):
-        runner_script = _write_runner_script(pipeline_name, runner_cfg_path, base_dir)
+        runner_script = _write_runner_script(
+            pipeline_name, runner_cfg_path, pipelines_root
+        )
 
         if persistence == "pm2":
-            _launch_with_pm2(pipeline_name, str(runner_script), str(base_dir))
+            _launch_with_pm2(pipeline_name, str(runner_script), str(pipelines_root))
             log.info("[PM2] Persistence enabled. Exiting foreground process.")
             return
         else:
             _launch_with_docker(
-                pipeline_name, str(runner_script), str(base_dir), port or 8501
+                pipeline_name, str(runner_script), str(pipelines_root), port or 8501
             )
             log.info(
                 "[DOCKER] Persistence enabled via docker-compose. Exiting foreground process."
@@ -636,7 +638,7 @@ def start_monitor_schedule_block(
             return
 
     # ---------- regular (non-persistent) flow ----------
-    base_pipeline_dir = base_dir / "pipelines" / pipeline_name
+    base_pipeline_dir = pipelines_root / pipeline_name
     output_dir = base_pipeline_dir / "models"
     control_dir = base_pipeline_dir / "control"
     logs_dir = base_pipeline_dir / "logs"
@@ -723,7 +725,7 @@ def start_monitor_schedule_block(
                 split_within_blocks=split_within_blocks,
                 train_percentage=train_percentage,
                 fallback_strategy=fallback_strategy,
-                dir_predictions=dir_predictions
+                dir_predictions=dir_predictions,
             )
             log.info(f"[PIPELINE] (blocks) Completed for {file}")
         except Exception as e:
@@ -757,7 +759,7 @@ def start_monitor_schedule_block(
 
     def start_streamlit(pipeline_name: str, port: Optional[int] = None):
         nonlocal streamlit_process
-        dashboard_path = base_dir / "web_interface" / "dashboard_block.py"
+        dashboard_path = project_root / "web_interface" / "dashboard_block.py"
 
         if port is None:
             port = 8501

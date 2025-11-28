@@ -38,7 +38,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
-from calmops.utils import get_project_root
+from calmops.utils import get_project_root, get_pipelines_root
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf
@@ -300,8 +300,8 @@ def pm2_list(prefix: str = "calmops-") -> list[dict]:
     for p in filtered:
         name = p.get("name")
         pid = p.get("pid")
-        status = p.get("pm2_env", {{}}).get("status")
-        restart = p.get("pm2_env", {{}}).get("restart_time")
+        status = p.get("pm2_env", {}).get("status")
+        restart = p.get("pm2_env", {}).get("restart_time")
         log.info(f"- {name} | pid={pid} | status={status} | restarts={restart}")
     return filtered
 
@@ -444,7 +444,8 @@ services:
     container_name: calmops_{pipeline_name}_schedule
     restart: unless-stopped
     ports:
-      - \"{exposed_port}:{exposed_port}\"    volumes:
+      - \"{exposed_port}:{exposed_port}\" 
+    volumes:
       - "../../:/app"
     environment:
       - PYTHONUNBUFFERED=1
@@ -798,59 +799,64 @@ def start_monitor_schedule(
         )
 
     persistence = (persistence or "none").lower()
-    base_dir = get_project_root()
+    pipelines_root = get_pipelines_root()
+    project_root = get_project_root()
 
-    # Always write the runner config, regardless of persistence mode.
+    # Always write the runner config
     model_spec = _model_spec_from_instance(model_instance)
     runner_cfg_obj = {
-        {
-            "pipeline_name": pipeline_name,
-            "data_dir": data_dir,
-            "preprocess_file": preprocess_file,
-            "thresholds_drift": thresholds_drift,
-            "thresholds_perf": thresholds_perf,
-            "retrain_mode": retrain_mode,
-            "fallback_mode": fallback_mode,
-            "random_state": random_state,
-            "param_grid": param_grid,
-            "cv": cv,
-            "custom_train_file": custom_train_file,
-            "custom_retrain_file": custom_retrain_file,
-            "custom_fallback_file": custom_fallback_file,
-            "delimiter": delimiter,
-            "schedule": schedule,
-            "window_size": window_size,
-            "early_start": early_start,
-            "port": port,
-            "model_spec": model_spec,
-            "monitor_type": "monitor_schedule",
-            "prediction_only": prediction_only,
-            "dir_predictions": dir_predictions
-        }
+        "pipeline_name": pipeline_name,
+        "data_dir": data_dir,
+        "preprocess_file": preprocess_file,
+        "thresholds_drift": thresholds_drift,
+        "thresholds_perf": thresholds_perf,
+        "retrain_mode": retrain_mode,
+        "fallback_mode": fallback_mode,
+        "random_state": random_state,
+        "param_grid": param_grid,
+        "cv": cv,
+        "custom_train_file": custom_train_file,
+        "custom_retrain_file": custom_retrain_file,
+        "custom_fallback_file": custom_fallback_file,
+        "delimiter": delimiter,
+        "schedule": schedule,
+        "window_size": window_size,
+        "early_start": early_start,
+        "port": port,
+        "model_spec": model_spec,
+        "monitor_type": "monitor_schedule",
+        "prediction_only": prediction_only,
+        "dir_predictions": dir_predictions,
     }
-    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+    runner_cfg_path = _write_runner_config(
+        pipeline_name, runner_cfg_obj, pipelines_root
+    )
 
-    # --- persistence bootstrap (early exit if enabled) ---
     if persistence in ("pm2", "docker"):
+        # Delegate to production deployment strategies
         runner_script = _write_runner_script_schedule(
-            pipeline_name, runner_cfg_path, base_dir
+            pipeline_name, runner_cfg_path, pipelines_root
         )
 
         if persistence == "pm2":
-            _launch_with_pm2(pipeline_name, runner_script, base_dir)
+            _launch_with_pm2(pipeline_name, runner_script, pipelines_root, log)
             log.info(
-                "PM2 process deployment completed - foreground process terminating"
+                "PM2 deployment successful - monitoring system now running in background with auto-restart"
             )
             return
         else:
-            _launch_with_docker(pipeline_name, runner_script, base_dir, port or 8501)
+            _launch_with_docker(
+                pipeline_name, runner_script, pipelines_root, port or 8501
+            )
             log.info(
-                "Docker container deployment completed - foreground process terminating"
+                "Docker deployment successful - monitoring system containerized and running with restart policy"
             )
             return
 
-    # Standard foreground execution without persistence layer
-    base_pipeline_dir = base_dir / "pipelines" / pipeline_name
+    # ========== Development/Direct Execution Flow ==========
+    # Standard monitoring system initialization for development environments
+    # and direct execution scenarios without persistence requirements
+    base_pipeline_dir = pipelines_root / "pipelines" / pipeline_name
     output_dir = base_pipeline_dir / "modelos"
     control_dir = base_pipeline_dir / "control"
     logs_dir = base_pipeline_dir / "logs"
@@ -963,7 +969,7 @@ def start_monitor_schedule(
                 target_file=file,  # basename (control_file only uses the name)
                 window_size=window_size,
                 prediction_only=prediction_only,
-                dir_predictions=dir_predictions
+                dir_predictions=dir_predictions,
             )
             log.info(f"Pipeline processing completed successfully for '{file}'")
         except Exception as e:
@@ -1014,7 +1020,7 @@ def start_monitor_schedule(
             port: Preferred port number (defaults to 8501 with fallback to 8510)
         """
         nonlocal streamlit_process
-        dashboard_path = base_dir / "web_interface" / "dashboard.py"
+        dashboard_path = project_root / "web_interface" / "dashboard.py"
 
         if port is None:
             port = 8501

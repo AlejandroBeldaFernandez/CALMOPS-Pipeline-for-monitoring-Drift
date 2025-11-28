@@ -12,7 +12,7 @@ from typing import Optional, Tuple, Dict, List
 from sklearn.metrics import roc_curve, precision_recall_curve, auc, confusion_matrix
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from calmops.utils import get_project_root
+from calmops.utils import get_pipelines_root
 from pathlib import Path
 from utils import _load_any_dataset, load_log, dashboard_data_loader, update_record
 
@@ -171,7 +171,7 @@ def _paired_hist(
     return hist_prev, hist_curr, centers
 
 
-project_root = get_project_root()
+project_root = get_pipelines_root()
 
 
 # =========================
@@ -717,7 +717,7 @@ def show_pht_plot(config, pipeline_name):
     st.subheader("Concept Drift Analysis (PHT)")
 
     data_dir = config.get("data_dir")
-    base_dir = get_project_root() / "pipelines" / pipeline_name
+    base_dir = get_pipelines_root() / "pipelines" / pipeline_name
     control_dir = base_dir / "control"
     control_file_path = control_dir / "control_file.txt"
 

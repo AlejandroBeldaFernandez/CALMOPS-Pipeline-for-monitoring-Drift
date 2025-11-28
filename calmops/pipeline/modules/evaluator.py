@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+import logging
+from typing import Any, Optional, Tuple
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -18,7 +20,9 @@ from sklearn.metrics import (
 )
 
 
-def _upsert_control_entry(control_file: Path, file_path: str, mtime, logger=None):
+def _upsert_control_entry(
+    control_file: Path, file_path: str, mtime: float, logger: logging.Logger = None
+) -> None:
     """
     Atomically create or update a file entry in the control file with format '<basename>,<mtime>'.
 
@@ -29,8 +33,8 @@ def _upsert_control_entry(control_file: Path, file_path: str, mtime, logger=None
     Args:
         control_file (Path): Path to the control file that tracks processed files
         file_path (str): Full path to the file being registered
-        mtime: Modification time of the file (typically from os.path.getmtime)
-        logger: Optional logger instance for operation tracking
+        mtime (float): Modification time of the file (typically from os.path.getmtime)
+        logger (logging.Logger, optional): Optional logger instance for operation tracking
 
     Note:
         - Uses only the filename with extension as the key (no directory paths)
@@ -72,7 +76,9 @@ def _upsert_control_entry(control_file: Path, file_path: str, mtime, logger=None
         )
 
 
-def save_eval_results(results: dict, output_dir: str, logger=None):
+def save_eval_results(
+    results: dict, output_dir: str, logger: logging.Logger = None
+) -> None:
     """
     Persist model evaluation results to JSON file for audit trail and monitoring.
 
@@ -83,7 +89,7 @@ def save_eval_results(results: dict, output_dir: str, logger=None):
     Args:
         results (dict): Dictionary containing evaluation metrics, predictions, and metadata
         output_dir (str): Directory path where eval_results.json will be saved
-        logger: Optional logger instance for operation tracking
+        logger (logging.Logger, optional): Optional logger instance for operation tracking
 
     Note:
         - Automatically converts numpy types and arrays to JSON-compatible formats
@@ -136,7 +142,9 @@ def save_eval_results(results: dict, output_dir: str, logger=None):
             )
 
 
-def calculate_metrics(model, X_test, y_test, is_classification: bool):
+def calculate_metrics(
+    model: Any, X_test: pd.DataFrame, y_test: pd.Series, is_classification: bool
+) -> Tuple[dict, np.ndarray, Optional[np.ndarray]]:
     """
     Calculate performance metrics based on model type and generate predictions.
 
@@ -145,9 +153,9 @@ def calculate_metrics(model, X_test, y_test, is_classification: bool):
     - Regression: r2_score, rmse, mae, mse
 
     Args:
-        model: Trained scikit-learn compatible model
-        X_test: Test features for evaluation
-        y_test: True target values for comparison
+        model (Any): Trained scikit-learn compatible model
+        X_test (pd.DataFrame): Test features for evaluation
+        y_test (pd.Series): True target values for comparison
         is_classification (bool): Whether this is a classification or regression problem
 
     Returns:
@@ -187,8 +195,12 @@ def calculate_metrics(model, X_test, y_test, is_classification: bool):
 
 
 def _save_candidate(
-    model, results: dict, candidates_dir: str, base_name: str, logger=None
-):
+    model: Any,
+    results: dict,
+    candidates_dir: str,
+    base_name: str,
+    logger: logging.Logger = None,
+) -> None:
     """
     Archive non-approved candidate models for future analysis and model archaeology.
 
@@ -203,11 +215,11 @@ def _save_candidate(
         - meta.json: Compact metadata summary for quick filtering
 
     Args:
-        model: The trained model object to be archived
+        model (Any): The trained model object to be archived
         results (dict): Complete evaluation results including metrics and predictions
         candidates_dir (str): Root directory for candidate model storage
         base_name (str): Base name for the model (typically derived from model_filename)
-        logger: Optional logger instance for operation tracking
+        logger (logging.Logger, optional): Optional logger instance for operation tracking
     """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     cand_root = os.path.join(candidates_dir, f"{base_name}__{ts}")
@@ -240,12 +252,12 @@ def _save_candidate(
 
 def evaluate_model(
     *,
-    model,
-    X_test,
-    y_test,
-    last_processed_file,
-    last_mtime,
-    logger,
+    model: Any,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    last_processed_file: str,
+    last_mtime: float,
+    logger: logging.Logger,
     is_first_model: bool,
     thresholds_perf: dict,
     model_dir: str,
@@ -253,11 +265,11 @@ def evaluate_model(
     control_dir: str,
     output_dir: str,
     df: pd.DataFrame,
-    candidates_dir: str = None,
+    candidates_dir: Optional[str] = None,
     save_candidates: bool = True,
-    min_improvement_thresholds: dict = None,
-    dir_predictions: str = None,
-):
+    min_improvement_thresholds: Optional[dict] = None,
+    dir_predictions: Optional[str] = None,
+) -> bool:
     """
     Champion/Challenger model evaluation system with atomic model rotation.
 
@@ -297,22 +309,23 @@ def evaluate_model(
     - Uses atomic writes to prevent corruption during concurrent access
 
     Args:
-        model: Trained model object to evaluate
-        X_test: Test features for evaluation
-        y_test: True target values
-        last_processed_file: Path to the data file that generated this model
-        last_mtime: Modification time of the processed file
-        logger: Logger instance for operation tracking
+        model (Any): Trained model object to evaluate
+        X_test (pd.DataFrame): Test features for evaluation
+        y_test (pd.Series): True target values
+        last_processed_file (str): Path to the data file that generated this model
+        last_mtime (float): Modification time of the processed file
+        logger (logging.Logger): Logger instance for operation tracking
         is_first_model (bool): Whether this is the initial model (affects validation)
         thresholds_perf (dict): Performance thresholds for model approval
         model_dir (str): Directory where champion models are stored
-        model_filename: Filename for the champion model
+        model_filename (str): Filename for the champion model
         control_dir (str): Directory for control files and metadata
         output_dir (str): Directory for evaluation results
         df (pd.DataFrame): Training data to preserve with control files
         candidates_dir (str, optional): Directory for archiving failed candidates
         save_candidates (bool): Whether to save non-approved models
         min_improvement_thresholds (dict, optional): Minimum improvement thresholds over champion for each metric.
+        dir_predictions (str, optional): Directory for saving prediction CSVs.
 
     Returns:
         bool: True if model was approved and deployed, False otherwise

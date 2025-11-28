@@ -18,26 +18,26 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 
-from calmops.utils import get_project_root
-from utils import (
-    _load_any_dataset,
-    dashboard_data_loader
-)
+from calmops.utils import get_pipelines_root
+from utils import _load_any_dataset, dashboard_data_loader
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf
 
 
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
-tf.get_logger().setLevel('ERROR')
+tf.get_logger().setLevel("ERROR")
 # =========================
 # Anti-delta sanitizers
 # =========================
 _DELTA_KEY_RE = re.compile(r"(?:\bdelta\b|Δ|δ|∆)", flags=re.IGNORECASE)
-_DELTA_TOKEN_RE = re.compile(r"(?:\bdelta\b\s*:?\s*|Δ\s*:?\s*|δ\s*:?\s*|∆\s*:?\s*)", flags=re.IGNORECASE)
+_DELTA_TOKEN_RE = re.compile(
+    r"(?:\bdelta\b\s*:?\s*|Δ\s*:?\s*|δ\s*:?\s*|∆\s*:?\s*)", flags=re.IGNORECASE
+)
+
 
 def _sanitize_text(val: Any) -> str:
     try:
@@ -48,17 +48,20 @@ def _sanitize_text(val: Any) -> str:
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
 
+
 def _contains_delta_token(name: str) -> bool:
     try:
         return bool(_DELTA_KEY_RE.search(str(name)))
     except Exception:
         return False
 
+
 def _drop_delta_columns(df: pd.DataFrame) -> pd.DataFrame:
     drop = [c for c in df.columns if _contains_delta_token(c)]
     if drop:
         df = df.drop(columns=drop, errors="ignore")
     return df
+
 
 def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -80,6 +83,7 @@ def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
                 pass
     return df
 
+
 def _sanitize_figure(fig: go.Figure) -> go.Figure:
     if fig is None:
         return fig
@@ -96,12 +100,20 @@ def _sanitize_figure(fig: go.Figure) -> go.Figure:
         except Exception:
             pass
     try:
-        if fig.layout.legend and fig.layout.legend.title and fig.layout.legend.title.text:
+        if (
+            fig.layout.legend
+            and fig.layout.legend.title
+            and fig.layout.legend.title.text
+        ):
             fig.layout.legend.title.text = _sanitize_text(fig.layout.legend.title.text)
     except Exception:
         pass
     try:
-        if hasattr(fig.layout, "coloraxis") and fig.layout.coloraxis and fig.layout.coloraxis.colorbar:
+        if (
+            hasattr(fig.layout, "coloraxis")
+            and fig.layout.coloraxis
+            and fig.layout.coloraxis.colorbar
+        ):
             cb = fig.layout.coloraxis.colorbar
             if cb.title and cb.title.text:
                 cb.title.text = _sanitize_text(cb.title.text)
@@ -129,7 +141,11 @@ def _sanitize_figure(fig: go.Figure) -> go.Figure:
             if hasattr(tr, "hovertemplate") and tr.hovertemplate:
                 tr.hovertemplate = _sanitize_text(tr.hovertemplate)
             try:
-                if hasattr(tr, "marker") and hasattr(tr.marker, "colorbar") and tr.marker.colorbar:
+                if (
+                    hasattr(tr, "marker")
+                    and hasattr(tr.marker, "colorbar")
+                    and tr.marker.colorbar
+                ):
                     cbt = tr.marker.colorbar.title
                     if cbt and cbt.text:
                         cbt.text = _sanitize_text(cbt.text)
@@ -139,39 +155,54 @@ def _sanitize_figure(fig: go.Figure) -> go.Figure:
         pass
     return fig
 
+
 def _safe_table(df: pd.DataFrame, *, use_container_width: bool = True):
     st.dataframe(_sanitize_df(df), use_container_width=use_container_width)
+
 
 def _safe_table_static(df: pd.DataFrame):
     st.table(_sanitize_df(df))
 
+
 def _safe_markdown(text: str):
     st.markdown(_sanitize_text(text))
+
 
 def _safe_write(text: str):
     st.write(_sanitize_text(text))
 
+
 def _safe_caption(text: str):
     st.caption(_sanitize_text(text))
+
 
 def _safe_plot(fig: go.Figure, *, use_container_width: bool = True):
     st.plotly_chart(_sanitize_figure(fig), use_container_width=use_container_width)
 
+
 def _safe_json_display(obj: Any):
     def _json_sanitize(o: Any):
         if isinstance(o, dict):
-            return {_sanitize_text(k): _json_sanitize(v) for k, v in o.items() if not _contains_delta_token(k)}
+            return {
+                _sanitize_text(k): _json_sanitize(v)
+                for k, v in o.items()
+                if not _contains_delta_token(k)
+            }
         elif isinstance(o, list):
             return [_json_sanitize(x) for x in o]
         elif isinstance(o, str):
             return _sanitize_text(o)
         return o
+
     st.json(_json_sanitize(obj))
 
-project_root = get_project_root()
+
+project_root = get_pipelines_root()
+
 
 def _get_pipeline_base_dir(pipeline_name: str) -> Path:
     return project_root / "pipelines" / pipeline_name
+
 
 # =========================
 # Performance helpers (cache & utils)
@@ -182,6 +213,7 @@ def _mtime(path: str | Path) -> float:
     except Exception:
         return 0.0
 
+
 @st.cache_data(show_spinner=False)
 def _read_json_cached(path: str | Path, stamp: float) -> Optional[dict]:
     try:
@@ -189,6 +221,7 @@ def _read_json_cached(path: str | Path, stamp: float) -> Optional[dict]:
             return json.load(f)
     except Exception:
         return None
+
 
 @st.cache_data(show_spinner=False)
 def _read_text_cached(path: str | Path, stamp: float) -> str:
@@ -198,18 +231,23 @@ def _read_text_cached(path: str | Path, stamp: float) -> str:
     except Exception:
         return ""
 
+
 @st.cache_data(show_spinner=False)
 def _read_csv_cached(path: str | Path, stamp: float) -> pd.DataFrame:
     return pd.read_csv(Path(path))
+
 
 @st.cache_data(show_spinner=False)
 def _load_any_dataset_cached(path: str | Path, stamp: float) -> pd.DataFrame:
     return _load_any_dataset(Path(path))
 
+
 # =========================
 # Block helpers
 # =========================
-def _detect_block_col(pipeline_name: str, df: pd.DataFrame, default: str = "block_id") -> str | None:
+def _detect_block_col(
+    pipeline_name: str, df: pd.DataFrame, default: str = "block_id"
+) -> str | None:
     cfg_path = _get_pipeline_base_dir(pipeline_name) / "config" / "config.json"
     try:
         if cfg_path.exists():
@@ -225,6 +263,7 @@ def _detect_block_col(pipeline_name: str, df: pd.DataFrame, default: str = "bloc
             return c
     return None
 
+
 def _sorted_blocks(series: pd.Series):
     vals = series.dropna().unique().tolist()
     try:
@@ -239,10 +278,13 @@ def _sorted_blocks(series: pd.Series):
         pass
     return sorted(vals, key=lambda x: str(x))
 
+
 # =========================
 # Dataset Tab
 # =========================
-def show_dataset_section(df: pd.DataFrame, last_file: str, pipeline_name: str, block_col: Optional[str]):
+def show_dataset_section(
+    df: pd.DataFrame, last_file: str, pipeline_name: str, block_col: Optional[str]
+):
     st.subheader("Dataset (block_wise)")
 
     if df.empty or not last_file:
@@ -261,7 +303,11 @@ def show_dataset_section(df: pd.DataFrame, last_file: str, pipeline_name: str, b
         _safe_markdown("### 🧱 Blocks overview")
         c1, c2 = st.columns([2, 1])
         with c1:
-            _safe_table(pd.DataFrame({"block": [str(b) for b in counts.index], "rows": counts.values}))
+            _safe_table(
+                pd.DataFrame(
+                    {"block": [str(b) for b in counts.index], "rows": counts.values}
+                )
+            )
         with c2:
             fig = px.bar(
                 x=[_sanitize_text(str(b)) for b in counts.index],
@@ -273,10 +319,10 @@ def show_dataset_section(df: pd.DataFrame, last_file: str, pipeline_name: str, b
 
         # Add a selectbox for block selection
         selected_block = st.selectbox(
-            'Select a block to inspect',
+            "Select a block to inspect",
             options=["(All)"] + blocks,
             index=0,
-            key="dataset_block_selector"
+            key="dataset_block_selector",
         )
 
         # Filter the dataframe based on the selection
@@ -328,28 +374,40 @@ def show_dataset_section(df: pd.DataFrame, last_file: str, pipeline_name: str, b
         pass
 
     _safe_markdown("### Dataset Info")
-    info_df = pd.DataFrame({
-        "Column": df_to_display.columns,
-        "Non-Null Count": df_to_display.notnull().sum().values,
-        "Unique Values": df_to_display.nunique(dropna=True).values,
-        "Dtype": df_to_display.dtypes.astype(str).values,
-    })
+    info_df = pd.DataFrame(
+        {
+            "Column": df_to_display.columns,
+            "Non-Null Count": df_to_display.notnull().sum().values,
+            "Unique Values": df_to_display.nunique(dropna=True).values,
+            "Dtype": df_to_display.dtypes.astype(str).values,
+        }
+    )
     _safe_table(info_df)
 
     # Categorical Variable Analysis
     _safe_markdown("### Categorical Variable Analysis")
     cat_cols = df_to_display.select_dtypes(include=["object", "category"]).columns
     if len(cat_cols) > 0:
-        max_cols_cat = st.slider("Max. categorical columns to display", 1, min(20, len(cat_cols)), min(5, len(cat_cols)), key="cat_slider_dataset")
+        max_cols_cat = st.slider(
+            "Max. categorical columns to display",
+            1,
+            min(20, len(cat_cols)),
+            min(5, len(cat_cols)),
+            key="cat_slider_dataset",
+        )
         show_cols_cat = list(cat_cols[:max_cols_cat])
-        
+
         for col in show_cols_cat:
             _safe_markdown(f"#### `{col}`")
-            
+
             # Basic stats
             num_unique = df_to_display[col].nunique()
-            mode_val = df_to_display[col].mode().iloc[0] if not df_to_display[col].mode().empty else "N/A"
-            
+            mode_val = (
+                df_to_display[col].mode().iloc[0]
+                if not df_to_display[col].mode().empty
+                else "N/A"
+            )
+
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("Unique Categories", num_unique)
@@ -358,10 +416,15 @@ def show_dataset_section(df: pd.DataFrame, last_file: str, pipeline_name: str, b
 
             # Proportions
             proportions = df_to_display[col].value_counts(normalize=True)
-            
+
             # Display as pie chart if few categories, otherwise as bar chart
             if num_unique <= 10:
-                fig = px.pie(proportions, values=proportions.values, names=proportions.index, title=f"Proportions for `{col}`")
+                fig = px.pie(
+                    proportions,
+                    values=proportions.values,
+                    names=proportions.index,
+                    title=f"Proportions for `{col}`",
+                )
                 _safe_plot(fig)
             else:
                 st.write("**Category Proportions (Top 10)**")
@@ -381,13 +444,22 @@ def show_dataset_section(df: pd.DataFrame, last_file: str, pipeline_name: str, b
                 if len(parts) == 2:
                     fname, mtime = parts
                     try:
-                        processed_files_data.append({"File Name": fname, "Processed At": pd.to_datetime(float(mtime), unit='s')})
+                        processed_files_data.append(
+                            {
+                                "File Name": fname,
+                                "Processed At": pd.to_datetime(float(mtime), unit="s"),
+                            }
+                        )
                     except ValueError:
-                        processed_files_data.append({"File Name": fname, "Processed At": "Invalid Timestamp"})
-        
+                        processed_files_data.append(
+                            {"File Name": fname, "Processed At": "Invalid Timestamp"}
+                        )
+
         if processed_files_data:
             df_processed = pd.DataFrame(processed_files_data)
-            df_processed = df_processed.sort_values(by="Processed At", ascending=True).reset_index(drop=True)
+            df_processed = df_processed.sort_values(
+                by="Processed At", ascending=True
+            ).reset_index(drop=True)
             _safe_table(df_processed)
         else:
             _safe_markdown("No files recorded in control_file.txt yet.")
@@ -398,32 +470,42 @@ def show_dataset_section(df: pd.DataFrame, last_file: str, pipeline_name: str, b
 # =========================
 # Evaluator Tab
 # =========================
-def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_percentage: float):
+def show_evaluator_section(
+    pipeline_name: str, split_within_blocks: bool, train_percentage: float
+):
     _ = st.subheader("🧪 Evaluation Results (block_wise)")
 
     base_dir = _get_pipeline_base_dir(pipeline_name)
     metrics_dir = base_dir / "metrics"
-    
+
     # Display run configuration
     st.markdown("### Run Configuration")
     if split_within_blocks:
-        st.info(f"Split Mode: **Split Within Blocks**. Each block was split into {train_percentage * 100:.0f}% for training and {100 - (train_percentage * 100):.0f}% for evaluation.")
+        st.info(
+            f"Split Mode: **Split Within Blocks**. Each block was split into {train_percentage * 100:.0f}% for training and {100 - (train_percentage * 100):.0f}% for evaluation."
+        )
     else:
         eval_path = metrics_dir / "eval_results.json"
         results = _read_json_cached(eval_path, _mtime(eval_path)) or {}
         eval_blocks = (results.get("blocks", {}) or {}).get("evaluated_blocks", [])
-        st.info(f"Split Mode: **By Block**. Evaluation was performed on dedicated blocks: `{eval_blocks}`")
+        st.info(
+            f"Split Mode: **By Block**. Evaluation was performed on dedicated blocks: `{eval_blocks}`"
+        )
 
     # Model Structure
     st.markdown("### Model Structure")
     train_path = metrics_dir / "train_results.json"
     train_results = _read_json_cached(train_path, _mtime(train_path)) or {}
     fallback_strategy = train_results.get("fallback_strategy", "global")
-    
-    if fallback_strategy == 'ensemble':
-        st.info("Model type: **Ensemble**. Uses an ensemble of per-block models for predictions on unseen blocks.")
+
+    if fallback_strategy == "ensemble":
+        st.info(
+            "Model type: **Ensemble**. Uses an ensemble of per-block models for predictions on unseen blocks."
+        )
     else:
-        st.info("Model type: **Global**. Uses a single global model for predictions on unseen blocks.")
+        st.info(
+            "Model type: **Global**. Uses a single global model for predictions on unseen blocks."
+        )
 
     candidates_dir = base_dir / "candidates"
     eval_path = metrics_dir / "eval_results.json"
@@ -457,13 +539,17 @@ def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_
     blocks_info = results.get("blocks", {}) or {}
     per_blk_full = blocks_info.get("per_block_metrics_full") or {}
     evaluated_blocks = [str(b) for b in (blocks_info.get("evaluated_blocks") or [])]
-    
+
     if blocks_info:
         _safe_markdown("## 🧱 Blocks (from evaluator)")
         cols = st.columns(3)
-        cols[0].metric("Block column", _sanitize_text(str(blocks_info.get("block_col"))))
+        cols[0].metric(
+            "Block column", _sanitize_text(str(blocks_info.get("block_col")))
+        )
         cols[1].metric("Evaluated blocks", len(evaluated_blocks))
-        cols[2].metric("Reference (train) blocks", len(blocks_info.get("reference_blocks", [])))
+        cols[2].metric(
+            "Reference (train) blocks", len(blocks_info.get("reference_blocks", []))
+        )
 
         new_blocks = blocks_info.get("new_blocks_detected", []) or []
         missing_blocks = blocks_info.get("missing_reference_blocks", []) or []
@@ -471,50 +557,88 @@ def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_
         k1.metric("New blocks (not in train)", len(new_blocks))
         k2.metric("Missing reference blocks", len(missing_blocks))
         if new_blocks:
-            _safe_markdown("**New blocks detected:** " + ", ".join(map(_sanitize_text, new_blocks)))
+            _safe_markdown(
+                "**New blocks detected:** " + ", ".join(map(_sanitize_text, new_blocks))
+            )
         if missing_blocks:
-            _safe_markdown("**Reference blocks missing in eval:** " + ", ".join(map(_sanitize_text, missing_blocks)))
+            _safe_markdown(
+                "**Reference blocks missing in eval:** "
+                + ", ".join(map(_sanitize_text, missing_blocks))
+            )
 
         if evaluated_blocks:
             sel_eval = st.selectbox(
                 "Filter block (Evaluator)",
                 options=["(All)"] + evaluated_blocks,
                 index=0,
-                key="eval_block_selector"
+                key="eval_block_selector",
             )
         else:
             sel_eval = "(All)"
 
         if per_blk_full:
             _safe_markdown("### Per-block test metrics")
-            df_blk = pd.DataFrame.from_dict(per_blk_full, orient="index").reset_index().rename(columns={"index": "block"})
+            df_blk = (
+                pd.DataFrame.from_dict(per_blk_full, orient="index")
+                .reset_index()
+                .rename(columns={"index": "block"})
+            )
             if sel_eval != "(All)":
                 df_blk = df_blk[df_blk["block"].astype(str) == sel_eval]
             _safe_table(df_blk)
 
-            candidate_metrics = [m for m in ["accuracy", "f1", "balanced_accuracy", "r2", "rmse", "mae", "mse"] if m in df_blk.columns]
+            candidate_metrics = [
+                m
+                for m in [
+                    "accuracy",
+                    "f1",
+                    "balanced_accuracy",
+                    "r2",
+                    "rmse",
+                    "mae",
+                    "mse",
+                ]
+                if m in df_blk.columns
+            ]
             if candidate_metrics:
-                metric_to_plot = st.selectbox("Metric to plot", options=candidate_metrics, index=0, key="eval_metric_sel")
+                metric_to_plot = st.selectbox(
+                    "Metric to plot",
+                    options=candidate_metrics,
+                    index=0,
+                    key="eval_metric_sel",
+                )
 
                 df_line = _sanitize_df(df_blk.copy())
                 try:
                     order = _sorted_blocks(df_line["block"])
-                    df_line["block"] = pd.Categorical(df_line["block"].astype(str), categories=[str(o) for o in order], ordered=True)
+                    df_line["block"] = pd.Categorical(
+                        df_line["block"].astype(str),
+                        categories=[str(o) for o in order],
+                        ordered=True,
+                    )
                     df_line = df_line.sort_values("block")
                 except Exception:
                     df_line["block"] = df_line["block"].astype(str)
-                
+
                 df_line["block_str"] = df_line["block"].astype(str)
-                
+
                 title = f"{metric_to_plot} by Block"
                 if split_within_blocks:
                     title += " (on Eval Split)"
 
-                fig = px.line(df_line, x="block_str", y=metric_to_plot, markers=True,
-                              title=_sanitize_text(title),
-                              labels={"block_str": _sanitize_text("Block"), metric_to_plot: _sanitize_text(metric_to_plot)})
-                
-                fig.update_xaxes(type='category')
+                fig = px.line(
+                    df_line,
+                    x="block_str",
+                    y=metric_to_plot,
+                    markers=True,
+                    title=_sanitize_text(title),
+                    labels={
+                        "block_str": _sanitize_text("Block"),
+                        metric_to_plot: _sanitize_text(metric_to_plot),
+                    },
+                )
+
+                fig.update_xaxes(type="category")
 
                 thr = results.get("thresholds", {}).get(metric_to_plot)
                 if thr is not None:
@@ -531,7 +655,12 @@ def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_
                 _safe_markdown("### 🧩 Confusion matrix (per block)")
                 blocks_with_cm = [b for b, cm in cm_dict.items() if cm]
                 if blocks_with_cm:
-                    bsel_cm = st.selectbox("Block (confusion matrix)", options=blocks_with_cm, index=0, key="cm_block")
+                    bsel_cm = st.selectbox(
+                        "Block (confusion matrix)",
+                        options=blocks_with_cm,
+                        index=0,
+                        key="cm_block",
+                    )
                     try:
                         cm = np.array(cm_dict[bsel_cm], dtype=float)
                         fig_cm = px.imshow(
@@ -543,13 +672,17 @@ def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_
                         )
                         _safe_plot(fig_cm)
                     except Exception as e:
-                        _safe_markdown(_sanitize_text(f"Could not render confusion matrix: {e}"))
+                        _safe_markdown(
+                            _sanitize_text(f"Could not render confusion matrix: {e}")
+                        )
 
     _safe_markdown("## Used Thresholds")
     thresholds = results.get("thresholds", {})
     if thresholds:
         # Convert all threshold values to string to avoid mixed types
-        threshold_data = [{"Metric": k, "Threshold": str(v)} for k, v in thresholds.items()]
+        threshold_data = [
+            {"Metric": k, "Threshold": str(v)} for k, v in thresholds.items()
+        ]
         _safe_table_static(pd.DataFrame(threshold_data))
     else:
         _safe_markdown("No thresholds found in the evaluation results.")
@@ -567,10 +700,14 @@ def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_
     metrics = results.get("metrics", {})
     if "classification_report" in metrics:
         _safe_write(f"*Accuracy:* {round(metrics.get('accuracy', 0), 4)}")
-        _safe_write(f"*Balanced Accuracy:* {round(metrics.get('balanced_accuracy', 0), 4)}")
+        _safe_write(
+            f"*Balanced Accuracy:* {round(metrics.get('balanced_accuracy', 0), 4)}"
+        )
         _safe_write(f"*F1 (macro):* {round(metrics.get('f1', 0), 4)}")
         report_df = pd.DataFrame(metrics["classification_report"])
-        if set(["precision", "recall", "f1-score", "support"]).issubset(report_df.index):
+        if set(["precision", "recall", "f1-score", "support"]).issubset(
+            report_df.index
+        ):
             _safe_table_static(report_df.transpose())
         else:
             _safe_table_static(report_df)
@@ -599,17 +736,31 @@ def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_
             def _fmt_ts(ts):
                 try:
                     import datetime as _dt
-                    return _dt.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+
+                    return _dt.datetime.fromtimestamp(float(ts)).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
                 except Exception:
                     return str(ts)
 
-            cols[1].metric("Paused Until", _sanitize_text(_fmt_ts(paused_until) if paused_until else "—"))
-            cols[2].metric("Last Failure", _sanitize_text(_fmt_ts(last_failure_ts) if last_failure_ts else "—"))
+            cols[1].metric(
+                "Paused Until",
+                _sanitize_text(_fmt_ts(paused_until) if paused_until else "—"),
+            )
+            cols[2].metric(
+                "Last Failure",
+                _sanitize_text(_fmt_ts(last_failure_ts) if last_failure_ts else "—"),
+            )
 
             import time as _t
+
             paused = bool(paused_until and _t.time() < float(paused_until))
             if paused:
-                st.warning(_sanitize_text("⏸ Retraining is currently paused by the circuit breaker."))
+                st.warning(
+                    _sanitize_text(
+                        "⏸ Retraining is currently paused by the circuit breaker."
+                    )
+                )
             else:
                 st.success(_sanitize_text("▶ Retraining is active (not paused)."))
         except Exception as e:
@@ -625,13 +776,24 @@ def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_
     candidates = []
     try:
         for entry in sorted(
-            [candidates_dir / d for d in os.listdir(candidates_dir) if (candidates_dir / d).is_dir()],
+            [
+                candidates_dir / d
+                for d in os.listdir(candidates_dir)
+                if (candidates_dir / d).is_dir()
+            ],
             key=lambda p: p.stat().st_mtime,
-            reverse=True
+            reverse=True,
         )[:10]:
             meta_path = entry / "meta.json"
             eval_p = entry / "eval_results.json"
-            row = {"path": str(entry), "timestamp": None, "file": None, "approved": False, "key_metric": None, "metric_value": None}
+            row = {
+                "path": str(entry),
+                "timestamp": None,
+                "file": None,
+                "approved": False,
+                "key_metric": None,
+                "metric_value": None,
+            }
             try:
                 if meta_path.exists():
                     meta = _read_json_cached(meta_path, _mtime(meta_path))
@@ -642,11 +804,14 @@ def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_
                     ev = _read_json_cached(eval_p, _mtime(eval_p))
                     m = ev.get("metrics", {})
                     if "accuracy" in m:
-                        row["key_metric"] = "accuracy"; row["metric_value"] = m.get("accuracy")
+                        row["key_metric"] = "accuracy"
+                        row["metric_value"] = m.get("accuracy")
                     elif "f1" in m:
-                        row["key_metric"] = "f1"; row["metric_value"] = m.get("f1")
+                        row["key_metric"] = "f1"
+                        row["metric_value"] = m.get("f1")
                     elif "r2" in m:
-                        row["key_metric"] = "r2"; row["metric_value"] = m.get("r2")
+                        row["key_metric"] = "r2"
+                        row["metric_value"] = m.get("r2")
             except Exception:
                 pass
             candidates.append(row)
@@ -654,16 +819,28 @@ def show_evaluator_section(pipeline_name: str, split_within_blocks: bool, train_
         if candidates:
             df_cand = pd.DataFrame(candidates)
             if "timestamp" in df_cand.columns:
-                df_cand = df_cand.sort_values(by="timestamp", ascending=False, na_position="last")
-            show_cols = ["timestamp", "file", "approved", "key_metric", "metric_value", "path"]
+                df_cand = df_cand.sort_values(
+                    by="timestamp", ascending=False, na_position="last"
+                )
+            show_cols = [
+                "timestamp",
+                "file",
+                "approved",
+                "key_metric",
+                "metric_value",
+                "path",
+            ]
             _safe_table(df_cand[show_cols])
-            _safe_caption("Showing up to 10 latest candidates. Each folder contains `model.pkl` and `eval_results.json`.")
+            _safe_caption(
+                "Showing up to 10 latest candidates. Each folder contains `model.pkl` and `eval_results.json`."
+            )
         else:
             _safe_markdown("No candidates have been saved yet.")
     except Exception as e:
         st.warning(f"Could not enumerate candidates: {e}")
 
     return None
+
 
 def show_pca_drift_plot(df_previous, df_current):
     st.markdown("---")
@@ -675,8 +852,9 @@ def show_pca_drift_plot(df_previous, df_current):
 
     # Select only numerical columns
     num_cols = df_previous.select_dtypes(include=np.number).columns.intersection(
-                 df_current.select_dtypes(include=np.number).columns)
-    
+        df_current.select_dtypes(include=np.number).columns
+    )
+
     if len(num_cols) < 2:
         st.info("At least 2 common numerical features are needed for PCA analysis.")
         return
@@ -696,31 +874,37 @@ def show_pca_drift_plot(df_previous, df_current):
     # Fit PCA on previous data and transform both
     pca = PCA(n_components=2)
     pca.fit(scaled_prev)
-    
+
     principal_components_prev = pca.transform(scaled_prev)
     principal_components_curr = pca.transform(scaled_curr)
 
     # Create DataFrames for plotting
-    pca_df_prev = pd.DataFrame(data=principal_components_prev, columns=['PC1', 'PC2'])
-    pca_df_prev['dataset'] = 'Previous'
-    
-    pca_df_curr = pd.DataFrame(data=principal_components_curr, columns=['PC1', 'PC2'])
-    pca_df_curr['dataset'] = 'Current'
+    pca_df_prev = pd.DataFrame(data=principal_components_prev, columns=["PC1", "PC2"])
+    pca_df_prev["dataset"] = "Previous"
+
+    pca_df_curr = pd.DataFrame(data=principal_components_curr, columns=["PC1", "PC2"])
+    pca_df_curr["dataset"] = "Current"
 
     pca_df = pd.concat([pca_df_prev, pca_df_curr], ignore_index=True)
 
     # Plot
-    fig = px.scatter(pca_df, x='PC1', y='PC2', color='dataset',
-                     title='2D Dataset Comparison with PCA',
-                     labels={'color': 'Dataset'},
-                     opacity=0.7)
-    
+    fig = px.scatter(
+        pca_df,
+        x="PC1",
+        y="PC2",
+        color="dataset",
+        title="2D Dataset Comparison with PCA",
+        labels={"color": "Dataset"},
+        opacity=0.7,
+    )
+
     st.plotly_chart(fig, use_container_width=True)
     st.markdown("""
     This chart projects the reference and current datasets into a two-dimensional space using Principal Component Analysis (PCA).
     - **Separate point clouds** suggest a significant change in the data distribution (drift).
     - **Overlapping point clouds** indicate that the datasets are structurally similar.
     """)
+
 
 def show_pht_plot(config, pipeline_name):
     st.markdown("---")
@@ -736,7 +920,7 @@ def show_pht_plot(config, pipeline_name):
         return
 
     with open(control_file_path, "r") as f:
-        processed_files = [line.strip().split(',')[0] for line in f.readlines()]
+        processed_files = [line.strip().split(",")[0] for line in f.readlines()]
 
     if len(processed_files) < 2:
         st.info("At least 2 processed datasets are needed for PHT analysis.")
@@ -746,11 +930,17 @@ def show_pht_plot(config, pipeline_name):
         num_windows = 2
         st.info("Only 2 processed datasets available. Showing comparison between them.")
     else:
-        num_windows = st.slider("Number of time windows to compare", 2, min(10, len(processed_files)), min(5, len(processed_files)), key="pht_windows")
-    
+        num_windows = st.slider(
+            "Number of time windows to compare",
+            2,
+            min(10, len(processed_files)),
+            min(5, len(processed_files)),
+            key="pht_windows",
+        )
+
     # Get last N files
     files_to_load = processed_files[-num_windows:]
-    
+
     datasets = {}
     for fname in files_to_load:
         fpath = Path(data_dir) / fname
@@ -758,15 +948,19 @@ def show_pht_plot(config, pipeline_name):
             datasets[fname] = pd.read_csv(fpath)
         else:
             st.warning(f"Could not find dataset: {fpath}")
-    
+
     if not datasets:
         st.error("Could not load datasets for PHT analysis.")
         return
 
     all_cols = next(iter(datasets.values())).columns
     num_cols = next(iter(datasets.values())).select_dtypes(include=np.number).columns
-    
-    selected_features = st.multiselect("Select features to analyze", options=num_cols, default=list(num_cols[:min(3, len(num_cols))]))
+
+    selected_features = st.multiselect(
+        "Select features to analyze",
+        options=num_cols,
+        default=list(num_cols[: min(3, len(num_cols))]),
+    )
 
     if not selected_features:
         st.info("Please select at least one feature.")
@@ -774,7 +968,7 @@ def show_pht_plot(config, pipeline_name):
 
     for feature in selected_features:
         st.markdown(f"#### PHT Analysis for `{feature}`")
-        
+
         fig = go.Figure()
         means = []
         window_names = list(datasets.keys())
@@ -782,38 +976,46 @@ def show_pht_plot(config, pipeline_name):
         # Add violin plots for each window
         for i, (name, df) in enumerate(datasets.items()):
             if feature in df.columns:
-                fig.add_trace(go.Violin(
-                    y=df[feature],
-                    x0=i, # Use numeric index for positioning
-                    name=name,
-                    box_visible=True,
-                    meanline_visible=True
-                ))
+                fig.add_trace(
+                    go.Violin(
+                        y=df[feature],
+                        x0=i,  # Use numeric index for positioning
+                        name=name,
+                        box_visible=True,
+                        meanline_visible=True,
+                    )
+                )
                 means.append(df[feature].mean())
             else:
                 means.append(None)
-        
+
         # Add line connecting the means
-        fig.add_trace(go.Scatter(
-            x=list(range(len(window_names))),
-            y=means,
-            mode='lines+markers',
-            name='Mean',
-            line=dict(color='red', width=2)
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=list(range(len(window_names))),
+                y=means,
+                mode="lines+markers",
+                name="Mean",
+                line=dict(color="red", width=2),
+            )
+        )
 
         fig.update_layout(
             title=f"Distribution and Mean of '{feature}' over time",
             xaxis_title="Time Window (Dataset)",
             yaxis_title=f"Value of {feature}",
             xaxis=dict(
-                tickmode='array',
+                tickmode="array",
                 tickvals=list(range(len(window_names))),
-                ticktext=[name[:15] + '...' if len(name) > 15 else name for name in window_names] # Shorten long names
+                ticktext=[
+                    name[:15] + "..." if len(name) > 15 else name
+                    for name in window_names
+                ],  # Shorten long names
             ),
-            showlegend=True
+            showlegend=True,
         )
         st.plotly_chart(fig, use_container_width=True)
+
 
 def show_drift_section(pipeline_name, config):
     st.subheader("🌊 Drift Results (block_wise, pairwise)")
@@ -843,7 +1045,11 @@ def show_drift_section(pipeline_name, config):
         st.warning(_sanitize_text("⚠ Ended with error while checking drift"))
 
     if results.get("promoted_model"):
-        st.info(_sanitize_text(f"⤴ Previous model was promoted (reason: {results.get('promotion_reason','-')})."))
+        st.info(
+            _sanitize_text(
+                f"⤴ Previous model was promoted (reason: {results.get('promotion_reason', '-')})."
+            )
+        )
 
     # --- Basic payload
     blk = results.get("blockwise", {}) or {}
@@ -882,7 +1088,7 @@ def show_drift_section(pipeline_name, config):
             "Filter block (Drift)",
             options=["(All)"] + blocks_all,
             index=0,
-            key="drift_block_selector"
+            key="drift_block_selector",
         )
     else:
         block_filter = "(All)"
@@ -899,14 +1105,21 @@ def show_drift_section(pipeline_name, config):
             except Exception:
                 return sorted(vals, key=lambda x: str(x))
 
-    scope_blocks = blocks_all if block_filter == "(All)" else [block_filter] + [b for b in blocks_all if b != block_filter]
+    scope_blocks = (
+        blocks_all
+        if block_filter == "(All)"
+        else [block_filter] + [b for b in blocks_all if b != block_filter]
+    )
     scope_blocks = _sorted_blocks_natural(scope_blocks)
 
     # Summary box
     _safe_markdown("## Summary")
     if by_test:
         df_sum = pd.DataFrame(
-            [{"Test": k, "Drift": "YES" if bool(v) else "NO"} for k, v in by_test.items()]
+            [
+                {"Test": k, "Drift": "YES" if bool(v) else "NO"}
+                for k, v in by_test.items()
+            ]
         )
         _safe_table_static(df_sum)
     else:
@@ -922,7 +1135,9 @@ def show_drift_section(pipeline_name, config):
             return "distance_max", "Distance (max) — higher is worse", "Inferno"
         return None, "value", "Plasma"
 
-    def _make_matrix_for_test(test_name: str, scope: List[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def _make_matrix_for_test(
+        test_name: str, scope: List[str]
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Return (values matrix M, flags matrix F) for a given test and block scope."""
         value_key, _, _ = _value_key_and_label(test_name)
         matrix = pairwise.get(test_name, {}) or {}
@@ -982,14 +1197,19 @@ def show_drift_section(pipeline_name, config):
             _safe_markdown("### 🧮 Drift pairs per test (in scope)")
             df_counts = pd.DataFrame(rows)
             df_counts["ratio"] = df_counts.apply(
-                lambda r: 0.0 if r["pairs_total"] == 0 else r["pairs_with_drift"] / r["pairs_total"], axis=1
+                lambda r: 0.0
+                if r["pairs_total"] == 0
+                else r["pairs_with_drift"] / r["pairs_total"],
+                axis=1,
             )
             _safe_table_static(df_counts)
 
             fig_cnt = px.bar(
-                df_counts, x="test", y="pairs_with_drift",
+                df_counts,
+                x="test",
+                y="pairs_with_drift",
                 title=_sanitize_text("Pairs with drift by test"),
-                labels={"test": "Test", "pairs_with_drift": "Pairs with drift"}
+                labels={"test": "Test", "pairs_with_drift": "Pairs with drift"},
             )
             _safe_plot(fig_cnt)
 
@@ -997,8 +1217,12 @@ def show_drift_section(pipeline_name, config):
     if pairwise and scope_blocks:
         _safe_markdown("## 🗺 Pairwise matrices")
         tests_available = list(pairwise.keys())
-        tsel = st.selectbox("Select test", options=tests_available, index=0, key="drift_test_select")
-        show_only_drift = st.checkbox("Show only pairs with drift", value=False, key="drift_only_pairs")
+        tsel = st.selectbox(
+            "Select test", options=tests_available, index=0, key="drift_test_select"
+        )
+        show_only_drift = st.checkbox(
+            "Show only pairs with drift", value=False, key="drift_only_pairs"
+        )
 
         value_key, label, colorscale = _value_key_and_label(tsel)
         M, F = _make_matrix_for_test(tsel, scope_blocks)
@@ -1024,14 +1248,16 @@ def show_drift_section(pipeline_name, config):
                 x=[_sanitize_text(str(c)) for c in M.columns],
                 y=[_sanitize_text(str(r)) for r in M.index],
                 coloraxis="coloraxis",
-                hoverongaps=False
+                hoverongaps=False,
             )
             heat_fig = go.Figure(data=[heat])
             heat_fig.update_layout(
                 title=_sanitize_text(f"{tsel} pairwise matrix – {label}"),
                 xaxis=dict(title="Block"),
                 yaxis=dict(title="Block"),
-                coloraxis=dict(colorscale=colorscale, colorbar=dict(title=_sanitize_text(label))),
+                coloraxis=dict(
+                    colorscale=colorscale, colorbar=dict(title=_sanitize_text(label))
+                ),
                 height=520,
                 margin=dict(l=40, r=20, t=60, b=40),
             )
@@ -1043,11 +1269,17 @@ def show_drift_section(pipeline_name, config):
                         continue
                     try:
                         if bool(F.loc[r, c]):
-                            anns.append(dict(
-                                x=_sanitize_text(str(c)), y=_sanitize_text(str(r)),
-                                text="⚠", showarrow=False, font=dict(size=14),
-                                xanchor="center", yanchor="middle"
-                            ))
+                            anns.append(
+                                dict(
+                                    x=_sanitize_text(str(c)),
+                                    y=_sanitize_text(str(r)),
+                                    text="⚠",
+                                    showarrow=False,
+                                    font=dict(size=14),
+                                    xanchor="center",
+                                    yanchor="middle",
+                                )
+                            )
                     except Exception:
                         pass
             if anns:
@@ -1056,19 +1288,32 @@ def show_drift_section(pipeline_name, config):
 
             # Drift partners per block (selected test)
             _safe_markdown("### 🔢 Drift partners per block (selected test)")
-            drift_counts = {b: int(F.loc[b].sum(skipna=True)) if b in F.index else 0 for b in M.index}
-            df_dc = pd.DataFrame({"block": list(drift_counts.keys()), "pairs_with_drift": list(drift_counts.values())})
+            drift_counts = {
+                b: int(F.loc[b].sum(skipna=True)) if b in F.index else 0
+                for b in M.index
+            }
+            df_dc = pd.DataFrame(
+                {
+                    "block": list(drift_counts.keys()),
+                    "pairs_with_drift": list(drift_counts.values()),
+                }
+            )
             fig_dc = px.bar(
-                df_dc, x=[str(b) for b in df_dc["block"]], y="pairs_with_drift",
+                df_dc,
+                x=[str(b) for b in df_dc["block"]],
+                y="pairs_with_drift",
                 title=_sanitize_text(f"Blocks with drift pairs – {tsel}"),
-                labels={"x": _sanitize_text("Block"), "pairs_with_drift": _sanitize_text("Pairs with drift")},
+                labels={
+                    "x": _sanitize_text("Block"),
+                    "pairs_with_drift": _sanitize_text("Pairs with drift"),
+                },
             )
             _safe_plot(fig_dc)
 
             # Distribution of pairwise values
             vals = []
-            for (i, r) in enumerate(M.index):
-                for (j, c) in enumerate(M.columns):
+            for i, r in enumerate(M.index):
+                for j, c in enumerate(M.columns):
                     if j <= i:  # upper triangle only
                         continue
                     v = M.loc[r, c]
@@ -1078,22 +1323,29 @@ def show_drift_section(pipeline_name, config):
                 _safe_markdown("### Pairwise values distribution")
                 df_vals = pd.DataFrame({label.split("—")[0].strip(): vals})
                 fig_hist = px.histogram(
-                    df_vals, x=df_vals.columns[0], nbins=30,
-                    title=_sanitize_text(f"Distribution – {tsel} ({label.split('—')[0].strip()})"),
-                    histnorm="probability density"
+                    df_vals,
+                    x=df_vals.columns[0],
+                    nbins=30,
+                    title=_sanitize_text(
+                        f"Distribution – {tsel} ({label.split('—')[0].strip()})"
+                    ),
+                    histnorm="probability density",
                 )
                 _safe_plot(fig_hist)
 
             # Top worst pairs table
             top_rows = []
+
             def _worse_key(v: float) -> float:
                 if tsel in ("KS", "MWU", "CVM"):
-                    return (v if v is not None else 1.0)   # smaller p worse (asc)
+                    return v if v is not None else 1.0  # smaller p worse (asc)
                 else:
-                    return (-(v if v is not None else 0.0))  # larger distance worse (desc)
+                    return -(
+                        v if v is not None else 0.0
+                    )  # larger distance worse (desc)
 
-            for (i, r) in enumerate(M.index):
-                for (j, c) in enumerate(M.columns):
+            for i, r in enumerate(M.index):
+                for j, c in enumerate(M.columns):
                     if j <= i:
                         continue
                     v = M.loc[r, c]
@@ -1103,7 +1355,9 @@ def show_drift_section(pipeline_name, config):
 
             if top_rows:
                 top_sorted = sorted(top_rows, key=lambda x: _worse_key(x[2]))[:20]
-                df_top = pd.DataFrame(top_sorted, columns=["block_A", "block_B", "value", "drift"])
+                df_top = pd.DataFrame(
+                    top_sorted, columns=["block_A", "block_B", "value", "drift"]
+                )
                 df_top["drift"] = df_top["drift"].map(lambda z: "YES" if z else "NO")
                 _safe_markdown("### 🏁 Top pairs (worst first)")
                 _safe_table_static(df_top)
@@ -1137,15 +1391,19 @@ def show_drift_section(pipeline_name, config):
     if by_block_stat:
         _safe_markdown("## 🚩 Stat-drift flags by block (any test)")
         # Respect block filter
-        rows = [{"block": b, "flag": int(bool(v))}
-                for b, v in by_block_stat.items()
-                if (block_filter == "(All)" or str(b) == block_filter)]
+        rows = [
+            {"block": b, "flag": int(bool(v))}
+            for b, v in by_block_stat.items()
+            if (block_filter == "(All)" or str(b) == block_filter)
+        ]
         if rows:
             df_flags = pd.DataFrame(rows)
             fig_flags = px.bar(
-                df_flags, x=[str(b) for b in df_flags["block"]], y="flag",
+                df_flags,
+                x=[str(b) for b in df_flags["block"]],
+                y="flag",
                 title=_sanitize_text("Blocks flagged in any pairwise test"),
-                labels={"x": _sanitize_text("Block"), "flag": _sanitize_text("Flag")}
+                labels={"x": _sanitize_text("Block"), "flag": _sanitize_text("Flag")},
             )
             _safe_plot(fig_flags)
 
@@ -1157,7 +1415,9 @@ def show_drift_section(pipeline_name, config):
         cfg = _read_json_cached(cfg_path, _mtime(cfg_path)) or {}
         data_dir = cfg.get("data_dir")
 
-    control_file = _get_pipeline_base_dir(pipeline_name) / "control" / "control_file.txt"
+    control_file = (
+        _get_pipeline_base_dir(pipeline_name) / "control" / "control_file.txt"
+    )
     if not (data_dir and control_file.exists()):
         _safe_markdown("Dataset not available for feature explorer.")
         return
@@ -1189,7 +1449,9 @@ def show_drift_section(pipeline_name, config):
     with c1:
         b1 = st.selectbox("Block A", options=blocks, index=0, key="fx_b1")
     with c2:
-        b2 = st.selectbox("Block B", options=[b for b in blocks if b != b1], index=0, key="fx_b2")
+        b2 = st.selectbox(
+            "Block B", options=[b for b in blocks if b != b1], index=0, key="fx_b2"
+        )
     with c3:
         num_cols = [c for c in df.select_dtypes(include=np.number).columns if c != bc]
         if not num_cols:
@@ -1197,32 +1459,77 @@ def show_drift_section(pipeline_name, config):
             return
         col = st.selectbox("Variable", options=num_cols, index=0, key="fx_col")
 
-    bins = st.slider("Bins", min_value=10, max_value=100, value=40, step=5, key="fx_bins")
+    bins = st.slider(
+        "Bins", min_value=10, max_value=100, value=40, step=5, key="fx_bins"
+    )
     norm = st.checkbox("Normalize to density", value=True, key="fx_norm")
-    mode = st.radio("Plot", ["Histogram", "ECDF", "Violin/Box"], horizontal=True, key="fx_plot_mode")
+    mode = st.radio(
+        "Plot", ["Histogram", "ECDF", "Violin/Box"], horizontal=True, key="fx_plot_mode"
+    )
 
-    s1 = pd.to_numeric(df.loc[df[bc].astype(str) == b1, col], errors="coerce").dropna().to_numpy()
-    s2 = pd.to_numeric(df.loc[df[bc].astype(str) == b2, col], errors="coerce").dropna().to_numpy()
+    s1 = (
+        pd.to_numeric(df.loc[df[bc].astype(str) == b1, col], errors="coerce")
+        .dropna()
+        .to_numpy()
+    )
+    s2 = (
+        pd.to_numeric(df.loc[df[bc].astype(str) == b2, col], errors="coerce")
+        .dropna()
+        .to_numpy()
+    )
 
     def _stats(arr):
         if arr.size == 0:
-            return {"n": 0, "mean": None, "std": None, "min": None, "max": None, "median": None}
-        return {"n": int(arr.size), "mean": float(np.mean(arr)), "std": float(np.std(arr)),
-                "min": float(np.min(arr)), "max": float(np.max(arr)), "median": float(np.median(arr))}
+            return {
+                "n": 0,
+                "mean": None,
+                "std": None,
+                "min": None,
+                "max": None,
+                "median": None,
+            }
+        return {
+            "n": int(arr.size),
+            "mean": float(np.mean(arr)),
+            "std": float(np.std(arr)),
+            "min": float(np.min(arr)),
+            "max": float(np.max(arr)),
+            "median": float(np.median(arr)),
+        }
 
     _safe_markdown("### Summary stats")
-    _safe_table_static(pd.DataFrame([
-        {"block": b1, **_stats(s1)},
-        {"block": b2, **_stats(s2)},
-    ]))
+    _safe_table_static(
+        pd.DataFrame(
+            [
+                {"block": b1, **_stats(s1)},
+                {"block": b2, **_stats(s2)},
+            ]
+        )
+    )
 
     if mode == "Histogram":
         histnorm = "probability density" if norm else None
         fig = go.Figure()
         if s1.size:
-            fig.add_trace(go.Histogram(x=s1, name=_sanitize_text(f"B{b1}"), nbinsx=bins, histnorm=histnorm, opacity=0.55))
+            fig.add_trace(
+                go.Histogram(
+                    x=s1,
+                    name=_sanitize_text(f"B{b1}"),
+                    nbinsx=bins,
+                    histnorm=histnorm,
+                    opacity=0.55,
+                )
+            )
         if s2.size:
-            fig.add_trace(go.Histogram(x=s2, name=_sanitize_text(f"B{b2}"), nbinsx=bins, histnorm=histnorm, opacity=0.55))
+            fig.add_trace(
+                go.Histogram(
+                    x=s2,
+                    name=_sanitize_text(f"B{b2}"),
+                    nbinsx=bins,
+                    histnorm=histnorm,
+                    opacity=0.55,
+                )
+            )
         fig.update_layout(
             barmode="overlay",
             title=_sanitize_text(f"Histogram – {col}"),
@@ -1231,28 +1538,52 @@ def show_drift_section(pipeline_name, config):
         )
         _safe_plot(fig)
     elif mode == "ECDF":
-        df_ecdf = pd.DataFrame({col: np.concatenate([s1, s2]), "block": [f"B{b1}"] * len(s1) + [f"B{b2}"] * len(s2)})
-        fig = px.ecdf(df_ecdf, x=col, color="block", title=_sanitize_text(f"ECDF – {col}"))
+        df_ecdf = pd.DataFrame(
+            {
+                col: np.concatenate([s1, s2]),
+                "block": [f"B{b1}"] * len(s1) + [f"B{b2}"] * len(s2),
+            }
+        )
+        fig = px.ecdf(
+            df_ecdf, x=col, color="block", title=_sanitize_text(f"ECDF – {col}")
+        )
         _safe_plot(fig)
     else:
-        df_v = pd.DataFrame({col: np.concatenate([s1, s2]), "block": [f"B{b1}"] * len(s1) + [f"B{b2}"] * len(s2)})
+        df_v = pd.DataFrame(
+            {
+                col: np.concatenate([s1, s2]),
+                "block": [f"B{b1}"] * len(s1) + [f"B{b2}"] * len(s2),
+            }
+        )
         fig = go.Figure()
         for b in [f"B{b1}", f"B{b2}"]:
-            fig.add_trace(go.Violin(
-                y=df_v[df_v["block"] == b][col],
-                x=[b] * len(df_v[df_v["block"] == b]),
-                name=_sanitize_text(b),
-                box_visible=True,
-                meanline_visible=True
-            ))
-        fig.update_layout(title=_sanitize_text(f"Violin/Box – {col}"), xaxis_title="Block", yaxis_title=_sanitize_text(col))
+            fig.add_trace(
+                go.Violin(
+                    y=df_v[df_v["block"] == b][col],
+                    x=[b] * len(df_v[df_v["block"] == b]),
+                    name=_sanitize_text(b),
+                    box_visible=True,
+                    meanline_visible=True,
+                )
+            )
+        fig.update_layout(
+            title=_sanitize_text(f"Violin/Box – {col}"),
+            xaxis_title="Block",
+            yaxis_title=_sanitize_text(col),
+        )
         _safe_plot(fig)
 
     # PCA and PHT plots
     try:
         files_compared = results.get("files_compared")
-        if files_compared and "reference_file" in files_compared and "current_file" in files_compared:
-            st.info("Loading datasets from `drift_results.json` for precise comparison.")
+        if (
+            files_compared
+            and "reference_file" in files_compared
+            and "current_file" in files_compared
+        ):
+            st.info(
+                "Loading datasets from `drift_results.json` for precise comparison."
+            )
             ref_path = files_compared["reference_file"]
             cur_path = files_compared["current_file"]
 
@@ -1262,13 +1593,17 @@ def show_drift_section(pipeline_name, config):
             if not os.path.exists(cur_path):
                 st.warning(f"Current file not found: `{cur_path}`")
                 return
-            
+
             df_previous = pd.read_csv(ref_path)
             df_current = pd.read_csv(cur_path)
-            st.write(f"Comparing `{os.path.basename(ref_path)}` (Reference) vs. `{os.path.basename(cur_path)}` (Current)")
+            st.write(
+                f"Comparing `{os.path.basename(ref_path)}` (Reference) vs. `{os.path.basename(cur_path)}` (Current)"
+            )
 
         else:
-            st.info("`files_compared` not in drift results. Cannot generate PCA/PHT plots.")
+            st.info(
+                "`files_compared` not in drift results. Cannot generate PCA/PHT plots."
+            )
             df_previous = pd.DataFrame()
             df_current = pd.DataFrame()
 
@@ -1293,7 +1628,13 @@ def show_historical_performance_section(pipeline_name: str):
         _safe_markdown("No evaluation history found.")
         return
 
-    history_files = sorted([f for f in os.listdir(eval_history_dir) if f.startswith("eval_results_") and f.endswith(".json")])
+    history_files = sorted(
+        [
+            f
+            for f in os.listdir(eval_history_dir)
+            if f.startswith("eval_results_") and f.endswith(".json")
+        ]
+    )
 
     if not history_files:
         _safe_markdown("No historical evaluation data found.")
@@ -1306,14 +1647,14 @@ def show_historical_performance_section(pipeline_name: str):
             results = _read_json_cached(file_path, _mtime(file_path))
             if not results:
                 continue
-            
+
             timestamp_str = file_name.replace("eval_results_", "").replace(".json", "")
             timestamp = pd.to_datetime(timestamp_str, format="%Y%m%d_%H%M%S")
             results["timestamp"] = timestamp
             all_results.append(results)
         except Exception as e:
             st.warning(f"Could not read or parse {file_name}: {e}")
-    
+
     if not all_results:
         st.warning("No valid historical evaluation data could be loaded.")
         return
@@ -1335,12 +1676,16 @@ def show_historical_performance_section(pipeline_name: str):
         return
 
     df_history = pd.DataFrame(block_performance_data)
-    df_history = df_history.sort_values(by=["timestamp", "block"]).reset_index(drop=True)
+    df_history = df_history.sort_values(by=["timestamp", "block"]).reset_index(
+        drop=True
+    )
 
     st.dataframe(df_history)
 
     # Plot performance over time
-    available_metrics = [col for col in df_history.columns if col not in ["timestamp", "block"]]
+    available_metrics = [
+        col for col in df_history.columns if col not in ["timestamp", "block"]
+    ]
     if not available_metrics:
         _safe_markdown("No metrics available to plot.")
         return
@@ -1348,13 +1693,21 @@ def show_historical_performance_section(pipeline_name: str):
     metric_to_plot = st.selectbox("Select Metric to Plot", options=available_metrics)
 
     if metric_to_plot:
-        fig = px.line(df_history, x="timestamp", y=metric_to_plot, color="block", markers=True,
-                      title=f"Historical {metric_to_plot} by Block")
+        fig = px.line(
+            df_history,
+            x="timestamp",
+            y=metric_to_plot,
+            color="block",
+            markers=True,
+            title=f"Historical {metric_to_plot} by Block",
+        )
         fig.update_traces(connectgaps=True)  # Connect points over gaps
         _safe_plot(fig)
 
 
-def show_train_section(pipeline_name: str, split_within_blocks: bool, train_percentage: float):
+def show_train_section(
+    pipeline_name: str, split_within_blocks: bool, train_percentage: float
+):
     st.subheader("🤖 Training / Retraining Results (block_wise)")
     metrics_dir = _get_pipeline_base_dir(pipeline_name) / "metrics"
     train_path = os.path.join(metrics_dir, "train_results.json")
@@ -1370,10 +1723,14 @@ def show_train_section(pipeline_name: str, split_within_blocks: bool, train_perc
 
     st.markdown("### Run Configuration")
     if split_within_blocks:
-        st.info(f"Split Mode: **Split Within Blocks**. Each block was split into {train_percentage * 100:.0f}% for training and {100 - (train_percentage * 100):.0f}% for evaluation.")
+        st.info(
+            f"Split Mode: **Split Within Blocks**. Each block was split into {train_percentage * 100:.0f}% for training and {100 - (train_percentage * 100):.0f}% for evaluation."
+        )
     else:
         train_blocks = results.get("train_blocks", [])
-        st.info(f"Split Mode: **By Block**. Training was performed on dedicated blocks: `{train_blocks}`")
+        st.info(
+            f"Split Mode: **By Block**. Training was performed on dedicated blocks: `{train_blocks}`"
+        )
 
     try:
         st.download_button(
@@ -1390,15 +1747,17 @@ def show_train_section(pipeline_name: str, split_within_blocks: bool, train_perc
     _date = results.get("timestamp", "-")
     _model = results.get("model", results.get("model", "-"))
     _fallback_strategy = results.get("fallback_strategy", "global")
-    
+
     _safe_write(f"*Type:* {_sanitize_text(_type)}")
     _safe_write(f"*Date:* {_sanitize_text(_date)}")
     _safe_write(f"*Model:* {_sanitize_text(_model)}")
-    _safe_write(f"*Fallback Strategy:* **{_sanitize_text(_fallback_strategy.capitalize())}**")
+    _safe_write(
+        f"*Fallback Strategy:* **{_sanitize_text(_fallback_strategy.capitalize())}**"
+    )
 
     train_blocks = [str(b) for b in (results.get("train_blocks") or [])]
     retrained_blocks = [str(b) for b in (results.get("retrained_blocks") or [])]
-    is_retrain = (_type == "retrain" and len(retrained_blocks) > 0)
+    is_retrain = _type == "retrain" and len(retrained_blocks) > 0
 
     k1, k2, k3 = st.columns(3)
     k1.metric("Train size", int(results.get("train_size", 0)))
@@ -1414,15 +1773,20 @@ def show_train_section(pipeline_name: str, split_within_blocks: bool, train_perc
             key="show_only_retrained_blocks",
         )
 
-    selector_pool = retrained_blocks if (is_retrain and show_only_retrained) else train_blocks
+    selector_pool = (
+        retrained_blocks if (is_retrain and show_only_retrained) else train_blocks
+    )
     if selector_pool:
-        sel_label = "Filter block (Retrained only)" if (is_retrain and show_only_retrained) \
-                    else "Filter block (Train blocks only)"
+        sel_label = (
+            "Filter block (Retrained only)"
+            if (is_retrain and show_only_retrained)
+            else "Filter block (Train blocks only)"
+        )
         sel_train = st.selectbox(
             sel_label,
             options=["(All)"] + selector_pool,
             index=0,
-            key="train_block_selector"
+            key="train_block_selector",
         )
     else:
         sel_train = "(All)"
@@ -1430,7 +1794,11 @@ def show_train_section(pipeline_name: str, split_within_blocks: bool, train_perc
     per_blk = results.get("per_block_train", {}) or {}
     if per_blk:
         _safe_markdown("### 🧱 Per-block (in-sample)")
-        df_blk = pd.DataFrame.from_dict(per_blk, orient="index").reset_index().rename(columns={"index": "block"})
+        df_blk = (
+            pd.DataFrame.from_dict(per_blk, orient="index")
+            .reset_index()
+            .rename(columns={"index": "block"})
+        )
 
         if sel_train != "(All)":
             df_blk = df_blk[df_blk["block"].astype(str) == sel_train]
@@ -1454,22 +1822,28 @@ def show_train_section(pipeline_name: str, split_within_blocks: bool, train_perc
                     df_line["block"] = pd.Categorical(
                         df_line["block"].astype(str),
                         categories=[str(o) for o in order],
-                        ordered=True
+                        ordered=True,
                     )
                     df_line = df_line.sort_values("block")
                 except Exception:
                     df_line["block"] = df_line["block"].astype(str)
-                
+
                 df_line["block_str"] = df_line["block"].astype(str)
-                
+
                 title = f"{metric_for_line} by Block (Train Subset)"
 
                 fig = px.line(
-                    df_line, x="block_str", y=metric_for_line, markers=True,
+                    df_line,
+                    x="block_str",
+                    y=metric_for_line,
+                    markers=True,
                     title=_sanitize_text(title),
-                    labels={"block_str": _sanitize_text("Block"), metric_for_line: _sanitize_text(metric_for_line)}
+                    labels={
+                        "block_str": _sanitize_text("Block"),
+                        metric_for_line: _sanitize_text(metric_for_line),
+                    },
                 )
-                fig.update_xaxes(type='category')
+                fig.update_xaxes(type="category")
                 _safe_plot(fig)
     else:
         _safe_markdown("No per-block training metrics found in the report.")
@@ -1493,8 +1867,11 @@ def parse_logs_to_df(log_text: str) -> pd.DataFrame:
         if match:
             rows.append(match.groupdict())
         else:
-            rows.append({"date": None, "pipeline": None, "level": None, "message": line})
+            rows.append(
+                {"date": None, "pipeline": None, "level": None, "message": line}
+            )
     return pd.DataFrame(rows)
+
 
 def show_logs_section(pipeline_name):
     st.subheader("📜 Pipeline Logs")
@@ -1512,7 +1889,12 @@ def show_logs_section(pipeline_name):
 
             # Filters: level + search query
             lcol, qcol = st.columns([1, 3])
-            level_sel = lcol.selectbox("Level", options=["ALL", "INFO", "WARNING", "ERROR"], index=0, key="log_level")
+            level_sel = lcol.selectbox(
+                "Level",
+                options=["ALL", "INFO", "WARNING", "ERROR"],
+                index=0,
+                key="log_level",
+            )
             query = qcol.text_input("Search text", value="", key="log_query")
 
             df_f = df_general.copy()
@@ -1523,11 +1905,12 @@ def show_logs_section(pipeline_name):
 
             st.dataframe(
                 df_f.style.map(
-                    lambda v: "color: red;" if v == "ERROR"
+                    lambda v: "color: red;"
+                    if v == "ERROR"
                     else ("color: orange;" if v == "WARNING" else "color: green;"),
                     subset=["level"],
                 ),
-                use_container_width=True
+                use_container_width=True,
             )
         else:
             _safe_markdown("No general logs found.")
@@ -1548,6 +1931,7 @@ def show_logs_section(pipeline_name):
     else:
         st.success(_sanitize_text("No warnings found."))
 
+
 # =========================
 # Main App
 # =========================
@@ -1560,9 +1944,13 @@ args, _ = parser.parse_known_args()
 pipeline_name = args.pipeline_name
 
 # Load runner_config to get all settings
-runner_config_path = _get_pipeline_base_dir(pipeline_name) / "config" / "runner_config.json"
+runner_config_path = (
+    _get_pipeline_base_dir(pipeline_name) / "config" / "runner_config.json"
+)
 if os.path.exists(runner_config_path):
-    runner_config = _read_json_cached(runner_config_path, _mtime(runner_config_path)) or {}
+    runner_config = (
+        _read_json_cached(runner_config_path, _mtime(runner_config_path)) or {}
+    )
     pipeline_name = runner_config.get("pipeline_name", pipeline_name)
     data_dir = runner_config.get("data_dir")
     split_within_blocks = runner_config.get("split_within_blocks", False)
@@ -1577,7 +1965,11 @@ else:
         split_within_blocks = False
         train_percentage = 0.8
     else:
-        st.error(_sanitize_text(f"runner_config.json or config.json not found for pipeline '{pipeline_name}'. Please start the monitor correctly."))
+        st.error(
+            _sanitize_text(
+                f"runner_config.json or config.json not found for pipeline '{pipeline_name}'. Please start the monitor correctly."
+            )
+        )
         st.stop()
 
 if not data_dir:
@@ -1591,7 +1983,9 @@ control_dir = _get_pipeline_base_dir(pipeline_name) / "control"
 df, last_file = dashboard_data_loader(data_dir, control_dir)
 block_col = _detect_block_col(pipeline_name, df)
 
-tabs = st.tabs(["Dataset", "Evaluator", "Drift", "Historical Performance", "Train/Retrain", "Logs"])
+tabs = st.tabs(
+    ["Dataset", "Evaluator", "Drift", "Historical Performance", "Train/Retrain", "Logs"]
+)
 
 # Auto-refresh on control_file change
 control_file = _get_pipeline_base_dir(pipeline_name) / "control" / "control_file.txt"
@@ -1610,7 +2004,7 @@ with tabs[1]:
     show_evaluator_section(pipeline_name, split_within_blocks, train_percentage)
 
 with tabs[2]:
-    cfg = runner_config if 'runner_config' in locals() else config
+    cfg = runner_config if "runner_config" in locals() else config
     show_drift_section(pipeline_name, cfg)
 
 with tabs[3]:

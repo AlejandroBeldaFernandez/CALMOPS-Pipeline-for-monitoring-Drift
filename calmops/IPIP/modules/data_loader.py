@@ -8,6 +8,7 @@ Robust data loader for IPIP pipelines (READ-ONLY control file).
 - Optionally clears logs when a new/modified dataset is detected.
 - Writes a blocks snapshot JSON if `block_col` is provided.
 """
+
 from __future__ import annotations
 
 import os
@@ -29,7 +30,9 @@ def _decode_bytes_df(df: pd.DataFrame) -> pd.DataFrame:
         return df
     for col in df.columns:
         if df[col].dtype == object:
-            df[col] = df[col].map(lambda v: v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else v)
+            df[col] = df[col].map(
+                lambda v: v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else v
+            )
     return df
 
 
@@ -44,40 +47,80 @@ def _coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_file(path: Path, delimiter: Optional[str] = None) -> pd.DataFrame:
-    """Load a file based on its extension; tolerant to delimiter issues."""
+def load_file(
+    path: Path,
+    delimiter: Optional[str] = None,
+    encoding: str = "utf-8",
+    file_type: str = "csv",
+) -> pd.DataFrame:
+    """Load a file based on its extension or explicit file_type; tolerant to delimiter issues."""
     try:
+        # Determine effective suffix/type
         suf = path.suffix.lower()
-        if suf == ".csv":
+        # If file_type is provided and not 'auto', it overrides the suffix check logic
+        # (though typically we still check suffix for specific handlers, here we can map type->handler)
+
+        # Mapping common types to suffixes for logic reuse
+        type_map = {
+            "csv": ".csv",
+            "arff": ".arff",
+            "json": ".json",
+            "excel": ".xlsx",
+            "parquet": ".parquet",
+            "txt": ".txt",
+        }
+
+        effective_type = type_map.get(file_type.lower(), suf)
+
+        if effective_type == ".csv":
             # If delimiter is None, rely on default ','; if 'infer', let pandas sniff
             if delimiter == "infer":
-                return pd.read_csv(path, sep=None, engine="python", low_memory=False)
-            return pd.read_csv(path, delimiter=delimiter, low_memory=False) if delimiter else pd.read_csv(path, low_memory=False)
+                return pd.read_csv(
+                    path, sep=None, engine="python", low_memory=False, encoding=encoding
+                )
+            return (
+                pd.read_csv(
+                    path, delimiter=delimiter, low_memory=False, encoding=encoding
+                )
+                if delimiter
+                else pd.read_csv(path, low_memory=False, encoding=encoding)
+            )
 
-        elif suf == ".arff":
+        elif effective_type == ".arff":
+            # arff.loadarff usually handles encoding internally or assumes simple ascii/utf-8
+            # If needed, we might need to read as text with encoding and parse, but standard lib doesn't support encoding arg easily.
+            # For now, we assume arff lib handles it or we decode after.
             data, _ = arff.loadarff(path)
             df = pd.DataFrame(data)
             df = _decode_bytes_df(df)
             df = _coerce_numeric(df)
             return df
 
-        elif suf == ".json":
-            return pd.read_json(path)
+        elif effective_type == ".json":
+            return pd.read_json(path, encoding=encoding)
 
-        elif suf in (".xls", ".xlsx"):
+        elif effective_type in (".xls", ".xlsx"):
             return pd.read_excel(path)
 
-        elif suf == ".parquet":
+        elif effective_type == ".parquet":
             return pd.read_parquet(path)
 
-        elif suf == ".txt":
+        elif effective_type == ".txt":
             # Try CSV-like reading; if delimiter is None, let pandas infer
             if delimiter:
-                return pd.read_csv(path, sep=delimiter, engine="python", low_memory=False)
-            return pd.read_csv(path, sep=None, engine="python", low_memory=False)
+                return pd.read_csv(
+                    path,
+                    sep=delimiter,
+                    engine="python",
+                    low_memory=False,
+                    encoding=encoding,
+                )
+            return pd.read_csv(
+                path, sep=None, engine="python", low_memory=False, encoding=encoding
+            )
 
         else:
-            raise ValueError(f"Unsupported format: {path.suffix}")
+            raise ValueError(f"Unsupported format: {effective_type}")
 
     except Exception as e:
         raise ValueError(f"Error loading file {path}: {e}") from e
@@ -123,7 +166,7 @@ def _write_blocks_snapshot(
     block_col: Optional[str],
     df: pd.DataFrame,
     mtime: float,
-    logger: logging.Logger
+    logger: logging.Logger,
 ):
     """
     Persist a simple snapshot of blocks present in the dataset right now:
@@ -165,7 +208,9 @@ def _write_blocks_snapshot(
         control_dir.mkdir(parents=True, exist_ok=True)
         with open(snap_path, "w", encoding="utf-8") as f:
             json.dump(snapshot, f, indent=2, ensure_ascii=False)
-        logger.info("🧭 Blocks snapshot updated for '%s': %d block(s).", file_name, len(blocks))
+        logger.info(
+            "🧭 Blocks snapshot updated for '%s': %d block(s).", file_name, len(blocks)
+        )
     except Exception as e:
         logger.error("Failed to write blocks snapshot: %s", e)
 
@@ -173,7 +218,9 @@ def _write_blocks_snapshot(
 # ---------------------------
 # Control file (READ-ONLY)
 # ---------------------------
-def _read_control_records(control_file: Path, logger: logging.Logger) -> Dict[str, float]:
+def _read_control_records(
+    control_file: Path, logger: logging.Logger
+) -> Dict[str, float]:
     """Read last processed mtimes from control file; never writes here."""
     records: Dict[str, float] = {}
     if control_file.exists():
@@ -210,13 +257,15 @@ def _clear_logs(logs_dir: Path, logger: logging.Logger) -> None:
 # Public API
 # ---------------------------
 def data_loader(
-    logger,
+    logger: logging.Logger,
     data_dir: str | Path,
     control_dir: str | Path,
     delimiter: Optional[str] = None,
     target_file: Optional[str] = None,
     *,
-    block_col: str = None,
+    block_col: Optional[str] = None,
+    encoding: str = "utf-8",
+    file_type: str = "csv",
 ) -> Tuple[pd.DataFrame, Optional[str], Optional[float]]:
     """
     Load data from a specific file (target_file) or scan the directory.
@@ -252,8 +301,14 @@ def data_loader(
             df = load_file(file_path, delimiter=delimiter)
             last_mtime = os.path.getmtime(file_path)
 
-            _write_blocks_snapshot(control_dir, file_name=target_file, block_col=block_col, df=df, mtime=last_mtime, logger=logger)
-
+            _write_blocks_snapshot(
+                control_dir,
+                file_name=target_file,
+                block_col=block_col,
+                df=df,
+                mtime=last_mtime,
+                logger=logger,
+            )
 
             logger.info("File %s loaded successfully.", target_file)
             return df, target_file, last_mtime
@@ -274,7 +329,9 @@ def data_loader(
         return pd.DataFrame(), None, None
 
     # Sort by mtime (newest first) so we pick the latest updated candidate
-    files_sorted = sorted(files, key=lambda nm: os.path.getmtime(data_dir / nm), reverse=True)
+    files_sorted = sorted(
+        files, key=lambda nm: os.path.getmtime(data_dir / nm), reverse=True
+    )
 
     for file in files_sorted:
         file_path = data_dir / file
@@ -285,8 +342,14 @@ def data_loader(
             try:
                 df = load_file(file_path, delimiter=delimiter)
 
-                _write_blocks_snapshot(control_dir, file_name=file, block_col=block_col, df=df, mtime=mtime, logger=logger)
-    
+                _write_blocks_snapshot(
+                    control_dir,
+                    file_name=file,
+                    block_col=block_col,
+                    df=df,
+                    mtime=mtime,
+                    logger=logger,
+                )
 
                 logger.info("File %s loaded successfully.", file)
                 return df, file, mtime

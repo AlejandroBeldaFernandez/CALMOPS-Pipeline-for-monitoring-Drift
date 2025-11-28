@@ -21,7 +21,7 @@ import socket
 import shutil
 import threading
 import subprocess
-import importlib
+
 import logging
 from typing import Dict, Any, Optional
 from pathlib import Path
@@ -29,7 +29,10 @@ from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
-from calmops.utils import get_project_root
+from calmops.utils import get_project_root, get_pipelines_root
+
+# IPIP pipeline
+from calmops.IPIP.pipeline_ipip import run_pipeline
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf
@@ -38,8 +41,7 @@ import tensorflow as tf
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 tf.get_logger().setLevel("ERROR")
-# IPIP pipeline
-from calmops.IPIP.pipeline_ipip import run_pipeline
+
 
 # =========================
 # Logging
@@ -295,7 +297,7 @@ module.exports = {{
     except Exception:
         pass
 
-    log.info(f"[PM2] App '{{app_name}}' started and saved.")
+    log.info(f"[PM2] App '{app_name}' started and saved.")
 
 
 def _launch_with_docker(
@@ -361,7 +363,8 @@ def start_monitor_schedule_ipip(
     log = _get_logger(f"calmops.monitor.ipip.schedule.{pipeline_name}")
 
     persistence = (persistence or "none").lower()
-    base_dir = get_project_root()
+    pipelines_root = get_pipelines_root()
+    project_root = get_project_root()
 
     # Always write the runner config, regardless of persistence mode.
     model_spec = _model_spec_from_instance(model_instance)
@@ -384,27 +387,33 @@ def start_monitor_schedule_ipip(
         "model_spec": model_spec,
         "monitor_type": "monitor_schedule_ipip",
         "prediction_only": prediction_only,
-        "dir_predictions": dir_predictions
+        "dir_predictions": dir_predictions,
     }
-    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+    runner_cfg_path = _write_runner_config(
+        pipeline_name, runner_cfg_obj, pipelines_root
+    )
 
     # --- persistence (early exit) ---
     if persistence in ("pm2", "docker"):
-        runner_script = _write_runner_script(pipeline_name, runner_cfg_path, base_dir)
+        runner_script = _write_runner_script(
+            pipeline_name, runner_cfg_path, pipelines_root
+        )
 
         if persistence == "pm2":
-            _launch_with_pm2(pipeline_name, runner_script, base_dir)
+            _launch_with_pm2(pipeline_name, runner_script, pipelines_root)
             log.info("[PM2] Persistence enabled. Exiting foreground process.")
             return
         else:
-            _launch_with_docker(pipeline_name, runner_script, base_dir, port or 8501)
+            _launch_with_docker(
+                pipeline_name, runner_script, pipelines_root, port or 8501
+            )
             log.info(
                 "[DOCKER] Persistence enabled via docker-compose. Exiting foreground process."
             )
             return
 
     # ---------- setup dirs & dashboard config ----------
-    base_pipeline_dir = base_dir / "pipelines" / pipeline_name
+    base_pipeline_dir = pipelines_root / "pipelines" / pipeline_name
     output_dir = base_pipeline_dir / "modelos"
     control_dir = base_pipeline_dir / "control"
     logs_dir = base_pipeline_dir / "logs"
@@ -458,7 +467,7 @@ def start_monitor_schedule_ipip(
                 block_col=block_col,
                 ipip_config=ipip_config,
                 prediction_only=prediction_only,
-                dir_predictions=dir_predictions
+                dir_predictions=dir_predictions,
             )
             log.info("[SCHEDULE] Pipeline finished.")
         except Exception as e:
@@ -479,7 +488,7 @@ def start_monitor_schedule_ipip(
     )
     scheduler.start()
     log.info(
-        f"[SCHEDULE] Scheduler started with type='{{sched_type}}', params={sched_params}"
+        f"[SCHEDULE] Scheduler started with type='{sched_type}', params={sched_params}"
     )
 
     # early start
@@ -496,7 +505,7 @@ def start_monitor_schedule_ipip(
 
     def start_streamlit(pipeline_name: str, port: int | None = None):
         nonlocal streamlit_process
-        dashboard_path = base_dir / "web_interface" / "dashboard_ipip.py"
+        dashboard_path = project_root / "web_interface" / "dashboard_ipip.py"
 
         if port is None:
             port = 8501
@@ -521,8 +530,8 @@ def start_monitor_schedule_ipip(
                     "--pipeline_name",
                     pipeline_name,
                 ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                # stdout=subprocess.DEVNULL,
+                # stderr=subprocess.DEVNULL,
             )
         except Exception as e:
             log.error(f"Failed to start Streamlit: {e}")

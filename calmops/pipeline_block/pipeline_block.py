@@ -3,7 +3,7 @@
 import os
 import time
 import json
-import logging
+
 import importlib.util
 from typing import Optional, List
 import functools
@@ -14,8 +14,8 @@ import joblib
 from pathlib import Path
 
 from calmops.logger.logger import PipelineLogger
-from calmops.utils import get_project_root
-from calmops.Detector.drift_detector import DriftDetector
+from calmops.utils import get_pipelines_root
+
 
 # NOTE: these imports follow your folder structure indicated in the file itself
 from .modules.data_loader import data_loader
@@ -99,22 +99,21 @@ def _load_preprocess_func(preprocess_file: str):
 # -------------------------------  Block Utils  -------------------------------
 
 
-def _sorted_blocks(series: pd.Series) -> List[str]:
-    vals = series.dropna().astype(str).unique().tolist()
-    # numeric
-    try:
-        nums = [float(v) for v in vals]
-        return [x for _, x in sorted(zip(nums, vals))]
-    except Exception:
-        pass
-    # datetime
-    try:
-        dt = pd.to_datetime(vals, errors="raise")
-        return [x for _, x in sorted(zip(dt, vals))]
-    except Exception:
-        pass
-    # lexicographic
-    return sorted(vals, key=lambda x: str(x))
+def _sorted_blocks(block_series: pd.Series) -> list[str]:
+    """Sorts block identifiers naturally (e.g., 'block_1', 'block_2', 'block_10')."""
+    import re
+
+    def natural_sort_key(s):
+        return [
+            int(text) if text.isdigit() else text.lower()
+            for text in re.split("([0-9]+)", str(s))
+        ]
+
+    # Get unique blocks and sort them
+    unique_blocks = block_series.unique()
+    # Handle potential mixed types by converting to string
+    sorted_unique_blocks = sorted(map(str, unique_blocks), key=natural_sort_key)
+    return sorted_unique_blocks
 
 
 # -------------------------------  Main Pipeline (block_wise only)  -------------------------------
@@ -149,6 +148,8 @@ def run_pipeline(
     fallback_strategy: str = "global",
     prediction_only: bool = False,
     dir_predictions: Optional[str] = None,
+    encoding: str = "utf-8",
+    file_type: str = "csv",
 ) -> None:
     """
     Orchestration for block_wise ONLY:
@@ -159,7 +160,7 @@ def run_pipeline(
       5) Evaluate on eval_blocks and update circuit breaker.
     """
     # Paths
-    project_root = get_project_root()
+    project_root = get_pipelines_root()
     base_dir = project_root / "pipelines" / pipeline_name
     output_dir = base_dir / "models"
     control_dir = base_dir / "control"
@@ -204,6 +205,8 @@ def run_pipeline(
         delimiter=delimiter,
         target_file=target_file,
         block_col=block_col,
+        encoding=encoding,
+        file_type=file_type,
     )
     if df_full.empty:
         logger.warning("No new data to process.")
@@ -213,6 +216,12 @@ def run_pipeline(
     sig = inspect.signature(preprocess_func)
     if "block_cols" in sig.parameters:
         preprocess_func = functools.partial(preprocess_func, block_cols=block_col)
+
+    # Attempt to retrieve block_col from raw data
+    original_blocks_series = None
+    if block_col in df_full.columns:
+        original_blocks_series = df_full[block_col].astype(str)
+
     X, y = preprocess_func(df_full)
     if not isinstance(X, pd.DataFrame):
         raise TypeError("Preprocess must return X as a pandas DataFrame.")
@@ -224,6 +233,27 @@ def run_pipeline(
         if y.shape[1] != 1:
             raise ValueError("y must be a single target column.")
         y = y.iloc[:, 0]
+
+    # Handle block_col logic
+    if original_blocks_series is not None:
+        # Case A: block_col was in raw data -> restore/align it
+        try:
+            blocks_series = original_blocks_series.loc[X.index]
+        except Exception:
+            common = X.index.intersection(original_blocks_series.index)
+            X = X.loc[common]
+            y = y.loc[common]
+            blocks_series = original_blocks_series.loc[common]
+        X = X.copy()
+        X[block_col] = blocks_series
+    else:
+        # Case B: block_col was NOT in raw data -> must be in X (created by prepro)
+        if block_col not in X.columns:
+            raise ValueError(
+                f"block_col='{block_col}' not found in raw data AND not created by preprocessing."
+            )
+        # Ensure it's string/categorical
+        X[block_col] = X[block_col].astype(str)
 
     if (block_col is None) or (block_col not in X.columns):
         raise ValueError("block_col must exist in X to operate in block_wise mode.")
@@ -539,7 +569,8 @@ def run_pipeline(
                     try:
                         os.makedirs(dir_predictions, exist_ok=True)
                         extra_pred_path = os.path.join(
-                            dir_predictions, f"predictions_{Path(last_processed_file).stem}.csv"
+                            dir_predictions,
+                            f"predictions_{Path(last_processed_file).stem}.csv",
                         )
                         predictions_df.to_csv(extra_pred_path, index=False)
                         logger.info(f"Predictions also saved to {extra_pred_path}")

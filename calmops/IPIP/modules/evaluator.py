@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import logging
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -27,7 +28,7 @@ from ..ipip_model import IpipModel
 # ------------------------------- utils -------------------------------
 
 
-def _jsonable(obj):
+def _jsonable(obj: Any) -> Any:
     if isinstance(obj, (np.bool_, bool)):
         return bool(obj)
     if isinstance(obj, (np.integer,)):
@@ -86,7 +87,7 @@ _HIGHER_BETTER = {"accuracy", "balanced_accuracy", "f1", "r2"}
 _LOWER_BETTER = {"rmse", "mae", "mse"}
 
 
-def _metrics_cls(y_true, y_pred) -> Dict[str, float]:
+def _metrics_cls(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
@@ -94,7 +95,7 @@ def _metrics_cls(y_true, y_pred) -> Dict[str, float]:
     }
 
 
-def _metrics_reg(y_true, y_pred) -> Dict[str, float]:
+def _metrics_reg(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     return {
         "r2": float(r2_score(y_true, y_pred)),
         "rmse": float(mean_squared_error(y_true, y_pred, squared=False)),
@@ -147,12 +148,12 @@ def _pick_rank_metric(
 
 
 def evaluate_model(
-    model_or_path,
+    model_or_path: str | Any,
     X_eval: pd.DataFrame,
     y_eval: pd.Series,
     *,
     X_full: Optional[pd.DataFrame] = None,
-    logger=None,
+    logger: logging.Logger = None,
     metrics_dir: str,
     control_dir: str,
     data_file: Optional[str] = None,

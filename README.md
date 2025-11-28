@@ -50,7 +50,11 @@ The project includes a powerful set of data generators for creating synthetic an
 -   **`Clinic`**: A specialized generator for creating synthetic clinical data with multi-omics and longitudinal drift.
 -   **`DriftInjection`**: A tool to inject various types of drift (abrupt, gradual, etc.) into an existing dataset.
 
-For a complete guide on how to use them, see the **[Data Generators Documentation](calmops/data_generators/README.md)**.
+The generation and preprocessing scripts are located in the `scripts/` directory:
+-   `scripts/generate_scenario_*.py`: Scripts to generate different drift scenarios.
+-   `scripts/preprocessing_*.py`: Preprocessing scripts for the generated data.
+
+For a complete guide on how to use the generators, see the **[Data Generators Documentation](calmops/data_generators/README.md)**.
 
 ## Main Technologies
 

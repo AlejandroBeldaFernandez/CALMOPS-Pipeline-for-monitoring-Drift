@@ -78,7 +78,9 @@ def _normalize_binary_text(y: pd.Series) -> Optional[pd.Series]:
     return None
 
 
-def data_preprocessing(df: pd.DataFrame, target_col: str = "class"):
+def data_preprocessing(
+    df: pd.DataFrame, target_col: str = "class"
+) -> tuple[pd.DataFrame, pd.Series]:
     """
     Parameters
     ----------

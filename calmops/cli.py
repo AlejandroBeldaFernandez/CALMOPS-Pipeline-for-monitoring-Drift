@@ -7,25 +7,25 @@ This script provides a command-line interface for managing CalmOps pipelines.
 """
 
 import os
-# Set TensorFlow environment variables and logging BEFORE any other imports
-
-
+import sys
+import json
+import shutil
 import logging
+import inspect
+import argparse
+import importlib
+from pathlib import Path
+
+# Set TensorFlow environment variables and logging BEFORE any other imports
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+import tensorflow as tf
+
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+tf.get_logger().setLevel("ERROR")
+
 logging.basicConfig(level=logging.ERROR)
 
-import argparse
-import sys
-import subprocess
-import json
-import os
-import inspect
-import importlib
-import shutil
-from pathlib import Path
-from calmops.utils import get_project_root
-
-# Ensure the project root is on the Python path
-ROOT_DIR = get_project_root() / "pipelines"
+from calmops.utils import get_pipelines_root
 from calmops.monitor.utils import _get_logger
 from calmops.monitor.monitor import configure_root_logging, start_monitor
 from calmops.monitor.monitor_schedule import start_monitor_schedule
@@ -33,17 +33,17 @@ from calmops.monitor.monitor_block import start_monitor_block
 from calmops.monitor.monitor_schedule_block import start_monitor_schedule_block
 from calmops.monitor.monitor_ipip import start_monitor_ipip
 from calmops.monitor.monitor_schedule_ipip import start_monitor_schedule_ipip
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-import tensorflow as tf
+
+# Ensure the project root is on the Python path
+ROOT_DIR = get_pipelines_root() / "pipelines"
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-
-tf.get_logger().setLevel('ERROR')
 def _build_model(spec: dict):
     """Dynamically builds a model instance from its specification."""
     if not spec or not spec.get("module") or not spec.get("class"):
-        print("Warning: Model specification is incomplete. Cannot build model instance.")
+        print(
+            "Warning: Model specification is incomplete. Cannot build model instance."
+        )
         return None
     try:
         mod = importlib.import_module(spec["module"])
@@ -56,19 +56,23 @@ def _build_model(spec: dict):
         try:
             return cls()
         except Exception as final_e:
-            print(f"Fatal: Could not instantiate model class {spec.get('class')}. Error: {final_e}")
+            print(
+                f"Fatal: Could not instantiate model class {spec.get('class')}. Error: {final_e}"
+            )
             return None
+
 
 def _filter_args(func, args_dict: dict) -> dict:
     """Filters a dictionary to include only keys that are parameters of a function."""
     sig = inspect.signature(func)
     param_names = set(sig.parameters.keys())
-    
+
     # If the function accepts **kwargs, no filtering is needed.
     if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
         return args_dict
 
     return {k: v for k, v in args_dict.items() if k in param_names}
+
 
 def main():
     """Main entry point for the CalmOps CLI."""
@@ -82,35 +86,67 @@ def main():
 
     # Delete command
     parser_delete = subparsers.add_parser("delete", help="Delete a pipeline.")
-    parser_delete.add_argument("pipeline_name", help="The name of the pipeline to delete.")
+    parser_delete.add_argument(
+        "pipeline_name", help="The name of the pipeline to delete."
+    )
 
     # Relaunch command
     parser_relaunch = subparsers.add_parser("relaunch", help="Relaunch a pipeline.")
-    parser_relaunch.add_argument("pipeline_name", help="The name of the pipeline to relaunch.")
+    parser_relaunch.add_argument(
+        "pipeline_name", help="The name of the pipeline to relaunch."
+    )
 
     # Update command (NEW)
-    parser_update = subparsers.add_parser("update", help="Update parameters of an existing pipeline.")
-    parser_update.add_argument("pipeline_name", help="The name of the pipeline to update.")
-    parser_update.add_argument("--preprocess_file", help="New path to the preprocessing script.")
-    parser_update.add_argument("--custom_train_file", help="New path to the custom training script.")
-    parser_update.add_argument("--custom_retrain_file", help="New path to the custom retraining script.")
-    parser_update.add_argument("--schedule", help='New schedule in JSON format (e.g., \'{"type": "interval", "params": {"minutes": 10}}\'')
+    parser_update = subparsers.add_parser(
+        "update", help="Update parameters of an existing pipeline."
+    )
+    parser_update.add_argument(
+        "pipeline_name", help="The name of the pipeline to update."
+    )
+    parser_update.add_argument(
+        "--preprocess_file", help="New path to the preprocessing script."
+    )
+    parser_update.add_argument(
+        "--custom_train_file", help="New path to the custom training script."
+    )
+    parser_update.add_argument(
+        "--custom_retrain_file", help="New path to the custom retraining script."
+    )
+    parser_update.add_argument(
+        "--schedule",
+        help='New schedule in JSON format (e.g., \'{"type": "interval", "params": {"minutes": 10}}\'',
+    )
     parser_update.add_argument("--retrain_mode", type=int, help="New retrain mode.")
     parser_update.add_argument("--fallback_mode", type=int, help="New fallback mode.")
-    parser_update.add_argument("--thresholds_drift", help='New drift thresholds in JSON format (e.g., \'{"balanced_accuracy": 0.8}\'')
-    parser_update.add_argument("--thresholds_perf", help='New performance thresholds in JSON format (e.g., \'{"accuracy": 0.9}\'')
+    parser_update.add_argument(
+        "--thresholds_drift",
+        help="New drift thresholds in JSON format (e.g., '{\"balanced_accuracy\": 0.8}'",
+    )
+    parser_update.add_argument(
+        "--thresholds_perf",
+        help="New performance thresholds in JSON format (e.g., '{\"accuracy\": 0.9}'",
+    )
     parser_update.add_argument("--data_dir", help="New path to the data directory.")
     parser_update.add_argument("--random_state", type=int, help="New random state.")
-    parser_update.add_argument("--param_grid", help='New parameter grid in JSON format (e.g., \'{"n_estimators": [50, 100]}\'')
+    parser_update.add_argument(
+        "--param_grid",
+        help="New parameter grid in JSON format (e.g., '{\"n_estimators\": [50, 100]}'",
+    )
     parser_update.add_argument("--cv", type=int, help="New cross-validation value.")
     parser_update.add_argument("--port", type=int, help="New port for the dashboard.")
     parser_update.add_argument("--window_size", type=int, help="New window size.")
     parser_update.add_argument("--delimiter", help="New delimiter for data files.")
 
     # Serve command
-    parser_serve = subparsers.add_parser("serve", help="Serve a pipeline's model for prediction.")
-    parser_serve.add_argument("pipeline_name", help="The name of the pipeline to serve.")
-    parser_serve.add_argument("--port", type=int, default=5000, help="Port to serve the model on.")
+    parser_serve = subparsers.add_parser(
+        "serve", help="Serve a pipeline's model for prediction."
+    )
+    parser_serve.add_argument(
+        "pipeline_name", help="The name of the pipeline to serve."
+    )
+    parser_serve.add_argument(
+        "--port", type=int, default=5000, help="Port to serve the model on."
+    )
 
     args = parser.parse_args()
 
@@ -122,7 +158,7 @@ def main():
         relaunch_pipeline(args.pipeline_name)
     elif args.command == "update":
         update_pipeline_config(
-            pipeline_name=args.pipeline_name, 
+            pipeline_name=args.pipeline_name,
             preprocess_file=args.preprocess_file,
             custom_train_file=args.custom_train_file,
             custom_retrain_file=args.custom_retrain_file,
@@ -137,13 +173,14 @@ def main():
             cv=args.cv,
             port=args.port,
             window_size=args.window_size,
-           
         )
     elif args.command == "serve":
         from calmops.server import app
+
         # Set the pipeline name for the Flask app
         os.environ["FLASK_PIPELINE_NAME"] = args.pipeline_name
-        app.run(host='0.0.0.0', port=args.port)
+        app.run(host="0.0.0.0", port=args.port)
+
 
 def relaunch_pipeline(pipeline_name: str):
     """Relaunches a pipeline by finding its unique runner configuration."""
@@ -154,29 +191,35 @@ def relaunch_pipeline(pipeline_name: str):
 
     config_dir = pipeline_dir / "config"
     if not config_dir.is_dir():
-        print(f"Error: Configuration directory not found for pipeline '{pipeline_name}'.")
+        print(
+            f"Error: Configuration directory not found for pipeline '{pipeline_name}'."
+        )
         sys.exit(1)
 
     # Find the runner config file dynamically
     possible_configs = [f.name for f in config_dir.glob("runner_*.json")]
-    
+
     if not possible_configs:
         # Fallback for older versions that might just have runner_config.json
         if (config_dir / "runner_config.json").exists():
             possible_configs = ["runner_config.json"]
         else:
-            print(f"Error: No 'runner_*.json' file found for pipeline '{pipeline_name}'.")
+            print(
+                f"Error: No 'runner_*.json' file found for pipeline '{pipeline_name}'."
+            )
             sys.exit(1)
-    
+
     if len(possible_configs) > 1:
-        print(f"Error: Multiple runner configuration files found for '{pipeline_name}'. Please resolve the ambiguity:")
+        print(
+            f"Error: Multiple runner configuration files found for '{pipeline_name}'. Please resolve the ambiguity:"
+        )
         for cfg in possible_configs:
             print(f"  - {cfg}")
         sys.exit(1)
 
     config_path = config_dir / possible_configs[0]
     print(f"Using configuration file: {possible_configs[0]}")
-    
+
     print(f"Relaunching pipeline '{pipeline_name}' from configuration file...")
     with config_path.open("r") as f:
         config = json.load(f)
@@ -195,7 +238,7 @@ def relaunch_pipeline(pipeline_name: str):
     # Prepare a dictionary with all possible arguments from the config
     monitor_args = config.copy()
     monitor_args["model_instance"] = model_instance
-    
+
     # Map monitor_type to the correct function
     monitor_functions = {
         "monitor": start_monitor,
@@ -207,11 +250,11 @@ def relaunch_pipeline(pipeline_name: str):
     }
 
     start_function = monitor_functions.get(monitor_type)
-    
+
     if start_function:
         # Filter the arguments to match the function's signature
         filtered_args = _filter_args(start_function, monitor_args)
-        
+
         # Call the function with only the valid arguments
         start_function(**filtered_args)
     else:
@@ -219,7 +262,23 @@ def relaunch_pipeline(pipeline_name: str):
         sys.exit(1)
 
 
-def update_pipeline_config(pipeline_name: str, preprocess_file: str = None, custom_train_file: str = None, custom_retrain_file: str = None, schedule: str = None, retrain_mode: int = None, fallback_mode: int = None, thresholds_drift: str = None, thresholds_perf: str = None, data_dir: str = None, random_state: int = None, param_grid: str = None, cv: int = None, port: int = None, window_size: int = None):
+def update_pipeline_config(
+    pipeline_name: str,
+    preprocess_file: str = None,
+    custom_train_file: str = None,
+    custom_retrain_file: str = None,
+    schedule: str = None,
+    retrain_mode: int = None,
+    fallback_mode: int = None,
+    thresholds_drift: str = None,
+    thresholds_perf: str = None,
+    data_dir: str = None,
+    random_state: int = None,
+    param_grid: str = None,
+    cv: int = None,
+    port: int = None,
+    window_size: int = None,
+):
     """Updates the configuration of an existing pipeline."""
     pipeline_dir = ROOT_DIR / pipeline_name
     if not pipeline_dir.is_dir():
@@ -228,7 +287,9 @@ def update_pipeline_config(pipeline_name: str, preprocess_file: str = None, cust
 
     config_path = pipeline_dir / "config" / "runner_config.json"
     if not config_path.exists():
-        print(f"Error: Could not find runner_config.json for pipeline '{pipeline_name}'.")
+        print(
+            f"Error: Could not find runner_config.json for pipeline '{pipeline_name}'."
+        )
         sys.exit(1)
 
     print(f"Updating configuration for pipeline '{pipeline_name}'...")
@@ -238,7 +299,9 @@ def update_pipeline_config(pipeline_name: str, preprocess_file: str = None, cust
     updated = False
     if preprocess_file is not None:
         if not Path(preprocess_file).exists():
-            print(f"Error: New preprocess_file path '{preprocess_file}' does not exist.")
+            print(
+                f"Error: New preprocess_file path '{preprocess_file}' does not exist."
+            )
             sys.exit(1)
         config["preprocess_file"] = preprocess_file
         updated = True
@@ -246,7 +309,9 @@ def update_pipeline_config(pipeline_name: str, preprocess_file: str = None, cust
 
     if custom_train_file is not None:
         if not Path(custom_train_file).exists():
-            print(f"Error: New custom_train_file path '{custom_train_file}' does not exist.")
+            print(
+                f"Error: New custom_train_file path '{custom_train_file}' does not exist."
+            )
             sys.exit(1)
         config["custom_train_file"] = custom_train_file
         updated = True
@@ -254,7 +319,9 @@ def update_pipeline_config(pipeline_name: str, preprocess_file: str = None, cust
 
     if custom_retrain_file is not None:
         if not Path(custom_retrain_file).exists():
-            print(f"Error: New custom_retrain_file path '{custom_retrain_file}' does not exist.")
+            print(
+                f"Error: New custom_retrain_file path '{custom_retrain_file}' does not exist."
+            )
             sys.exit(1)
         config["custom_retrain_file"] = custom_retrain_file
         updated = True
@@ -264,7 +331,9 @@ def update_pipeline_config(pipeline_name: str, preprocess_file: str = None, cust
         try:
             schedule_dict = json.loads(schedule)
             if "type" not in schedule_dict or "params" not in schedule_dict:
-                print("Error: Invalid schedule format. Must be a JSON string with 'type' and 'params' keys.")
+                print(
+                    "Error: Invalid schedule format. Must be a JSON string with 'type' and 'params' keys."
+                )
                 sys.exit(1)
             config["schedule"] = schedule_dict
             updated = True
@@ -305,7 +374,9 @@ def update_pipeline_config(pipeline_name: str, preprocess_file: str = None, cust
 
     if data_dir is not None:
         if not Path(data_dir).is_dir():
-            print(f"Error: New data_dir path '{data_dir}' does not exist or is not a directory.")
+            print(
+                f"Error: New data_dir path '{data_dir}' does not exist or is not a directory."
+            )
             sys.exit(1)
         config["data_dir"] = data_dir
         updated = True
@@ -341,7 +412,6 @@ def update_pipeline_config(pipeline_name: str, preprocess_file: str = None, cust
         updated = True
         print(f"Updated window_size to: {window_size}")
 
-    
     if updated:
         with config_path.open("w") as f:
             json.dump(config, f, indent=2)
@@ -353,7 +423,7 @@ def update_pipeline_config(pipeline_name: str, preprocess_file: str = None, cust
 def list_pipelines():
     """
     Administrative utility for pipeline discovery and inventory.
-    
+
     Provides operational visibility into deployed monitoring pipelines
     for management and maintenance purposes.
     """
@@ -369,10 +439,11 @@ def list_pipelines():
     except Exception as e:
         log.error(f"Pipeline discovery failed: {e}")
 
+
 def delete_pipeline(pipeline_name):
     """
     Permanent pipeline removal with safety confirmation.
-    
+
     Implements secure deletion with user confirmation to prevent
     accidental removal of production monitoring configurations.
     """
@@ -385,13 +456,14 @@ def delete_pipeline(pipeline_name):
         confirmation = input(
             f"Are you sure you want to delete the pipeline '{pipeline_name}'? This action is irreversible. (y/n): "
         )
-        if confirmation.lower() != 'y':
+        if confirmation.lower() != "y":
             log.info("Pipeline deletion cancelled by user")
             return
         shutil.rmtree(pipeline_path)
         log.info(f"Pipeline '{pipeline_name}' successfully removed from system")
     except Exception as e:
         log.error(f"Pipeline deletion failed for '{pipeline_name}': {e}")
+
 
 if __name__ == "__main__":
     main()

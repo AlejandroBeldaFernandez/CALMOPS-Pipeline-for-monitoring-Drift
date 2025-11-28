@@ -27,7 +27,6 @@ dependencies = [
     "plotly==5.24.1",
     "rdt==1.17.1",
     "river==0.22.0",
-    "scikeras==0.13.0",
     "scikit_learn==1.7.2",
     "scipy==1.14.1",
     "sdv==1.24.1",
@@ -35,10 +34,11 @@ dependencies = [
     "streamlit==1.47.1",
     "torch==2.7.1",
     "watchdog==5.0.3",
+    "tensorflow"
 ]
 
 [project.scripts]
 calmops = "calmops.cli:main"
 
 [tool.setuptools]
-packages = ["calmops"]
+packages = {find = {}}

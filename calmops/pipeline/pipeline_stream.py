@@ -12,7 +12,7 @@ Author: CalmOps Team
 """
 
 import os
-import shutil
+
 from typing import Optional
 import time
 import json
@@ -24,7 +24,7 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 
 from calmops.logger.logger import PipelineLogger
-from calmops.utils import get_project_root
+from calmops.utils import get_pipelines_root
 from calmops.Detector.drift_detector import DriftDetector
 from .modules.data_loader import data_loader
 from .modules.check_drift import check_drift
@@ -313,6 +313,8 @@ def run_pipeline(
     breaker_max_failures: int = 3,
     breaker_backoff_minutes: int = 120,
     dir_predictions: Optional[str] = None,
+    encoding: str = "utf-8",
+    file_type: str = "csv",
 ):
     """
     Execute the complete ML pipeline with champion/challenger promotion and circuit breaker protection.
@@ -355,6 +357,9 @@ def run_pipeline(
         window_size: Rolling window size for certain retraining modes (optional)
         breaker_max_failures: Circuit breaker failure threshold (default: 3)
         breaker_backoff_minutes: Circuit breaker pause duration in minutes (default: 120)
+        dir_predictions: Directory to save predictions (optional)
+        encoding: File encoding (default: "utf-8")
+        file_type: Explicit file type (default: "csv")
 
     Raises:
         FileNotFoundError: If required files (preprocessing, custom functions) don't exist
@@ -369,7 +374,7 @@ def run_pipeline(
     # ============================================================================
 
     # Create directory structure for pipeline artifacts
-    project_root = get_project_root()
+    project_root = get_pipelines_root()
     base_dir = project_root / "pipelines" / pipeline_name
     output_dir = base_dir / "models"  # Champion model storage
     control_dir = base_dir / "control"  # Processing state tracking
@@ -455,7 +460,13 @@ def run_pipeline(
     # Load new data using the data loader module
     logger.info(f"Loading data from directory: {data_dir}")
     df, last_processed_file, last_mtime = data_loader(
-        logger, data_dir, control_dir, delimiter=delimiter, target_file=target_file
+        logger,
+        data_dir,
+        control_dir,
+        delimiter=delimiter,
+        target_file=target_file,
+        encoding=encoding,
+        file_type=file_type,
     )
 
     # Check if new data is available for processing

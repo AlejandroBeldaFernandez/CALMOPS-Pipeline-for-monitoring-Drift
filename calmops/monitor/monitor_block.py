@@ -28,7 +28,7 @@ from watchdog.events import FileSystemEventHandler
 
 # Import the pipeline for BLOCKS (leave this import as you have it in your project)
 from calmops.pipeline_block.pipeline_block import run_pipeline as run_pipeline_blocks
-from calmops.utils import get_project_root
+from calmops.utils import get_project_root, get_pipelines_root
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf
@@ -498,7 +498,8 @@ def start_monitor_block(
     log = _get_logger(f"calmops.monitor.blocks.{pipeline_name}")
 
     persistence = (persistence or "none").lower()
-    base_dir = get_project_root()
+    pipelines_root = get_pipelines_root()
+    project_root = get_project_root()
 
     # Always write the runner config, regardless of persistence mode.
     model_spec = _model_spec_from_instance(model_instance)
@@ -526,13 +527,17 @@ def start_monitor_block(
         "split_within_blocks": split_within_blocks,  # Add to config
         "train_percentage": train_percentage,  # Add to config
         "fallback_strategy": fallback_strategy,
-        "dir_predictions": dir_predictions
+        "dir_predictions": dir_predictions,
     }
-    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+    runner_cfg_path = _write_runner_config(
+        pipeline_name, runner_cfg_obj, pipelines_root
+    )
 
     # --- persistence bootstrap (early exit if enabled) ---
     if persistence in ("pm2", "docker"):
-        runner_script = _write_runner_script(pipeline_name, runner_cfg_path, base_dir)
+        runner_script = _write_runner_script(
+            pipeline_name, runner_cfg_path, pipelines_root
+        )
 
         if persistence == "pm2":
             # PM2
@@ -543,7 +548,7 @@ def start_monitor_block(
                     "Then re-run with persistence='pm2'."
                 )
             eco_path = (
-                base_dir
+                pipelines_root
                 / "pipelines"
                 / pipeline_name
                 / "ecosystem.blocks.watchdog.config.js"
@@ -553,7 +558,7 @@ def start_monitor_block(
 
             runner_script_posix = runner_script.as_posix()
             python_exec_posix = Path(python_exec).as_posix()
-            base_dir_posix = base_dir.as_posix()
+            base_dir_posix = pipelines_root.as_posix()
 
             ecosystem_lines = [
                 "module.exports = {",
@@ -587,7 +592,7 @@ def start_monitor_block(
             return
         else:
             _launch_with_docker(
-                pipeline_name, str(runner_script), str(base_dir), port or 8501
+                pipeline_name, str(runner_script), str(pipelines_root), port or 8501
             )
             log.info(
                 "Docker persistence enabled via docker-compose. Exiting foreground process."
@@ -595,7 +600,7 @@ def start_monitor_block(
             return
 
     # ---------- regular (non-persistent) flow ----------
-    base_pipeline_dir = base_dir / "pipelines" / pipeline_name
+    base_pipeline_dir = pipelines_root / "pipelines" / pipeline_name
     output_dir = base_pipeline_dir / "outputs"
     control_dir = base_pipeline_dir / "control"
     logs_dir = base_pipeline_dir / "logs"
@@ -687,7 +692,7 @@ def start_monitor_block(
                 eval_blocks=current_eval_blocks,  # passes block evaluation to the pipeline
                 split_within_blocks=split_within_blocks,  # Pass new parameter
                 train_percentage=train_percentage,  # Pass new parameter
-                dir_predictions=dir_predictions
+                dir_predictions=dir_predictions,
             )
             log.info(f"Blocks pipeline completed for {file}")
         except Exception as e:
@@ -742,7 +747,7 @@ def start_monitor_block(
 
     def start_streamlit(pipeline_name: str, port: Optional[int] = None):
         nonlocal streamlit_process
-        dashboard_path = base_dir / "web_interface" / "dashboard_block.py"
+        dashboard_path = project_root / "web_interface" / "dashboard_block.py"
 
         if port is None:
             port = 8501

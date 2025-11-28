@@ -27,7 +27,7 @@ from pathlib import Path
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from calmops.utils import get_project_root
+from calmops.utils import get_project_root, get_pipelines_root
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf
@@ -148,7 +148,7 @@ if __name__ == "__main__":
         data_dir=cfg["data_dir"],
         preprocess_file=cfg["preprocess_file"],
         model_instance=model_instance,
-        retrain_mode=cfg["retrain_mode"],
+
         random_state=cfg["random_state"],
         custom_train_file=cfg.get("custom_train_file"),
         custom_retrain_file=cfg.get("custom_retrain_file"),
@@ -378,7 +378,6 @@ def start_monitor_ipip(
     data_dir: str,
     preprocess_file: str,
     model_instance,
-    retrain_mode: int,
     random_state: int,
     custom_train_file: str = None,
     custom_retrain_file: str = None,
@@ -391,13 +390,16 @@ def start_monitor_ipip(
     ipip_config: dict | None = None,
     prediction_only: bool = False,
     dir_predictions: Optional[str] = None,
+    encoding: str = "utf-8",
+    file_type: str = "csv",
 ):
     configure_root_logging(logging.INFO)
     global log
     log = _get_logger(f"calmops.monitor.ipip.{pipeline_name}")
 
     persistence = (persistence or "none").lower()
-    base_dir = get_project_root()
+    pipelines_root = get_pipelines_root()
+    project_root = get_project_root()
 
     # Always write the runner config, regardless of persistence mode.
     model_spec = _model_spec_from_instance(model_instance)
@@ -405,7 +407,6 @@ def start_monitor_ipip(
         "pipeline_name": pipeline_name,
         "data_dir": data_dir,
         "preprocess_file": preprocess_file,
-        "retrain_mode": retrain_mode,
         "random_state": random_state,
         "custom_train_file": custom_train_file,
         "custom_retrain_file": custom_retrain_file,
@@ -418,20 +419,28 @@ def start_monitor_ipip(
         "model_spec": model_spec,
         "monitor_type": "monitor_ipip",
         "prediction_only": prediction_only,
-        "dir_predictions": dir_predictions
+        "dir_predictions": dir_predictions,
+        "encoding": encoding,
+        "file_type": file_type,
     }
-    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, base_dir)
+    runner_cfg_path = _write_runner_config(
+        pipeline_name, runner_cfg_obj, pipelines_root
+    )
 
     # --- persistence (early exit) ---
     if persistence in ("pm2", "docker"):
-        runner_script = _write_runner_script(pipeline_name, runner_cfg_path, base_dir)
+        runner_script = _write_runner_script(
+            pipeline_name, runner_cfg_path, pipelines_root
+        )
 
         if persistence == "pm2":
-            _launch_with_pm2(pipeline_name, runner_script, base_dir)
+            _launch_with_pm2(pipeline_name, runner_script, pipelines_root)
             log.info("[PM2] Persistence enabled. Exiting foreground process.")
             return
         else:
-            _launch_with_docker(pipeline_name, runner_script, base_dir, port or 8501)
+            _launch_with_docker(
+                pipeline_name, runner_script, pipelines_root, port or 8501
+            )
             log.info(
                 "[DOCKER] Persistence enabled via docker-compose. Exiting foreground process."
             )
@@ -439,7 +448,7 @@ def start_monitor_ipip(
 
     # ---------- regular flow ----------
 
-    base_pipeline_dir = base_dir / "pipelines" / pipeline_name
+    base_pipeline_dir = pipelines_root / "pipelines" / pipeline_name
     output_dir = base_pipeline_dir / "modelos"
     control_dir = base_pipeline_dir / "control"
     logs_dir = base_pipeline_dir / "logs"
@@ -515,7 +524,6 @@ def start_monitor_ipip(
                 data_dir=data_dir,
                 preprocess_file=preprocess_file,
                 model_instance=model_instance,
-                retrain_mode=retrain_mode,
                 random_state=random_state,
                 custom_train_file=custom_train_file,
                 custom_retrain_file=custom_retrain_file,
@@ -525,7 +533,9 @@ def start_monitor_ipip(
                 block_col=block_col,
                 ipip_config=ipip_config,
                 prediction_only=prediction_only,
-                dir_predictions=dir_predictions
+                dir_predictions=dir_predictions,
+                encoding=encoding,
+                file_type=file_type,
             )
             log.info(f"[PIPELINE] Pipeline finished for {file}")
         except Exception as e:
@@ -554,7 +564,7 @@ def start_monitor_ipip(
 
     def start_streamlit(pipeline_name: str, port: int | None = None):
         nonlocal streamlit_process
-        dashboard_path = base_dir / "web_interface" / "dashboard_ipip.py"
+        dashboard_path = project_root / "web_interface" / "dashboard_ipip.py"
 
         if port is None:
             port = 8501
@@ -579,8 +589,8 @@ def start_monitor_ipip(
                     "--pipeline_name",
                     pipeline_name,
                 ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                # stdout=subprocess.DEVNULL,
+                # stderr=subprocess.DEVNULL,
             )
         except Exception as e:
             stop_all(f"Failed to start Streamlit: {e}")

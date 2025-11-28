@@ -36,7 +36,7 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from calmops.pipeline.pipeline_stream import run_pipeline
-from calmops.utils import get_project_root
+from calmops.utils import get_project_root, get_pipelines_root
 
 
 # =========================
@@ -599,6 +599,7 @@ def start_monitor(
     # Early persistence check enables delegation to PM2/Docker before
     # initializing watchdog components, preventing resource conflicts
     persistence = (persistence or "none").lower()
+    pipelines_root = get_pipelines_root()
     project_root = get_project_root()
 
     # Always write the runner config
@@ -624,25 +625,27 @@ def start_monitor(
         "model_spec": model_spec,
         "monitor_type": "monitor",
         "prediction_only": prediction_only,
-        "dir_predictions": dir_predictions
+        "dir_predictions": dir_predictions,
     }
-    runner_cfg_path = _write_runner_config(pipeline_name, runner_cfg_obj, project_root)
+    runner_cfg_path = _write_runner_config(
+        pipeline_name, runner_cfg_obj, pipelines_root
+    )
 
     if persistence in ("pm2", "docker"):
         # Delegate to production deployment strategies
         runner_script = _write_runner_script(
-            pipeline_name, runner_cfg_path, project_root
+            pipeline_name, runner_cfg_path, pipelines_root
         )
 
         if persistence == "pm2":
-            _launch_with_pm2(pipeline_name, runner_script, project_root, log)
+            _launch_with_pm2(pipeline_name, runner_script, pipelines_root, log)
             log.info(
                 "PM2 deployment successful - monitoring system now running in background with auto-restart"
             )
             return
         else:
             _launch_with_docker(
-                pipeline_name, runner_script, project_root, port or 8501, log
+                pipeline_name, runner_script, pipelines_root, port or 8501, log
             )
             log.info(
                 "Docker deployment successful - monitoring system containerized and running with restart policy"
@@ -652,7 +655,7 @@ def start_monitor(
     # ========== Development/Direct Execution Flow ==========
     # Standard monitoring system initialization for development environments
     # and direct execution scenarios without persistence requirements
-    base_pipeline_dir = project_root / "pipelines" / pipeline_name
+    base_pipeline_dir = pipelines_root / "pipelines" / pipeline_name
     output_dir = base_pipeline_dir / "models"
     control_dir = base_pipeline_dir / "control"
     logs_dir = base_pipeline_dir / "logs"
