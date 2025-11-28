@@ -35,7 +35,7 @@ from pathlib import Path
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from calmops.pipeline.pipeline_stream import run_pipeline
+from calmops.pipeline.pipeline_flow import run_pipeline
 from calmops.utils import get_project_root, get_pipelines_root
 
 
@@ -1027,8 +1027,8 @@ def test_single_file():
     configure_root_logging(logging.DEBUG)
     from sklearn.ensemble import RandomForestClassifier
 
-    # Test with pipeline_stream directly
-    from calmops.pipeline.pipeline_stream import run_pipeline
+    # Test with pipeline_flow directly
+    from calmops.pipeline.pipeline_flow import run_pipeline
 
     log = _get_logger("test")
     project_root = get_project_root()

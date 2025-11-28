@@ -56,7 +56,7 @@ except Exception:
     _TZ_EUROPE_MADRID = None  # fallback to system tz
 
 # Keep imports relative to repo root (run as: python -m monitor.monitor_schedule)
-from calmops.pipeline.pipeline_stream import run_pipeline
+from calmops.pipeline.pipeline_flow import run_pipeline
 
 
 # =========================

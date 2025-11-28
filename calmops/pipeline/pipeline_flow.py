@@ -1,5 +1,5 @@
 """
-Pipeline Stream Module
+Pipeline Flow Module
 
 This module implements a comprehensive ML pipeline orchestrator with the following key features:
 - Circuit breaker pattern to prevent repeated failures
