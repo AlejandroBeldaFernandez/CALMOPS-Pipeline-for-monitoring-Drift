@@ -13,23 +13,26 @@ authors = [
   { name = "Your Name", email = "your@email.com" },
 ]
 dependencies = [
-    "apscheduler==3.11.0",
-    "dash==3.2.0",
     "DataSynthesizer==0.1.13",
+    "numpy==1.26.4",
+    "pandas==2.3.1",
+    "rdt==1.17.1",
+    "river==0.22.0",
+    "scipy==1.14.1",
+    "sdv==1.24.1",
+]
+
+[project.optional-dependencies]
+mlops = [
+    "apscheduler==3.11.0",
     "Flask==3.1.2",
     "frouros==0.9.0",
     "imbalanced-learn",
     "joblib==1.5.1",
     "lightgbm",
     "matplotlib==3.9.4",
-    "numpy==1.26.4",
-    "pandas==2.3.1",
     "plotly==5.24.1",
-    "rdt==1.17.1",
-    "river==0.22.0",
     "scikit_learn==1.7.2",
-    "scipy==1.14.1",
-    "sdv==1.24.1",
     "seaborn==0.13.2",
     "streamlit==1.47.1",
     "torch==2.7.1",

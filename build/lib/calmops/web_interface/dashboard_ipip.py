@@ -18,7 +18,7 @@ import streamlit as st
 import joblib
 
 # Import shared utilities
-from calmops.utils import get_project_root
+from calmops.utils import get_pipelines_root
 from calmops.IPIP.ipip_model import IpipModel
 from utils import (
     _load_any_dataset,
@@ -98,7 +98,7 @@ def _load_any_dataset_cached(path: str, stamp: float) -> pd.DataFrame:
 def _detect_block_col(
     pipeline_name: str, df: pd.DataFrame, default: str = "block"
 ) -> str | None:
-    project_root = get_project_root()
+    project_root = get_pipelines_root()
     cfg_path = project_root / "pipelines" / pipeline_name / "config" / "config.json"
     try:
         if cfg_path.exists():
@@ -263,7 +263,7 @@ def show_dataset_section(
         st.info("No categorical columns to analyze.")
 
     st.markdown("### Processed Files History")
-    project_root = get_project_root()
+    project_root = get_pipelines_root()
     control_file_path = (
         project_root / "pipelines" / pipeline_name / "control" / "control_file.txt"
     )
@@ -301,7 +301,7 @@ def show_dataset_section(
 # =========================
 def show_train_section(pipeline_name: str):
     st.subheader("Train / Retrain Results")
-    project_root = get_project_root()
+    project_root = get_pipelines_root()
     metrics_dir = project_root / "pipelines" / pipeline_name / "metrics"
     tr_path = metrics_dir / "train_results.json"
     rt_path = metrics_dir / "retrain_results.json"
@@ -358,11 +358,12 @@ def show_train_section(pipeline_name: str):
                 }
             )
             _safe_table(df_val_metrics)
-            fig_val = px.bar(
+            fig_val = px.line(
                 df_val_metrics,
                 x="Ensemble ID",
                 y="Balanced Accuracy",
                 title="Balanced Accuracy per Ensemble (Internal Validation)",
+                markers=True,
             )
             _safe_plot(fig_val)
 
@@ -372,13 +373,48 @@ def show_train_section(pipeline_name: str):
     with st.expander("Raw JSON Output"):
         _safe_json_display(results)
 
+    # NEW: Training History Visualization
+    history_path = metrics_dir / "training_history.json"
+    if history_path.exists():
+        st.markdown("### Training History (Parameter Evolution)")
+        history_data = _read_json_cached(str(history_path), _mtime(str(history_path)))
+        if history_data:
+            df_hist = pd.DataFrame(history_data)
+
+            # Plot p and b over blocks
+            if "block" in df_hist.columns and "p" in df_hist.columns:
+                fig_params = px.line(
+                    df_hist,
+                    x="block",
+                    y=["p", "b"],
+                    title="Evolution of Parameters p and b",
+                    markers=True,
+                )
+                _safe_plot(fig_params)
+
+            # Plot ensemble sizes
+            if "num_ensembles" in df_hist.columns:
+                fig_ensembles = px.line(
+                    df_hist,
+                    x="block",
+                    y="num_ensembles",
+                    title="Evolution of Number of Ensembles",
+                    markers=True,
+                )
+                _safe_plot(fig_ensembles)
+
+            with st.expander("Raw Training History"):
+                _safe_table(df_hist)
+    else:
+        st.info("No `training_history.json` found.")
+
 
 # =========================
 # Evaluator Tab
 # =========================
 def show_evaluator_section(pipeline_name: str):
-    st.subheader("Model Evaluation & Approval")
-    project_root = get_project_root()
+    st.subheader("Model Evaluation")
+    project_root = get_pipelines_root()
     metrics_dir = project_root / "pipelines" / pipeline_name / "metrics"
     eval_path = metrics_dir / "eval_results.json"
 
@@ -390,15 +426,6 @@ def show_evaluator_section(pipeline_name: str):
         return
 
     results = _read_json_cached(str(eval_path), _mtime(str(eval_path))) or {}
-
-    st.markdown("### Approval Status")
-    is_approved = results.get("approved")
-
-    if is_approved is not None:
-        if is_approved:
-            st.success("APPROVED - The model exceeded performance thresholds.")
-        else:
-            st.error("NOT APPROVED - The model did not meet performance thresholds.")
 
     st.markdown("#### Global Metrics on Evaluation Set")
     metrics = results.get("metrics", {})
@@ -421,13 +448,59 @@ def show_evaluator_section(pipeline_name: str):
     with st.expander("Raw Evaluation JSON"):
         _safe_json_display(results)
 
+    # NEW: Download Predictions
+    preds_path = metrics_dir / "predictions.csv"
+    if preds_path.exists():
+        st.markdown("### Predictions")
+        with open(preds_path, "r") as f:
+            st.download_button(
+                label="Download Full Predictions (CSV)",
+                data=f,
+                file_name="predictions.csv",
+                mime="text/csv",
+            )
+    else:
+        st.info("No `predictions.csv` found.")
+
+    # NEW: Probability Distribution Plot
+    if preds_path.exists():
+        try:
+            df_preds = pd.read_csv(preds_path)
+            if "y_pred_proba" in df_preds.columns and "y_true" in df_preds.columns:
+                st.markdown("### Probability Distribution")
+
+                # Create histogram
+                fig_hist = px.histogram(
+                    df_preds,
+                    x="y_pred_proba",
+                    color="y_true",
+                    nbins=50,
+                    opacity=0.7,
+                    labels={
+                        "y_pred_proba": "Predicted Probability (Positive Class)",
+                        "y_true": "True Class",
+                    },
+                    title="Distribution of Predicted Probabilities by Class",
+                    marginal="box",  # Adds a box plot on top
+                )
+                fig_hist.update_layout(barmode="overlay")
+                _safe_plot(fig_hist)
+
+                # Optional: Calibration curve (Reliability diagram) could be added here too
+            else:
+                st.info(
+                    "Predictions file does not contain probability data (`y_pred_proba`)."
+                )
+        except Exception as e:
+            st.warning(f"Could not load predictions for visualization: {e}")
+
 
 # =========================
 # Historical Performance Tab
 # =========================
 def show_historical_performance_section(pipeline_name: str):
     st.subheader("Historical Performance")
-    project_root = get_project_root()
+    project_root = get_pipelines_root()
     history_dir = (
         project_root / "pipelines" / pipeline_name / "metrics" / "eval_history"
     )
@@ -478,13 +551,90 @@ def show_historical_performance_section(pipeline_name: str):
         return
 
     metric_to_plot = st.selectbox("Select Metric", options=metric_cols)
-    fig = px.line(
-        df_history,
-        x="timestamp",
-        y=metric_to_plot,
-        color="block",
-        markers=True,
-        title=f"Historical {metric_to_plot} by Block",
+
+    # Calculate 95% CI if metric is accuracy-like and support is available
+    if "support" in df_history.columns and metric_to_plot in [
+        "accuracy",
+        "balanced_accuracy",
+    ]:
+        # Standard Error = sqrt(p * (1-p) / n)
+        # 95% CI = 1.96 * SE
+        df_history["error_y"] = 1.96 * np.sqrt(
+            df_history[metric_to_plot]
+            * (1 - df_history[metric_to_plot])
+            / df_history["support"]
+        )
+        # Handle cases where support is 0 or NaN
+        df_history["error_y"] = df_history["error_y"].fillna(0)
+    else:
+        df_history["error_y"] = None
+
+    # Create figure with shaded CI
+    fig = go.Figure()
+
+    # Get unique blocks to plot
+    unique_blocks = df_history["block"].unique()
+
+    # Define a color palette
+    colors = px.colors.qualitative.Plotly
+
+    for i, block in enumerate(unique_blocks):
+        block_data = df_history[df_history["block"] == block].sort_values("timestamp")
+        color = colors[i % len(colors)]
+
+        # Main line
+        fig.add_trace(
+            go.Scatter(
+                x=block_data["timestamp"],
+                y=block_data[metric_to_plot],
+                mode="lines+markers",
+                name=f"Block {block}",
+                line=dict(color=color),
+                legendgroup=f"group_{block}",
+            )
+        )
+
+        # Add CI band if error_y is present
+        if "error_y" in block_data.columns and block_data["error_y"].notna().any():
+            upper_bound = block_data[metric_to_plot] + block_data["error_y"]
+            lower_bound = block_data[metric_to_plot] - block_data["error_y"]
+
+            # Upper bound (transparent)
+            fig.add_trace(
+                go.Scatter(
+                    x=block_data["timestamp"],
+                    y=upper_bound,
+                    mode="lines",
+                    line=dict(width=0),
+                    showlegend=False,
+                    hoverinfo="skip",
+                    legendgroup=f"group_{block}",
+                )
+            )
+
+            # Lower bound (fill to upper)
+            fig.add_trace(
+                go.Scatter(
+                    x=block_data["timestamp"],
+                    y=lower_bound,
+                    mode="lines",
+                    line=dict(width=0),
+                    fill="tonexty",
+                    fillcolor=f"rgba{tuple(list(int(color.lstrip('#')[i : i + 2], 16) for i in (0, 2, 4)) + [0.2])}",  # Hex to RGBA with opacity
+                    name=f"95% CI (Block {block})",
+                    showlegend=False,
+                    hoverinfo="skip",
+                    legendgroup=f"group_{block}",
+                )
+            )
+
+    fig.update_layout(
+        title=f"Historical {metric_to_plot} by Block (with 95% CI)"
+        if "error_y" in df_history.columns
+        else f"Historical {metric_to_plot} by Block",
+        xaxis_title="Timestamp",
+        yaxis_title=metric_to_plot,
+        hovermode="x unified",
     )
     _safe_plot(fig)
 
@@ -494,16 +644,12 @@ def show_historical_performance_section(pipeline_name: str):
 # =========================
 def show_ipip_section(pipeline_name: str):
     st.subheader("IPIP Model Inspector")
-    project_root = get_project_root()
+    project_root = get_pipelines_root()
     model_path = (
         project_root / "pipelines" / pipeline_name / "models" / f"{pipeline_name}.pkl"
     )
     model_structure_path = (
-        project_root
-        / "pipelines"
-        / pipeline_name
-        / "metrics"
-        / "model_structure.json"
+        project_root / "pipelines" / pipeline_name / "metrics" / "model_structure.json"
     )
 
     if not model_path.exists():
@@ -513,7 +659,9 @@ def show_ipip_section(pipeline_name: str):
     # Try to load model structure from JSON first
     model_struct_info = None
     if model_structure_path.exists():
-        model_struct_info = _read_json_cached(str(model_structure_path), _mtime(model_structure_path))
+        model_struct_info = _read_json_cached(
+            str(model_structure_path), _mtime(model_structure_path)
+        )
         if model_struct_info:
             st.info("Displaying model structure from `model_structure.json`")
 
@@ -525,19 +673,23 @@ def show_ipip_section(pipeline_name: str):
         st.write(f"**Last updated:** {timestamp}")
     else:
         # Fallback to loading the model directly if JSON not found
-        st.info("`model_structure.json` not found. Loading model directly for structure.")
+        st.info(
+            "`model_structure.json` not found. Loading model directly for structure."
+        )
         try:
             model = _load_joblib_cached(str(model_path), _mtime(model_path))
             if hasattr(model, "ensembles_"):
                 sizes = [len(Ek) for Ek in getattr(model, "ensembles_", [])]
                 num_ensembles = len(sizes)
             else:
-                st.warning("The loaded model does not appear to be an IPIP model (missing `ensembles_` attribute).")
+                st.warning(
+                    "The loaded model does not appear to be an IPIP model (missing `ensembles_` attribute)."
+                )
                 return
         except Exception as e:
             st.error(f"Could not load model to inspect its structure: {e}")
             return
-    
+
     if sizes:
         cols = st.columns(3)
         cols[0].metric("Ensembles (p)", num_ensembles)
@@ -583,7 +735,7 @@ def parse_logs_to_df(log_text: str) -> pd.DataFrame:
 
 def show_logs_section(pipeline_name: str):
     st.subheader("Pipeline Logs")
-    project_root = get_project_root()
+    project_root = get_pipelines_root()
     logs_path = project_root / "pipelines" / pipeline_name / "logs" / "pipeline.log"
     error_logs_path = (
         project_root / "pipelines" / pipeline_name / "logs" / "pipeline_errors.log"
@@ -662,7 +814,7 @@ except SystemExit:  # Handles Streamlit's internal argument passing
 
 st.title(f"Dashboard — IPIP Pipeline: `{pipeline_name}`")
 
-project_root = get_project_root()
+project_root = get_pipelines_root()
 # Auto-refresh logic
 control_file = (
     project_root / "pipelines" / pipeline_name / "control" / "control_file.txt"

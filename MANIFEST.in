@@ -1,0 +1,2 @@
+recursive-include calmops *.md
+recursive-include calmops tutorial.py

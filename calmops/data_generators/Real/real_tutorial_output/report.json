@@ -1,0 +1,69 @@
+{
+    "generator_name": "RealGenerator_copula",
+    "generation_timestamp": "2025-12-03T09:40:48.337888",
+    "output_directory": "real_tutorial_output",
+    "basic_info": {
+        "real_data_summary": {
+            "dataset": "Real",
+            "rows": 500,
+            "columns": 3,
+            "total_cells": 1500,
+            "memory_usage_mb": 0.04,
+            "total_null_values": 0,
+            "total_duplicated_rows": 0
+        },
+        "synthetic_data_summary": {
+            "dataset": "Synthetic",
+            "rows": 200,
+            "columns": 3,
+            "total_cells": 600,
+            "memory_usage_mb": 0.01,
+            "total_null_values": 0,
+            "total_duplicated_rows": 0
+        }
+    },
+    "target_analysis": null,
+    "sdv_quality": {
+        "status": "COMPLETED",
+        "overall_quality_score": 0.5645833333333333,
+        "weighted_quality_score": 0.5645833333333333
+    },
+    "mode_analysis": {
+        "category": {
+            "real_mode": {
+                "value": "C",
+                "proportion": 0.368
+            },
+            "synthetic_mode": {
+                "value": "C",
+                "proportion": 0.4
+            }
+        }
+    },
+    "block_analysis": null,
+    "plots": {
+        "pca_comparison": "real_tutorial_output/pca_comparison_RealGenerator_copula.png",
+        "correlation_heatmap": "real_tutorial_output/correlation_heatmap.png",
+        "interaction_plots": {
+            "interaction_plot_category_age.png": "real_tutorial_output/interaction_plot_category_age.png",
+            "interaction_plot_category_income.png": "real_tutorial_output/interaction_plot_category_income.png"
+        },
+        "mode_comparison": "real_tutorial_output/mode_comparison.png",
+        "distribution_plots": {
+            "age": "real_tutorial_output/dist_plot_age.png",
+            "income": "real_tutorial_output/dist_plot_income.png",
+            "category": "real_tutorial_output/dist_plot_category.png"
+        },
+        "box_plots": {
+            "age": "real_tutorial_output/boxplot_plot_age.png",
+            "income": "real_tutorial_output/boxplot_plot_income.png"
+        },
+        "instances_balance_plots": {
+            "category": "real_tutorial_output/instance_balance_plot_category.png"
+        },
+        "time_evolution_plots": {
+            "age": "real_tutorial_output/evolution_age.png",
+            "income": "real_tutorial_output/evolution_income.png"
+        }
+    }
+}

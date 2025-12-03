@@ -1,0 +1,25 @@
+{
+    "type": "train_ipip",
+    "timestamp": "2025-12-01T12:45:42.070678",
+    "file": "dummy.csv",
+    "model_type": "IpipModel",
+    "p": 6,
+    "b": 4,
+    "num_ensembles": 6,
+    "models_per_ensemble": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+    ],
+    "ensemble_validation_metrics": [
+        0.875,
+        0.875,
+        0.875,
+        0.875,
+        0.875,
+        0.875
+    ]
+}

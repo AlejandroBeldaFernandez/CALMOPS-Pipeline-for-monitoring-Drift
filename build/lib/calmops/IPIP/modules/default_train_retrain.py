@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 import math
+import logging
 from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
@@ -33,7 +34,7 @@ def _jsonable(o):
     return o
 
 
-def _save_results(path: Path, payload: Dict[str, Any], logger) -> None:
+def _save_results(path: Path, payload: Dict[str, Any], logger: logging.Logger) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(_jsonable(payload), f, indent=4, ensure_ascii=False)
@@ -44,7 +45,7 @@ def _blocks_in_order(X: pd.DataFrame, block_col: str) -> List[str]:
     return [str(x) for x in pd.unique(X[block_col]).tolist()]
 
 
-def _get_metric(y_true, y_pred_proba):
+def _get_metric(y_true: np.ndarray, y_pred_proba: np.ndarray) -> float:
     y_pred = np.argmax(y_pred_proba, axis=1)
     return balanced_accuracy_score(y_true, y_pred)
 
@@ -64,7 +65,7 @@ def best_models(
     x: pd.DataFrame,
     y: pd.Series,
     p: int,
-    logger,
+    logger: logging.Logger,
 ) -> List[int]:
     """
     Evaluates all ensembles in the IpipModel and returns the indices of the best 'p' ensembles.
@@ -106,14 +107,14 @@ def default_train(
     X: pd.DataFrame,
     y: pd.Series,
     last_processed_file: str,
-    model_instance,
+    model_instance: Any,
     random_state: int,
-    logger,
+    logger: logging.Logger,
     output_dir: str,
     block_col: str,
     ipip_config: Optional[Dict[str, Any]] = None,
     **kwargs,
-):
+) -> Tuple[IpipModel, pd.DataFrame, pd.Series, dict]:
     if model_instance is None:
         raise ValueError("[TRAIN] 'model_instance' is mandatory for initial training.")
     if ipip_config is None:
@@ -124,7 +125,10 @@ def default_train(
     # --- Config from ipip_config ---
     # --- Config from ipip_config ---
     # p and b are now calculated dynamically, ignoring config values if present
-    majority_prop = ipip_config.get("majority_prop", 0.55)
+    # 'prop_majoritaria' matches the user's config and R script convention
+    majority_prop = ipip_config.get(
+        "prop_majoritaria", ipip_config.get("majority_prop", 0.55)
+    )
     max_attempts = ipip_config.get("max_attempts", 5)
     val_size = ipip_config.get("val_size", 0.2)
     prop_minor_frac = ipip_config.get("prop_minor_frac", 0.75)
@@ -135,16 +139,17 @@ def default_train(
     # The R code trains on the first chunk and evaluates on the second.
     # Our pipeline gives us all data, so we'll simulate this.
     blocks = _blocks_in_order(X, block_col)
-    if len(blocks) < 2:
-        raise ValueError(
-            "IPIP training requires at least 2 blocks (1 for train, 1 for test)."
-        )
+
+    # MODIFIED: Allow single block training (needed for faithful retraining)
+    if len(blocks) < 1:
+        raise ValueError("IPIP training requires at least 1 block.")
 
     train_block = blocks[0]
-    test_block = blocks[1]
+    # If we have a second block, we can define it, but it's not strictly used for ensemble building
+    test_block = blocks[1] if len(blocks) > 1 else None
 
     current_chunk = pd.concat([X[X[block_col] == train_block], y], axis=1)
-    next_chunk = pd.concat([X[X[block_col] == test_block], y], axis=1)
+    # next_chunk is unused in the ensemble building logic, so we can ignore it if test_block is None
 
     # Split current chunk into train/test for building the ensembles
     train_df, test_df = train_test_split(
@@ -319,13 +324,13 @@ def default_retrain(
     model_path: str
     | IpipModel,  # Path to the existing IpipModel OR the IpipModel object itself
     random_state: int,
-    logger,
+    logger: logging.Logger,
     output_dir: str,
     block_col: str,
     ipip_config: Optional[Dict[str, Any]] = None,
-    model_instance,  # Base model for new ensembles
+    model_instance: Any,  # Base model for new ensembles
     **kwargs,
-):
+) -> Tuple[IpipModel, pd.DataFrame, pd.Series, dict]:
     t0 = time.time()
 
     prev_model: IpipModel
@@ -347,22 +352,21 @@ def default_retrain(
     # ensembles and the second to last for testing them.
 
     blocks = _blocks_in_order(X, block_col)
-    if len(blocks) < 2:
+    if len(blocks) < 1:
         logger.warning(
             "Not enough blocks to perform retrain, returning previous model."
         )
         return prev_model, pd.DataFrame(), pd.Series(), {}
 
     new_ensembles_train_block = blocks[-1]
-    new_ensembles_test_block = blocks[-2]
+    # new_ensembles_test_block = blocks[-2] # No longer needed for training
 
-    logger.info(
-        f"Retraining: new ensembles on block '{new_ensembles_train_block}', testing on '{new_ensembles_test_block}'"
-    )
+    logger.info(f"Retraining: new ensembles on block '{new_ensembles_train_block}'")
 
     # We call default_train on a subset of the data to generate the new ensembles
+    # MODIFIED: Pass ONLY the current block to ensure we train on t, not t-1
     new_model, _, _, _ = default_train(
-        X=X[X[block_col].isin([new_ensembles_test_block, new_ensembles_train_block])],
+        X=X[X[block_col].isin([new_ensembles_train_block])],
         y=y,
         last_processed_file=last_processed_file,
         model_instance=model_instance,
@@ -397,10 +401,20 @@ def default_retrain(
         )
     else:
         # Assuming the smaller class is the minority one we care about for the formula
-        n_expired_retrain = counts.min()
-        np_val_retrain = round(
-            n_expired_retrain * 0.75
-        )  # Using default prop_minor_frac 0.75
+        # FIX: Use the count of the positive class (1) to align with R script (filter(hosp == "SI"))
+        # and use prop_minor_frac from config.
+
+        prop_minor_frac = (
+            ipip_config.get("prop_minor_frac", 0.75) if ipip_config else 0.75
+        )
+
+        # We assume class 1 is the positive class ("SI")
+        n_expired_retrain = train_block_y[train_block_y == 1].count()
+
+        # If class 1 is not present or very small, we might have issues, but this aligns with R logic
+        # which filters for "SI". If "SI" is 0, we should check that, but standard here is 1.
+
+        np_val_retrain = round(n_expired_retrain * prop_minor_frac)
 
         if n_expired_retrain > 1 and np_val_retrain > 0:
             denom_p = math.log(1 - 1 / n_expired_retrain) * np_val_retrain
@@ -417,9 +431,21 @@ def default_retrain(
     combined_model = IpipModel(ensembles=prev_model.ensembles_ + new_model.ensembles_)
     logger.info(f"Combined model has {len(combined_model.ensembles_)} ensembles.")
 
-    # Use the latest block as the hold-out set for pruning
-    pruning_X = X[X[block_col] == new_ensembles_train_block].drop(columns=[block_col])
-    pruning_y = y[X[block_col] == new_ensembles_train_block]
+    # Pruning Step
+    # Check if X_next/y_next are provided (Transductive Pruning)
+    X_next = kwargs.get("X_next")
+    y_next = kwargs.get("y_next")
+
+    if X_next is not None and y_next is not None:
+        pruning_X = X_next.drop(columns=[block_col], errors="ignore")
+        pruning_y = y_next
+    else:
+        logger.info("Using CURRENT block for pruning (Standard behavior).")
+        # Use the latest block as the hold-out set for pruning
+        pruning_X = X[X[block_col] == new_ensembles_train_block].drop(
+            columns=[block_col]
+        )
+        pruning_y = y[X[block_col] == new_ensembles_train_block]
 
     # Find the best 'p' ensembles from the combined list
     best_indices = best_models(combined_model, "BA", pruning_X, pruning_y, p, logger)
