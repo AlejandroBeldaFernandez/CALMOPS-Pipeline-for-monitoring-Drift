@@ -5,17 +5,15 @@ __pycache__/
 .venv/
 .env
 .ipynb_checkpoints/
+*.spec
+dist/
 
 # Project artifacts
 logs/
-pipelines/*/logs/
-pipelines/*/models/
-pipelines/*/modelos/
-pipelines/*/metrics/
-pipelines/*/resultados/
-pipelines/*/control/previous_data.csv
-pipelines/*/candidates/
+pipelines/
 data/
+calmops/pipelines/
+calmops/data/
 
 # OS/IDE
 .DS_Store

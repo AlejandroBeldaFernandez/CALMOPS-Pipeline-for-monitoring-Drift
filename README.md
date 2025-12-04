@@ -1,5 +1,8 @@
 # CALMOPS – A Pipeline for Monitoring Drift
 
+> [!IMPORTANT]
+> **Note:** The MLOps component of this project is currently under active development. Some features may be experimental or subject to change.
+
 **CalmOps** is a comprehensive, Python-based pipeline for monitoring *data drift* and *model drift* in machine learning systems. It is designed to be a robust and production-ready MLOps tool.
 
 The core of the project is a pipeline that can be triggered with new data, which then performs drift analysis and model evaluation. The results are visualized in a web dashboard based on Streamlit.
@@ -120,6 +123,24 @@ The CLI provides several commands to manage your pipelines:
 ### Viewing the Dashboard
 
 Once a pipeline is running, its Streamlit dashboard will be available at `http://localhost:8501` by default. The port can be configured when the pipeline is created or updated.
+
+## Tutorials
+
+You can access and copy the available tutorials using the CLI:
+
+1.  **List available tutorials:**
+    ```bash
+    python calmops/cli.py tutorials list
+    ```
+
+2.  **Copy tutorial files:**
+    ```bash
+    python calmops/cli.py tutorials copy <module_name> --dest <destination_path>
+    ```
+    Example:
+    ```bash
+    python calmops/cli.py tutorials copy Clinic --dest ./my_tutorials
+    ```
 
 ## Recent Changes
 
