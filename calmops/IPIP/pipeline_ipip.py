@@ -6,7 +6,7 @@ import json
 import logging
 import importlib.util
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, List
 import re
 import numpy as np
 
@@ -208,6 +208,11 @@ def run_pipeline(
     custom_retrain_file: str | None = None,
     delimiter: str = ",",
     target_file: str | None = None,
+    target_files: List[str] | None = None,
+    rest_preprocess_file: str | None = None,
+    skip_initial_preprocessing: bool = False,
+    skip_rest_preprocessing: bool = False,
+    target_col: str | None = None,
     window_size: int | None = None,
     block_col: str | None = None,
     ipip_config: dict | None = None,
@@ -226,6 +231,8 @@ def run_pipeline(
     for d in (output_dir, control_dir, logs_dir, metrics_dir):
         d.mkdir(parents=True, exist_ok=True)
 
+    control_file = control_dir / "control_file.txt"
+
     model_path = output_dir / f"{pipeline_name}.pkl"
 
     # Logger
@@ -237,59 +244,145 @@ def run_pipeline(
         raise ValueError("You must provide block_col explicitly (e.g., 'chunk').")
 
     # 1) Load dataset
-    df_full, last_processed_file, last_mtime = data_loader(
-        logger,
-        data_dir,
-        control_dir,
-        delimiter=delimiter,
-        target_file=target_file,
-        block_col=block_col,
-        encoding=encoding,
-        file_type=file_type,
-    )
-    if df_full.empty:
-        logger.warning("No new data to process.")
-        return
-    # 2) Preprocess (the prepro chooses target and returns X,y)
-    spec = importlib.util.spec_from_file_location("custom_preproc", preprocess_file)
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    if not hasattr(mod, "data_preprocessing"):
-        raise AttributeError(
-            f"{preprocess_file} must define data_preprocessing(df)->(X,y)"
+    # 1) Determine files to process
+    files_to_process = []  # List of (filename, preloaded_df_or_None, mtime_or_None)
+
+    # Note: data_loader returns (df, filename, mtime)
+
+    if target_files:
+        for f in target_files:
+            files_to_process.append((f, None, None))
+    elif target_file:
+        files_to_process.append((target_file, None, None))
+    else:
+        # Auto-discovery / Directory scan mode
+        # In this mode, we find ONE new file as per original logic
+        df_found, fname_found, mtime_found = data_loader(
+            logger,
+            data_dir,
+            control_dir,
+            delimiter=delimiter,
+            target_file=None,
+            block_col=block_col,
+            encoding=encoding,
+            file_type=file_type,
+        )
+        if df_found.empty:
+            logger.warning("No new data to process.")
+            return
+        files_to_process.append((fname_found, df_found, mtime_found))
+
+    # Lists to accumulate processed parts
+    X_parts = []
+    y_parts = []
+    processed_files_meta = []  # To update control file later: (filename, mtime)
+
+    for i, (fname, preloaded_df, preloaded_mtime) in enumerate(files_to_process):
+        # Load if needed
+        if preloaded_df is not None:
+            df_curr = preloaded_df
+            current_mtime = preloaded_mtime
+        else:
+            df_curr, _, current_mtime = data_loader(
+                logger,
+                data_dir,
+                control_dir,
+                delimiter=delimiter,
+                target_file=fname,
+                block_col=block_col,
+                encoding=encoding,
+                file_type=file_type,
+            )
+
+        if df_curr.empty:
+            logger.warning(f"File {fname} is empty or could not be loaded. Skipping.")
+            continue
+
+        # Track for control file update
+        if fname and current_mtime:
+            processed_files_meta.append((fname, current_mtime))
+
+        # Check prior history for incremental runs
+        control_file_size = 0
+        if control_file.exists():
+            control_file_size = control_file.stat().st_size
+
+        is_first = i == 0
+        # If incremental mode (no explicit target_files) and history exists, this is NOT the initial file
+        if not target_files and control_file_size > 0:
+            is_first = False
+
+        should_skip = (
+            skip_initial_preprocessing if is_first else skip_rest_preprocessing
         )
 
-    # Attempt to retrieve block_col from raw data
-    original_blocks_series = None
-    if block_col in df_full.columns:
-        original_blocks_series = df_full[block_col].astype(str)
+        script_path = (
+            preprocess_file if is_first else (rest_preprocess_file or preprocess_file)
+        )
 
-    X, y = mod.data_preprocessing(df_full)
-    if isinstance(y, pd.DataFrame):
-        y = y.iloc[:, 0]
-    logger.info(f"Preprocessing OK: {X.shape[0]} rows, {X.shape[1]} columns.")
+        logger.info(
+            f"Processing file {fname} (Index {i}). Skip Preproc: {should_skip}. Script: {script_path}"
+        )
+
+        if should_skip:
+            # RAW Mode: splitting only
+            if not target_col:
+                raise ValueError(
+                    "target_col must be specified when skipping preprocessing."
+                )
+
+            # Check if target_col exists
+            if target_col not in df_curr.columns:
+                raise ValueError(
+                    f"Column '{target_col}' not found in {fname} (Columns: {list(df_curr.columns)})."
+                )
+
+            X_curr = df_curr.drop(columns=[target_col], errors="ignore")
+            y_curr = df_curr[target_col]
+        else:
+            # Script Mode
+            spec = importlib.util.spec_from_file_location(
+                f"custom_preproc_{i}", script_path
+            )
+            mod = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(mod)
+            if not hasattr(mod, "data_preprocessing"):
+                raise AttributeError(
+                    f"{script_path} must define data_preprocessing(df)->(X,y)"
+                )
+            X_curr, y_curr = mod.data_preprocessing(df_curr)
+
+            if isinstance(y_curr, pd.DataFrame):
+                y_curr = y_curr.iloc[:, 0]
+
+        # Align columns? (Optional safety step, but generally expected to match)
+        X_parts.append(X_curr)
+        y_parts.append(y_curr)
+        logger.info(f"File {fname} processed. X shape: {X_curr.shape}.")
+
+    if not X_parts:
+        logger.warning("No data resulted from processing files.")
+        return
+
+    # Concatenate all parts
+    X = pd.concat(X_parts, ignore_index=True)
+    y = pd.concat(y_parts, ignore_index=True)
+
+    logger.info(f"Total Combined Data: {X.shape[0]} rows, {X.shape[1]} columns.")
 
     # Handle block_col logic
-    if original_blocks_series is not None:
-        # Case A: block_col was in raw data -> restore/align it
-        try:
-            blocks_series = original_blocks_series.loc[X.index]
-        except Exception:
-            common = X.index.intersection(original_blocks_series.index)
-            X = X.loc[common]
-            y = y.loc[common]
-            blocks_series = original_blocks_series.loc[common]
-        X = X.copy()
-        X[block_col] = blocks_series
-    else:
-        # Case B: block_col was NOT in raw data -> must be in X (created by prepro)
-        if block_col not in X.columns:
-            raise ValueError(
-                f"block_col='{block_col}' not found in raw data AND not created by preprocessing."
-            )
-        # Ensure it's string/categorical
-        X[block_col] = X[block_col].astype(str)
+    # Handle block_col logic
+    # In multi-file/flexible mode, we require block_col to be in the final X.
+    if block_col not in X.columns:
+        raise ValueError(
+            f"block_col='{block_col}' not found in processed data. "
+            "Ensure it is present in input files or created by preprocessing."
+        )
+    X[block_col] = X[block_col].astype(str)
+
+    # Determine last_processed_file for logging/training functions
+    last_processed_file = processed_files_meta[-1][0] if processed_files_meta else None
 
     # --- Start Sequential IPIP Logic (R-like) ---
     all_blocks = _sorted_blocks(X[block_col])
@@ -658,13 +751,15 @@ def run_pipeline(
         logger.warning(f"Could not save training_history.json: {e}")
 
     # Update control file to mark this file as processed
-    if last_processed_file and last_mtime:
-        _upsert_control_entry(
-            control_dir / "control_file.txt",
-            last_processed_file,
-            last_mtime,
-            logger,
-        )
+    # We iterate over all processed files
+    for fname, mtime in processed_files_meta:
+        if fname and mtime:
+            _upsert_control_entry(
+                control_dir / "control_file.txt",
+                fname,
+                mtime,
+                logger,
+            )
 
     # Persist the final model
     _persist_model(

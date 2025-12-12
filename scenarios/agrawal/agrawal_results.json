@@ -1,0 +1,15 @@
+{
+    "scenario": "Agrawal Abrupt Drift",
+    "baseline_test": {
+        "accuracy": 1.0,
+        "f1_score": 1.0
+    },
+    "drift_dataset": {
+        "accuracy": 0.415,
+        "f1_score": 0.42084253210182476
+    },
+    "drift_impact": {
+        "accuracy_drop": 0.585,
+        "f1_drop": 0.5791574678981752
+    }
+}

@@ -158,8 +158,15 @@ if __name__ == "__main__":
         block_col=cfg.get("block_col"),
         ipip_config=cfg.get("ipip_config"),
         port=cfg.get("port"),
+        ipip_config=cfg.get("ipip_config"),
+        port=cfg.get("port"),
         persistence="none",
-        prediction_only=cfg.get("prediction_only", False)
+        prediction_only=cfg.get("prediction_only", False),
+        target_files=cfg.get("target_files"),
+        rest_preprocess_file=cfg.get("rest_preprocess_file"),
+        skip_initial_preprocessing=cfg.get("skip_initial_preprocessing", False),
+        skip_rest_preprocessing=cfg.get("skip_rest_preprocessing", False),
+        target_col=cfg.get("target_col"),
     )
 '''
     with open(runner_path, "w") as f:
@@ -392,6 +399,12 @@ def start_monitor_ipip(
     dir_predictions: Optional[str] = None,
     encoding: str = "utf-8",
     file_type: str = "csv",
+    # Flexible Preprocessing
+    target_files: Optional[list] = None,
+    rest_preprocess_file: Optional[str] = None,
+    skip_initial_preprocessing: bool = False,
+    skip_rest_preprocessing: bool = False,
+    target_col: Optional[str] = None,
 ):
     configure_root_logging(logging.INFO)
     global log
@@ -422,6 +435,11 @@ def start_monitor_ipip(
         "dir_predictions": dir_predictions,
         "encoding": encoding,
         "file_type": file_type,
+        "target_files": target_files,
+        "rest_preprocess_file": rest_preprocess_file,
+        "skip_initial_preprocessing": skip_initial_preprocessing,
+        "skip_rest_preprocessing": skip_rest_preprocessing,
+        "target_col": target_col,
     }
     runner_cfg_path = _write_runner_config(
         pipeline_name, runner_cfg_obj, pipelines_root
@@ -543,6 +561,11 @@ def start_monitor_ipip(
                 dir_predictions=dir_predictions,
                 encoding=encoding,
                 file_type=file_type,
+                target_files=target_files,
+                rest_preprocess_file=rest_preprocess_file,
+                skip_initial_preprocessing=skip_initial_preprocessing,
+                skip_rest_preprocessing=skip_rest_preprocessing,
+                target_col=target_col,
             )
             log.info(f"[PIPELINE] Pipeline finished for {file}")
         except Exception as e:

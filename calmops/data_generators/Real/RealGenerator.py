@@ -39,6 +39,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # SDV for advanced synthesis
 from sdv.single_table import CTGANSynthesizer, TVAESynthesizer, CopulaGANSynthesizer
 from sdv.metadata import SingleTableMetadata
+from sdv.sampling import Condition
 from DataSynthesizer.DataDescriber import DataDescriber
 from DataSynthesizer.DataGenerator import DataGenerator
 
@@ -264,8 +265,13 @@ class RealGenerator:
                     f"Generating {num_rows_for_val} samples for '{col_to_condition}' = '{value}'"
                 )
                 try:
-                    synth_part = self.synthesizer.sample(
-                        num_rows=num_rows_for_val, conditions={col_to_condition: value}
+                    synth_part = self.synthesizer.sample_from_conditions(
+                        conditions=[
+                            Condition(
+                                num_rows=num_rows_for_val,
+                                column_values={col_to_condition: value},
+                            )
+                        ]
                     )
                     all_synth_parts.append(synth_part)
                     remaining_samples -= len(synth_part)

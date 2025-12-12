@@ -246,7 +246,12 @@ if __name__ == "__main__":
         early_start=cfg.get("early_start", False),
         port=cfg.get("port"),
         persistence="none",  # avoid recursive PM2/Docker spawning
-        prediction_only=cfg.get("prediction_only", False)
+        prediction_only=cfg.get("prediction_only", False),
+        target_files=cfg.get("target_files"),
+        rest_preprocess_file=cfg.get("rest_preprocess_file"),
+        skip_initial_preprocessing=cfg.get("skip_initial_preprocessing", False),
+        skip_rest_preprocessing=cfg.get("skip_rest_preprocessing", False),
+        target_col=cfg.get("target_col"),
     )
 """
     with open(runner_path, "w") as f:
@@ -738,6 +743,12 @@ def start_monitor_schedule(
     persistence: str = "none",  # "none" | "pm2" | "docker"
     prediction_only: bool = False,
     dir_predictions: Optional[str] = None,
+    # Flexible Preprocessing
+    target_files: Optional[list] = None,
+    rest_preprocess_file: Optional[str] = None,
+    skip_initial_preprocessing: bool = False,
+    skip_rest_preprocessing: bool = False,
+    target_col: Optional[str] = None,
 ):
     """
     Launch comprehensive scheduled pipeline monitoring system.
@@ -802,7 +813,7 @@ def start_monitor_schedule(
     pipelines_root = get_pipelines_root()
     project_root = get_project_root()
 
-    # Always write the runner config
+    # Always write the runner config, regardless of persistence mode.
     model_spec = _model_spec_from_instance(model_instance)
     runner_cfg_obj = {
         "pipeline_name": pipeline_name,
@@ -827,6 +838,11 @@ def start_monitor_schedule(
         "monitor_type": "monitor_schedule",
         "prediction_only": prediction_only,
         "dir_predictions": dir_predictions,
+        "target_files": target_files,
+        "rest_preprocess_file": rest_preprocess_file,
+        "skip_initial_preprocessing": skip_initial_preprocessing,
+        "skip_rest_preprocessing": skip_rest_preprocessing,
+        "target_col": target_col,
     }
     runner_cfg_path = _write_runner_config(
         pipeline_name, runner_cfg_obj, pipelines_root

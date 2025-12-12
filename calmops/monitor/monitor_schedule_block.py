@@ -196,7 +196,13 @@ if __name__ == "__main__":
         blocks_eval=cfg.get("blocks_eval"),
         split_within_blocks=cfg.get("split_within_blocks"),
         train_percentage=cfg.get("train_percentage"),
-        fallback_strategy=cfg.get("fallback_strategy")
+        fallback_strategy=cfg.get("fallback_strategy"),
+        dir_predictions=cfg.get("dir_predictions"),
+        target_files=cfg.get("target_files"),
+        rest_preprocess_file=cfg.get("rest_preprocess_file"),
+        skip_initial_preprocessing=cfg.get("skip_initial_preprocessing", False),
+        skip_rest_preprocessing=cfg.get("skip_rest_preprocessing", False),
+        target_col=cfg.get("target_col"),
     )
 '''
     with open(runner_path, "w") as f:
@@ -563,6 +569,12 @@ def start_monitor_schedule_block(
     train_percentage: float = 0.8,
     fallback_strategy: str = "global",
     dir_predictions: Optional[str] = None,
+    # Flexible Preprocessing
+    target_files: Optional[list] = None,
+    rest_preprocess_file: Optional[str] = None,
+    skip_initial_preprocessing: bool = False,
+    skip_rest_preprocessing: bool = False,
+    target_col: Optional[str] = None,
 ):
     """
     Scheduled system by BLOCKS:
@@ -614,6 +626,11 @@ def start_monitor_schedule_block(
         "fallback_strategy": fallback_strategy,
         "monitor_type": "monitor_schedule_block",
         "dir_predictions": dir_predictions,
+        "target_files": target_files,
+        "rest_preprocess_file": rest_preprocess_file,
+        "skip_initial_preprocessing": skip_initial_preprocessing,
+        "skip_rest_preprocessing": skip_rest_preprocessing,
+        "target_col": target_col,
     }
     runner_cfg_path = _write_runner_config(
         pipeline_name, runner_cfg_obj, pipelines_root
@@ -726,6 +743,11 @@ def start_monitor_schedule_block(
                 train_percentage=train_percentage,
                 fallback_strategy=fallback_strategy,
                 dir_predictions=dir_predictions,
+                target_files=target_files,
+                rest_preprocess_file=rest_preprocess_file,
+                skip_initial_preprocessing=skip_initial_preprocessing,
+                skip_rest_preprocessing=skip_rest_preprocessing,
+                target_col=target_col,
             )
             log.info(f"[PIPELINE] (blocks) Completed for {file}")
         except Exception as e:
