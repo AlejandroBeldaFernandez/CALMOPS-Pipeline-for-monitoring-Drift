@@ -25,23 +25,15 @@ import logging
 import pandas as pd
 import numpy as np
 import warnings
-from typing import Optional, Dict, Union, Any
+from typing import Optional, Dict, Union, Any, List
 from datetime import datetime
 import os
 import math
 import tempfile
 
-# Suppress common warnings for cleaner output
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-# SDV for advanced synthesis
-from sdv.single_table import CTGANSynthesizer, TVAESynthesizer, CopulaGANSynthesizer
-from sdv.metadata import SingleTableMetadata
-from sdv.sampling import Condition
-from DataSynthesizer.DataDescriber import DataDescriber
-from DataSynthesizer.DataGenerator import DataGenerator
+# SDV and DataSynthesizer imports are now lazy-loaded
+
 
 # Model imports
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
@@ -54,15 +46,14 @@ import lightgbm as lgb
 
 # Custom logger and reporter
 from calmops.logger.logger import get_logger
-from data_generators.Real.RealReporter import RealReporter
+from calmops.data_generators.Real.RealReporter import RealReporter
+from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
+from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
 
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
-
-
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-
-tf.get_logger().setLevel("ERROR")
+# Suppress common warnings for cleaner output
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
 class RealGenerator:
@@ -159,17 +150,34 @@ class RealGenerator:
                 f"Unknown synthesis method '{self.method}'. Valid methods are: {valid_methods}"
             )
 
-    def _build_metadata(self, data: pd.DataFrame) -> SingleTableMetadata:
+    def _build_metadata(self, data: pd.DataFrame):
         """Builds SDV metadata from a DataFrame."""
         self.logger.info("Building SDV metadata...")
+        try:
+            from sdv.metadata import SingleTableMetadata
+        except ImportError:
+            raise ImportError(
+                "The 'sdv' library is required for this method. Please install it using 'pip install sdv'."
+            )
         metadata = SingleTableMetadata()
         metadata.detect_from_dataframe(data)
         return metadata
 
     def _get_synthesizer(
         self,
-    ) -> Union[CTGANSynthesizer, TVAESynthesizer, CopulaGANSynthesizer]:
+    ):
         """Initializes and returns the appropriate SDV synthesizer based on the method."""
+        try:
+            from sdv.single_table import (
+                CTGANSynthesizer,
+                TVAESynthesizer,
+                CopulaGANSynthesizer,
+            )
+        except ImportError:
+            raise ImportError(
+                "The 'sdv' library is required for deep learning methods. Please install it using 'pip install sdv'."
+            )
+
         self.metadata = self._build_metadata(self.original_data)
         if self.method == "ctgan":
             return CTGANSynthesizer(
@@ -265,6 +273,8 @@ class RealGenerator:
                     f"Generating {num_rows_for_val} samples for '{col_to_condition}' = '{value}'"
                 )
                 try:
+                    from sdv.sampling import Condition
+
                     synth_part = self.synthesizer.sample_from_conditions(
                         conditions=[
                             Condition(
@@ -380,6 +390,192 @@ class RealGenerator:
             synth[col_to_condition] = new_values[:n_synth_samples]
         return synth
 
+    def _synthesize_fcs_generic(
+        self,
+        data: pd.DataFrame,
+        n_samples: int,
+        custom_distributions: Optional[Dict],
+        model_factory_func,
+        method_name: str,
+        iterations: int,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Generic helper for Fully Conditional Specification (FCS) synthesis.
+
+        Args:
+            data: Original dataframe.
+            n_samples: Number of samples to generate.
+            custom_distributions: Optional customs distribution dict.
+            model_factory_func: Callable(is_classification: bool, model_params: dict) -> model instance.
+            method_name: Name of the method for logging.
+            iterations: Number of FCS iterations.
+        """
+        self.logger.info(f"Starting {method_name} (FCS-style) synthesis...")
+
+        if custom_distributions:
+            self.logger.warning(
+                f"For '{method_name}' method, custom distributions are handled by resampling the training data."
+            )
+
+        # Prepare initial synthetic data (bootstrap)
+        X_real = data.copy()
+
+        # Ensure object columns are category for consistency
+        for col in X_real.select_dtypes(include=["object"]).columns:
+            X_real[col] = X_real[col].astype("category")
+
+        # Initial random sample
+        # OPTIMIZATION: Instead of pure random sample (which might miss rare categories),
+        # we repeat the original dataset as many times as possible, then sample the rest.
+        n_real = len(X_real)
+        if n_samples > n_real:
+            n_repeats = n_samples // n_real
+            remainder = n_samples % n_real
+            X_synth_list = [X_real] * n_repeats
+            if remainder > 0:
+                X_synth_list.append(
+                    X_real.sample(
+                        n=remainder, replace=False, random_state=self.random_state
+                    )
+                )
+            X_synth = pd.concat(X_synth_list, ignore_index=True)
+            # Shuffle to break order
+            X_synth = X_synth.sample(
+                frac=1, random_state=self.random_state
+            ).reset_index(drop=True)
+        else:
+            # If we need fewer samples than real data, standard sample is fine (or could be stratified)
+            X_synth = X_real.sample(
+                n=n_samples, replace=True, random_state=self.random_state
+            ).reset_index(drop=True)
+
+        # Align categories for LGBM/Categorical handling
+        cat_cols = X_real.select_dtypes(include="category").columns
+        for col in cat_cols:
+            if X_real[col].dtype.name == "category":
+                X_synth[col] = pd.Categorical(
+                    X_synth[col], categories=X_real[col].cat.categories
+                )
+
+        try:
+            for it in range(iterations):
+                self.logger.info(f"{method_name} iteration {it + 1}/{iterations}")
+                for col in X_real.columns:
+                    y_real_train = X_real[col]
+                    Xr_real_train = X_real.drop(columns=col)
+                    Xs_synth = X_synth.drop(columns=col)
+
+                    # Determine task type
+                    is_classification = False
+                    if not pd.api.types.is_numeric_dtype(y_real_train):
+                        is_classification = True
+                    # Heuristic for low-cardinality numeric targets (treat as class)
+                    elif col == self.target_column:
+                        unique_values = y_real_train.nunique()
+                        if (
+                            unique_values < 25
+                            or (unique_values / len(y_real_train)) < 0.05
+                        ):
+                            is_classification = True
+
+                    # Model instantiation via factory
+                    model = model_factory_func(is_classification)
+
+                    # Prepare training data (potentially applying custom distributions)
+                    y_to_fit, X_to_fit = (y_real_train, Xr_real_train)
+                    if custom_distributions and col in custom_distributions:
+                        X_to_fit, y_to_fit = self._apply_resampling_strategy(
+                            Xr_real_train,
+                            y_real_train,
+                            custom_distributions[col],
+                            n_samples,
+                        )
+
+                    # Encode categorical features for sklearn-based models (CART/RF)
+                    # LGBM handles categories natively, but generic sklearn trees do not.
+                    # We check if the model is LGBM-like by class name string check or attribute.
+                    is_lgbm = "LGBM" in model.__class__.__name__
+
+                    if not is_lgbm:
+                        # Sklearn encoding
+                        X_to_fit = X_to_fit.copy()
+                        Xs_synth_input = Xs_synth.copy()
+                        for c in X_to_fit.select_dtypes(include=["category"]).columns:
+                            # Ensure X_to_fit is definitely category (redundant safety)
+                            if not isinstance(X_to_fit[c].dtype, pd.CategoricalDtype):
+                                X_to_fit[c] = X_to_fit[c].astype("category")
+
+                            # Ensure Xs_synth_input is cast to the SAME categories before encoding
+                            # This fixes the AttributeError: Can only use .cat accessor...
+                            try:
+                                # Re-cast to match training categories exactly
+                                Xs_synth_input[c] = Xs_synth_input[c].astype(
+                                    X_to_fit[c].dtype
+                                )
+                            except Exception:
+                                # Fallback: if categories don't match, force conversion
+                                Xs_synth_input[c] = pd.Categorical(
+                                    Xs_synth_input[c],
+                                    categories=X_to_fit[c].cat.categories,
+                                )
+
+                            # Now safe to encode
+                            X_to_fit[c] = X_to_fit[c].cat.codes
+                            Xs_synth_input[c] = Xs_synth_input[c].cat.codes
+                    else:
+                        # LGBM input
+                        Xs_synth_input = Xs_synth
+
+                    try:
+                        model.fit(X_to_fit, y_to_fit)
+                    except ValueError as e:
+                        if "Input contains NaN" in str(e):
+                            raise ValueError(
+                                f"The '{method_name}' method failed due to NaNs. Please pre-clean data."
+                            ) from e
+                        raise e
+
+                    y_synth_pred = model.predict(Xs_synth_input)
+
+                    # Restore categorical type if needed
+                    if y_real_train.dtype.name == "category":
+                        y_synth_pred = pd.Categorical(
+                            y_synth_pred, categories=y_real_train.cat.categories
+                        )
+
+                    X_synth[col] = y_synth_pred
+            return X_synth
+        except Exception as e:
+            self.logger.error(f"{method_name} synthesis failed: {e}", exc_info=True)
+            return None
+
+    def _synthesize_cart(
+        self,
+        data: pd.DataFrame,
+        n_samples: int,
+        custom_distributions: Optional[Dict] = None,
+    ) -> pd.DataFrame:
+        """Synthesizes data using a Fully Conditional Specification (FCS) approach with Decision Trees."""
+
+        def model_factory(is_classification):
+            model_params = {"random_state": self.random_state}
+            if self.cart_min_samples_leaf is not None:
+                model_params["min_samples_leaf"] = self.cart_min_samples_leaf
+            return (
+                DecisionTreeClassifier(**model_params)
+                if is_classification
+                else DecisionTreeRegressor(**model_params)
+            )
+
+        return self._synthesize_fcs_generic(
+            data,
+            n_samples,
+            custom_distributions,
+            model_factory,
+            "CART",
+            self.cart_iterations,
+        )
+
     def _apply_resampling_strategy(self, X, y, custom_dist, n_samples):
         """Applies over/under-sampling to match a custom distribution before model training."""
         try:
@@ -436,80 +632,25 @@ class RealGenerator:
         custom_distributions: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with Decision Trees."""
-        self.logger.info("Starting CART (FCS-style) synthesis...")
-        if custom_distributions:
-            self.logger.warning(
-                "For 'cart' method, custom distributions are handled by resampling the training data."
+
+        def model_factory(is_classification):
+            model_params = {"random_state": self.random_state}
+            if self.cart_min_samples_leaf is not None:
+                model_params["min_samples_leaf"] = self.cart_min_samples_leaf
+            return (
+                DecisionTreeClassifier(**model_params)
+                if is_classification
+                else DecisionTreeRegressor(**model_params)
             )
-        X_real = data.copy()
-        for col in X_real.select_dtypes(include=["object"]).columns:
-            X_real[col] = X_real[col].astype("category")
-        # Sample with replacement and reset index immediately to prevent issues with duplicate indices.
-        X_synth = X_real.sample(
-            n=n_samples, replace=True, random_state=self.random_state
-        ).reset_index(drop=True)
-        try:
-            for it in range(self.cart_iterations):
-                self.logger.info("CART iteration %d/%d", it + 1, self.cart_iterations)
-                for col in X_real.columns:
-                    y_real_train = X_real[col]
-                    Xr_real_train = X_real.drop(columns=col)
-                    Xs_synth = X_synth.drop(columns=col)
 
-                    # Determine if the column should be treated as a classification target
-                    is_classification = False
-                    if not pd.api.types.is_numeric_dtype(y_real_train):
-                        is_classification = True
-                    # Special heuristic for the main target column
-                    elif col == self.target_column:
-                        unique_values = y_real_train.nunique()
-                        if (
-                            unique_values < 25
-                            or (unique_values / len(y_real_train)) < 0.05
-                        ):
-                            is_classification = True
-
-                    model_params = {"random_state": self.random_state}
-                    if self.cart_min_samples_leaf is not None:
-                        model_params["min_samples_leaf"] = self.cart_min_samples_leaf
-
-                    model = (
-                        DecisionTreeClassifier(**model_params)
-                        if is_classification
-                        else DecisionTreeRegressor(**model_params)
-                    )
-
-                    y_to_fit, X_to_fit = (y_real_train, Xr_real_train)
-                    if custom_distributions and col in custom_distributions:
-                        X_to_fit, y_to_fit = self._apply_resampling_strategy(
-                            Xr_real_train,
-                            y_real_train,
-                            custom_distributions[col],
-                            n_samples,
-                        )
-
-                    # Encode categorical features for sklearn
-                    X_to_fit = X_to_fit.copy()
-                    Xs_synth_encoded = Xs_synth.copy()
-                    for c in X_to_fit.select_dtypes(include=["category"]).columns:
-                        X_to_fit[c] = X_to_fit[c].cat.codes
-                        Xs_synth_encoded[c] = Xs_synth_encoded[c].cat.codes
-
-                    try:
-                        model.fit(X_to_fit, y_to_fit)
-                    except ValueError as e:
-                        if "Input contains NaN" in str(e):
-                            raise ValueError(
-                                f"The '{self.method}' method failed due to NaNs. Please pre-clean data."
-                            ) from e
-                        else:
-                            raise e
-                    y_synth = model.predict(Xs_synth_encoded)
-                    X_synth[col] = y_synth
-            return X_synth
-        except Exception as e:
-            self.logger.error(f"CART synthesis failed: {e}", exc_info=True)
-            return None
+        return self._synthesize_fcs_generic(
+            data,
+            n_samples,
+            custom_distributions,
+            model_factory,
+            "CART",
+            self.cart_iterations,
+        )
 
     def _synthesize_rf(
         self,
@@ -518,81 +659,27 @@ class RealGenerator:
         custom_distributions: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with Random Forests."""
-        self.logger.info("Starting Random Forest (FCS-style) synthesis...")
-        if custom_distributions:
-            self.logger.warning(
-                "For 'rf' method, custom distributions are handled by resampling the training data."
+
+        def model_factory(is_classification):
+            model_params = {"random_state": self.random_state, "n_jobs": 1}
+            if self.rf_n_estimators is not None:
+                model_params["n_estimators"] = self.rf_n_estimators
+            if self.rf_min_samples_leaf is not None:
+                model_params["min_samples_leaf"] = self.rf_min_samples_leaf
+            return (
+                RandomForestClassifier(**model_params)
+                if is_classification
+                else RandomForestRegressor(**model_params)
             )
-        X_real = data.copy()
-        for col in X_real.select_dtypes(include=["object"]).columns:
-            X_real[col] = X_real[col].astype("category")
-        # Sample with replacement and reset index immediately to prevent issues with duplicate indices.
-        X_synth = X_real.sample(
-            n=n_samples, replace=True, random_state=self.random_state
-        ).reset_index(drop=True)
-        try:
-            for it in range(self.cart_iterations):
-                self.logger.info("RF iteration %d/%d", it + 1, self.cart_iterations)
-                for col in X_real.columns:
-                    y_real_train = X_real[col]
-                    Xr_real_train = X_real.drop(columns=col)
-                    Xs_synth = X_synth.drop(columns=col)
 
-                    # Determine if the column should be treated as a classification target
-                    is_classification = False
-                    if not pd.api.types.is_numeric_dtype(y_real_train):
-                        is_classification = True
-                    # Special heuristic for the main target column
-                    elif col == self.target_column:
-                        unique_values = y_real_train.nunique()
-                        if (
-                            unique_values < 25
-                            or (unique_values / len(y_real_train)) < 0.05
-                        ):
-                            is_classification = True
-
-                    model_params = {"random_state": self.random_state, "n_jobs": 1}
-                    if self.rf_n_estimators is not None:
-                        model_params["n_estimators"] = self.rf_n_estimators
-                    if self.rf_min_samples_leaf is not None:
-                        model_params["min_samples_leaf"] = self.rf_min_samples_leaf
-
-                    if is_classification:
-                        model = RandomForestClassifier(**model_params)
-                    else:
-                        model = RandomForestRegressor(**model_params)
-
-                    y_to_fit, X_to_fit = (y_real_train, Xr_real_train)
-                    if custom_distributions and col in custom_distributions:
-                        X_to_fit, y_to_fit = self._apply_resampling_strategy(
-                            Xr_real_train,
-                            y_real_train,
-                            custom_distributions[col],
-                            n_samples,
-                        )
-
-                    # Encode categorical features for sklearn
-                    X_to_fit = X_to_fit.copy()
-                    Xs_synth_encoded = Xs_synth.copy()
-                    for c in X_to_fit.select_dtypes(include=["category"]).columns:
-                        X_to_fit[c] = X_to_fit[c].cat.codes
-                        Xs_synth_encoded[c] = Xs_synth_encoded[c].cat.codes
-
-                    try:
-                        model.fit(X_to_fit, y_to_fit)
-                    except ValueError as e:
-                        if "Input contains NaN" in str(e):
-                            raise ValueError(
-                                f"The '{self.method}' method failed due to NaNs. Please pre-clean data."
-                            ) from e
-                        else:
-                            raise e
-                    y_synth = model.predict(Xs_synth_encoded)
-                    X_synth[col] = y_synth
-            return X_synth
-        except Exception as e:
-            self.logger.error(f"RF synthesis failed: {e}", exc_info=True)
-            return None
+        return self._synthesize_fcs_generic(
+            data,
+            n_samples,
+            custom_distributions,
+            model_factory,
+            "RF",
+            self.cart_iterations,
+        )
 
     def _synthesize_lgbm(
         self,
@@ -601,87 +688,31 @@ class RealGenerator:
         custom_distributions: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with LightGBM."""
-        self.logger.info("Starting LightGBM (FCS-style) synthesis...")
-        if custom_distributions:
-            self.logger.warning(
-                "For 'lgbm' method, custom distributions are handled by resampling the training data."
+
+        def model_factory(is_classification):
+            model_params = {
+                "random_state": self.random_state,
+                "n_jobs": 1,
+                "verbose": -1,
+            }
+            if self.lgbm_n_estimators is not None:
+                model_params["n_estimators"] = self.lgbm_n_estimators
+            if self.lgbm_learning_rate is not None:
+                model_params["learning_rate"] = self.lgbm_learning_rate
+            return (
+                lgb.LGBMClassifier(**model_params)
+                if is_classification
+                else lgb.LGBMRegressor(**model_params)
             )
-        X_real = data.copy()
-        # Sample with replacement and reset index immediately to prevent issues with duplicate indices.
-        X_synth = X_real.sample(
-            n=n_samples, replace=True, random_state=self.random_state
-        ).reset_index(drop=True)
 
-        # Ensure categorical columns have the same categories defined.
-        cat_cols = X_real.select_dtypes(include="category").columns
-        for col in cat_cols:
-            X_synth[col] = pd.Categorical(
-                X_synth[col], categories=X_real[col].cat.categories
-            )
-
-        try:
-            for it in range(self.cart_iterations):
-                self.logger.info("LGBM iteration %d/%d", it + 1, self.cart_iterations)
-                for col in X_real.columns:
-                    y_real_train = X_real[col]
-                    Xr_real_train = X_real.drop(columns=col)
-                    Xs_synth = X_synth.drop(columns=col)
-
-                    # Determine if the column should be treated as a classification target
-                    is_classification = False
-                    if not pd.api.types.is_numeric_dtype(y_real_train):
-                        is_classification = True
-                    # Special heuristic for the main target column
-                    elif col == self.target_column:
-                        unique_values = y_real_train.nunique()
-                        if (
-                            unique_values < 25
-                            or (unique_values / len(y_real_train)) < 0.05
-                        ):
-                            is_classification = True
-
-                    model_params = {
-                        "random_state": self.random_state,
-                        "n_jobs": 1,
-                        "verbose": -1,
-                    }
-                    if self.lgbm_n_estimators is not None:
-                        model_params["n_estimators"] = self.lgbm_n_estimators
-                    if self.lgbm_learning_rate is not None:
-                        model_params["learning_rate"] = self.lgbm_learning_rate
-
-                    if is_classification:
-                        model = lgb.LGBMClassifier(**model_params)
-                    else:
-                        model = lgb.LGBMRegressor(**model_params)
-
-                    y_to_fit, X_to_fit = (y_real_train, Xr_real_train)
-                    if custom_distributions and col in custom_distributions:
-                        X_to_fit, y_to_fit = self._apply_resampling_strategy(
-                            Xr_real_train,
-                            y_real_train,
-                            custom_distributions[col],
-                            n_samples,
-                        )
-                    try:
-                        model.fit(X_to_fit, y_to_fit)
-                    except ValueError as e:
-                        if "Input contains NaN" in str(e):
-                            raise ValueError(
-                                f"The '{self.method}' method failed due to NaNs. Please pre-clean data."
-                            ) from e
-                        else:
-                            raise e
-                    y_synth = model.predict(Xs_synth)
-                    if y_real_train.dtype.name == "category":
-                        y_synth = pd.Categorical(
-                            y_synth, categories=y_real_train.cat.categories
-                        )
-                    X_synth[col] = y_synth
-            return X_synth
-        except Exception as e:
-            self.logger.error(f"LGBM synthesis failed: {e}", exc_info=True)
-            return None
+        return self._synthesize_fcs_generic(
+            data,
+            n_samples,
+            custom_distributions,
+            model_factory,
+            "LGBM",
+            self.cart_iterations,
+        )
 
     def _synthesize_datasynth(
         self, n_samples: int, custom_distributions: Optional[Dict] = None
@@ -699,6 +730,14 @@ class RealGenerator:
             temp_description_file = os.path.join(temp_dir, "description.json")
 
             try:
+                # Lazy import DataSynthesizer
+                try:
+                    from DataSynthesizer.DataDescriber import DataDescriber
+                    from DataSynthesizer.DataGenerator import DataGenerator
+                except ImportError:
+                    raise ImportError(
+                        "The 'DataSynthesizer' library is required for this method. Please install it."
+                    )
                 # Save the original data to the secure temporary location.
                 self.original_data.to_csv(temp_csv_path, index=False)
 
@@ -812,6 +851,8 @@ class RealGenerator:
         date_step: Optional[Dict[str, int]] = None,
         date_col: str = "timestamp",
         save_dataset: bool = False,
+        drift_injection_config: Optional[List[Dict]] = None,
+        dynamics_config: Optional[Dict] = None,
     ) -> Optional[pd.DataFrame]:
         """
         The main public method to generate synthetic data.
@@ -825,6 +866,8 @@ class RealGenerator:
             date_step (Optional[Dict[str, int]]): The time step for date injection (e.g., {'days': 1}).
             date_col (str): The name of the date column to be injected.
             save_dataset (bool): If True, saves the generated dataset to a CSV file.
+            drift_injection_config (Optional[List[Dict]]): List of drift injection configurations.
+            dynamics_config (Optional[Dict]): Configuration for dynamics injection (feature evolution, target construction).
 
         Returns:
             Optional[pd.DataFrame]: The generated synthetic DataFrame, or None if synthesis fails.
@@ -891,13 +934,91 @@ class RealGenerator:
 
             if synth is not None:
                 self.logger.info(f"Successfully synthesized {len(synth)} samples.")
-                synth = self._inject_dates(
-                    df=synth,
-                    date_col=date_col,
-                    date_start=date_start,
-                    date_every=date_every,
-                    date_step=date_step,
-                )
+
+                # --- Dynamics Injection (Feature Evolution & Target Construction) ---
+                if dynamics_config:
+                    self.logger.info("Applying dynamics injection...")
+                    # Initialize dynamics injector
+                    dyn_injector = DynamicsInjector(seed=self.random_state)
+
+                    # Evolve Features
+                    if "evolve_features" in dynamics_config:
+                        self.logger.info("Evolving features (Dynamics)...")
+                        # Try to handle time_col if available, else standard
+                        evolve_args = dynamics_config["evolve_features"]
+                        # We can try to use date_col if it exists and has been injected already?
+                        # NOTE: date injection happens *after* this in the original code, but we might want it *before*
+                        # if evolution depends on time.
+                        # Let's inject dates FIRST if we want time-dependent evolution.
+
+                        # Inject dates early for dynamics
+                        synth = self._inject_dates(
+                            df=synth,
+                            date_col=date_col,
+                            date_start=date_start,
+                            date_every=date_every,
+                            date_step=date_step,
+                        )
+
+                        synth = dyn_injector.evolve_features(
+                            synth, time_col=date_col, **evolve_args
+                        )
+
+                    # Construct/Overwrite Target
+                    if "construct_target" in dynamics_config:
+                        self.logger.info("Constructing dynamic target (Dynamics)...")
+                        target_args = dynamics_config["construct_target"]
+                        synth = dyn_injector.construct_target(synth, **target_args)
+                else:
+                    # If no dynamics that require time, we inject dates here as usual
+                    synth = self._inject_dates(
+                        df=synth,
+                        date_col=date_col,
+                        date_start=date_start,
+                        date_every=date_every,
+                        date_step=date_step,
+                    )
+
+                # --- Drift Injection ---
+                if drift_injection_config:
+                    self.logger.info("Applying drift injection...")
+                    drift_injector = DriftInjector(
+                        original_df=synth,  # We drift the synthetic data
+                        output_dir=output_dir,
+                        generator_name=f"{self.method}_drifted",
+                        target_column=self.target_column,
+                        block_column=self.block_column,
+                        time_col=date_col,
+                        random_state=self.random_state,
+                    )
+
+                    for drift_conf in drift_injection_config:
+                        method_name = drift_conf.get("method")
+                        params = drift_conf.get("params", {})
+
+                        if hasattr(drift_injector, method_name):
+                            self.logger.info(f"Injecting drift: {method_name}")
+                            drift_method = getattr(drift_injector, method_name)
+                            try:
+                                # Most DriftInjector methods return the modified DF
+                                # We check if 'df' is in params, injecting it if needed.
+                                if "df" not in params:
+                                    params["df"] = synth
+
+                                res = drift_method(**params)
+                                # Update synth if result is dataframe
+                                if isinstance(res, pd.DataFrame):
+                                    synth = res
+                            except Exception as e:
+                                self.logger.error(
+                                    f"Failed to apply drift {method_name}: {e}"
+                                )
+                                raise e
+                        else:
+                            self.logger.warning(
+                                f"Drift method '{method_name}' not found in DriftInjector."
+                            )
+
                 if self.auto_report:
                     self.reporter.generate_comprehensive_report(
                         real_df=self.original_data,

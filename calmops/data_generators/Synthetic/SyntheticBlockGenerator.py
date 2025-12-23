@@ -5,17 +5,16 @@ from collections import defaultdict
 from .SyntheticReporter import SyntheticReporter
 from .GeneratorFactory import GeneratorFactory, GeneratorType, GeneratorConfig
 from .SyntheticGenerator import SyntheticGenerator
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-import tensorflow as tf
+from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
+from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
+from typing import List, Dict, Optional, Union
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-
-tf.get_logger().setLevel('ERROR')
 # Suppress common warnings for cleaner output
-warnings.filterwarnings('ignore', category=UserWarning)
-warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 
 class SyntheticBlockGenerator:
     """
@@ -34,21 +33,26 @@ class SyntheticBlockGenerator:
     - **Timestamp Alignment**: Can automatically add a timestamp column that aligns with the block structure.
     - **Integrated Reporting**: Generates a comprehensive report for the final block-structured dataset.
     """
-    def generate_blocks_simple(self,
-                           output_path: str,
-                           filename: str,
-                           n_blocks: int,
-                           total_samples: int,
-                           methods,
-                           method_params=None,
-                           instances_per_block=None,
-                           target_col="target",
-                           balance: bool = False,
-                           random_state: int = None,
-                           date_start: str = None,
-                           date_step: dict = None,
-                           date_col: str = "timestamp",
-                           generate_report: bool = True):
+
+    def generate_blocks_simple(
+        self,
+        output_path: str,
+        filename: str,
+        n_blocks: int,
+        total_samples: int,
+        methods,
+        method_params=None,
+        instances_per_block=None,
+        target_col="target",
+        balance: bool = False,
+        random_state: int = None,
+        date_start: str = None,
+        date_step: dict = None,
+        date_col: str = "timestamp",
+        generate_report: bool = True,
+        drift_injection_config: Optional[List[Dict]] = None,
+        dynamics_config: Optional[Dict] = None,
+    ):
         """
         A simplified interface for generating block-structured datasets using string-based method names.
 
@@ -69,7 +73,7 @@ class SyntheticBlockGenerator:
             date_col (str): Name of the timestamp column.
         """
         os.makedirs(output_path, exist_ok=True)
-        
+
         method_mapping = {
             "sea": GeneratorType.SEA,
             "agrawal": GeneratorType.AGRAWAL,
@@ -79,37 +83,43 @@ class SyntheticBlockGenerator:
             "random_tree": GeneratorType.RANDOM_TREE,
             "mixed": GeneratorType.MIXED,
             "friedman": GeneratorType.FRIEDMAN,
-            "random_rbf": GeneratorType.RANDOM_RBF
+            "random_rbf": GeneratorType.RANDOM_RBF,
         }
-        
+
         methods = self._ensure_list(methods, n_blocks)
         if len(set(methods)) > 1:
-            raise ValueError("All blocks must use the same generator type. Multiple methods found.")
-        
+            raise ValueError(
+                "All blocks must use the same generator type. Multiple methods found."
+            )
+
         if methods[0] not in method_mapping:
-            raise ValueError(f"Invalid method '{methods[0]}'. Choose one of {list(method_mapping.keys())}")
-        
+            raise ValueError(
+                f"Invalid method '{methods[0]}'. Choose one of {list(method_mapping.keys())}"
+            )
+
         method_params = self._ensure_list(method_params or {}, n_blocks)
-        
+
         if instances_per_block is None:
             base_samples = total_samples // n_blocks
             instances_per_block = [base_samples] * n_blocks
             instances_per_block[-1] += total_samples % n_blocks
         else:
             instances_per_block = self._ensure_list(instances_per_block, n_blocks)
-        
+
         factory = GeneratorFactory()
         generators = []
-        
+
         for i, params in enumerate(method_params):
             config_params = params.copy()
             if random_state is not None:
-                config_params['random_state'] = random_state + i
-            
+                config_params["random_state"] = random_state + i
+
             config = GeneratorConfig(**config_params)
-            generator_instance = factory.create_generator(method_mapping[methods[0]], config)
+            generator_instance = factory.create_generator(
+                method_mapping[methods[0]], config
+            )
             generators.append(generator_instance)
-        
+
         return self.generate_blocks(
             output_path=output_path,
             filename=filename,
@@ -122,7 +132,9 @@ class SyntheticBlockGenerator:
             date_start=date_start,
             date_step=date_step,
             date_col=date_col,
-            generate_report=generate_report
+            generate_report=generate_report,
+            drift_injection_config=drift_injection_config,
+            dynamics_config=dynamics_config,
         )
 
     def _ensure_list(self, value, n_blocks):
@@ -133,25 +145,29 @@ class SyntheticBlockGenerator:
             elif len(value) == n_blocks:
                 return value
             else:
-                raise ValueError(f"List length {len(value)} does not match n_blocks={n_blocks}.")
+                raise ValueError(
+                    f"List length {len(value)} does not match n_blocks={n_blocks}."
+                )
         else:
             return [value] * n_blocks
 
     def generate_blocks(
-            self,
-            output_path: str,
-            filename: str,
-            n_blocks: int,
-            total_samples: int,
-            instances_per_block,
-            generators,
-            target_col="target",
-            balance: bool = False,
-            date_start: str = None,
-            date_step: dict = None,
-            date_col: str = "timestamp",
-            generate_report: bool = True
-        ) -> str:
+        self,
+        output_path: str,
+        filename: str,
+        n_blocks: int,
+        total_samples: int,
+        instances_per_block,
+        generators,
+        target_col="target",
+        balance: bool = False,
+        date_start: str = None,
+        date_step: dict = None,
+        date_col: str = "timestamp",
+        generate_report: bool = True,
+        drift_injection_config: Optional[List[Dict]] = None,
+        dynamics_config: Optional[Dict] = None,
+    ) -> str:
         """
         Generates a block-structured dataset from a list of instantiated River generators.
 
@@ -180,11 +196,12 @@ class SyntheticBlockGenerator:
 
         if sum(instances_per_block) != total_samples:
             raise ValueError(
-                f"Total samples ({total_samples}) must equal the sum of instances per block ({sum(instances_per_block)})")
+                f"Total samples ({total_samples}) must equal the sum of instances per block ({sum(instances_per_block)})"
+            )
 
         os.makedirs(output_path, exist_ok=True)
         full_path = os.path.join(output_path, filename)
-        
+
         block_dates = None
         if date_start:
             start_ts = pd.to_datetime(date_start)
@@ -197,25 +214,67 @@ class SyntheticBlockGenerator:
         for i in range(n_blocks):
             gen = generators[i]
             n_samples_block = instances_per_block[i]
-            
+
             block_df = synthetic_generator.generate(
                 generator_instance=gen,
                 metadata_generator_instance=gen,
                 output_path=output_path,
-                filename=f"block_{i+1}.csv",
+                filename=f"block_{i + 1}.csv",
                 n_samples=n_samples_block,
                 target_col=target_col,
                 balance=balance,
                 date_start=block_dates[i].isoformat() if block_dates else None,
-                date_every=n_samples_block, # Assign the same date to the whole block
+                date_every=n_samples_block,  # Assign the same date to the whole block
                 date_col=date_col,
                 save_dataset=False,
-                generate_report=False
+                generate_report=False,
             )
             block_df["block"] = i + 1
             all_data.append(block_df)
 
         df = pd.concat(all_data, ignore_index=True)
+
+        # --- Dynamics Injection ---
+        if dynamics_config:
+            # Create a simple logger for fallback if needed, or use print?
+            # The class doesn't have a logger instantiated. It uses tf.get_logger and setLevel.
+            # I'll use warnings or just proceed. SyntheticGenerator has a logger.
+            # I will instantiate DynamicsInjector
+            injector = DynamicsInjector()
+            if "evolve_features" in dynamics_config:
+                evolve_args = dynamics_config["evolve_features"]
+                df = injector.evolve_features(df, time_col=date_col, **evolve_args)
+            if "construct_target" in dynamics_config:
+                target_args = dynamics_config["construct_target"]
+                df = injector.construct_target(df, **target_args)
+
+        # --- Drift Injection ---
+        if drift_injection_config:
+            injector = DriftInjector(
+                original_df=df,
+                output_dir=output_path,
+                generator_name="SyntheticBlockGenerator_Drifted",
+                target_column=target_col,
+                block_column="block",
+                time_col=date_col,
+            )
+            for drift_conf in drift_injection_config:
+                method_name = drift_conf.get("method")
+                params = drift_conf.get("params", {})
+                if hasattr(injector, method_name):
+                    drift_method = getattr(injector, method_name)
+                    try:
+                        if "df" not in params:
+                            params["df"] = df
+                        res = drift_method(**params)
+                        if isinstance(res, pd.DataFrame):
+                            df = res
+                    except Exception as e:
+                        print(f"Failed to apply drift {method_name}: {e}")
+                        raise e
+                else:
+                    print(f"Drift method '{method_name}' not found.")
+
         df.to_csv(full_path, index=False)
 
         print(f"Generated {total_samples} samples in {n_blocks} blocks at: {full_path}")
@@ -228,7 +287,7 @@ class SyntheticBlockGenerator:
                 output_dir=output_path,
                 target_column=target_col,
                 block_column="block",
-                time_col=date_col
+                time_col=date_col,
             )
 
         return full_path

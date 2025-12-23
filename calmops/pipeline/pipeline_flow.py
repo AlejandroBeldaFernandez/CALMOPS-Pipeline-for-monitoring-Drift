@@ -25,6 +25,7 @@ from sklearn.model_selection import train_test_split
 
 from calmops.logger.logger import PipelineLogger
 from calmops.utils import get_pipelines_root
+from calmops.utils.HistoryManager import HistoryManager
 from calmops.Detector.drift_detector import DriftDetector
 from .modules.data_loader import data_loader
 from .modules.check_drift import check_drift
@@ -320,6 +321,7 @@ def run_pipeline(
     dir_predictions: Optional[str] = None,
     encoding: str = "utf-8",
     file_type: str = "csv",
+    max_history_size: int = 5,
 ):
     """
     Execute the complete ML pipeline with champion/challenger promotion and circuit breaker protection.
@@ -936,5 +938,57 @@ def run_pipeline(
 
         # Re-raise to ensure calling code can handle the error appropriately
         raise
+
+    finally:
+        # ========================================================================
+        # SAVE HISTORY
+        # ========================================================================
+        try:
+            # Construct history record
+            history_record = {
+                "timestamp": time.time(),
+                "readable_timestamp": time.ctime(),
+                "batch_id": last_processed_file
+                if "last_processed_file" in locals()
+                else "unknown",
+                "decision": decision if "decision" in locals() else "unknown",
+                "approved": approved if "approved" in locals() else None,
+            }
+
+            # Load latest drift results if available
+            drift_res_file = metrics_dir / "drift_results.json"
+            if drift_res_file.exists():
+                try:
+                    with open(drift_res_file, "r") as f:
+                        drift_data = json.load(f)
+                        if isinstance(drift_data, list) and drift_data:
+                            history_record["drift_metrics"] = drift_data[-1]
+                        elif isinstance(drift_data, dict):
+                            history_record["drift_metrics"] = drift_data
+                except:
+                    pass
+
+            # Load latest eval results if available
+            eval_res_file = metrics_dir / "evaluation_results.json"
+            if eval_res_file.exists():
+                try:
+                    with open(eval_res_file, "r") as f:
+                        eval_data = json.load(f)
+                        if isinstance(eval_data, list) and eval_data:
+                            history_record["eval_metrics"] = eval_data[-1]
+                        elif isinstance(eval_data, dict):
+                            history_record["eval_metrics"] = eval_data
+                except:
+                    pass
+
+            HistoryManager.append_history_record(
+                str(metrics_dir / "history.json"),
+                history_record,
+                max_history=max_history_size,
+            )
+            logger.info(f"History updated (max_size={max_history_size})")
+
+        except Exception as h_e:
+            logger.error(f"Failed to save history: {h_e}")
 
     logger.info(f"Pipeline '{pipeline_name}' execution completed successfully")

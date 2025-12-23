@@ -15,7 +15,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.base import is_classifier, is_regressor
 
-from torch.nn import Module
+# Torch import is now inside prepare_X_y
 from sklearn.base import clone
 from sklearn.ensemble import (
     StackingClassifier,
@@ -66,7 +66,16 @@ def save_train_results(results: dict, output_dir: str, logger=None):
 
 def prepare_X_y(model, X, y):
     """Prepare data for models like Skorch or PyTorchNet."""
-    if isinstance(model, Module) or "skorch" in str(type(model)).lower():
+    is_torch_module = False
+    try:
+        from torch.nn import Module
+
+        if isinstance(model, Module):
+            is_torch_module = True
+    except ImportError:
+        pass
+
+    if is_torch_module or "skorch" in str(type(model)).lower():
         X = X.values if hasattr(X, "values") else np.array(X)
         y = y.values if hasattr(y, "values") else np.array(y)
     return X, y

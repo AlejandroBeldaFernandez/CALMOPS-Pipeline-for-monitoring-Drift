@@ -1,6 +1,4 @@
-# web_interface/dashboard_ipip.py
 import os
-import sys
 import json
 import re
 import argparse
@@ -11,19 +9,31 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-import plotly.graph_objects as go
 import streamlit as st
 import joblib
 
 # Import shared utilities
 from calmops.utils import get_pipelines_root
-from calmops.IPIP.ipip_model import IpipModel
 from utils import (
     _load_any_dataset,
     dashboard_data_loader,
-    load_log,
+    show_evolution_section,
+)
+from dashboard_common import (
+    _mtime,
+    _read_json_cached,
+    _read_text_cached,
+    _read_csv_cached,
+    _load_joblib_cached,
+    _load_any_dataset_cached,
+    _sanitize_text,
+    _safe_table,
+    _safe_table_static,
+    _safe_plot,
+    _safe_json_display,
+    _sorted_blocks,
+    _get_pipeline_base_dir,
+    _detect_block_col,
 )
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -35,94 +45,7 @@ tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 tf.get_logger().setLevel("ERROR")
 
 
-# =========================
-# Sanitizers (from dashboard_block)
-# =========================
-def _safe_table(df: pd.DataFrame, *, use_container_width: bool = True):
-    st.dataframe(df, use_container_width=use_container_width)
-
-
-def _safe_table_static(df: pd.DataFrame):
-    st.table(df)
-
-
-def _safe_plot(fig: go.Figure, *, use_container_width: bool = True):
-    st.plotly_chart(fig, use_container_width=use_container_width)
-
-
-def _safe_json_display(obj: Any):
-    st.json(obj)
-
-
-# =========================
-# Caching & Loading
-# =========================
-def _mtime(path: str | Path) -> float:
-    try:
-        return Path(path).stat().st_mtime
-    except Exception:
-        return 0.0
-
-
-@st.cache_data(show_spinner=False)
-def _read_json_cached(path: str, stamp: float) -> Optional[dict]:
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-@st.cache_data(show_spinner=False)
-def _read_text_cached(path: str, stamp: float) -> str:
-    try:
-        with open(path, "r", errors="ignore") as f:
-            return f.read()
-    except Exception:
-        return ""
-
-
-@st.cache_data(show_spinner=False)
-def _load_joblib_cached(path: str, stamp: float):
-    return joblib.load(path)
-
-
-@st.cache_data(show_spinner=False)
-def _load_any_dataset_cached(path: str, stamp: float) -> pd.DataFrame:
-    return _load_any_dataset(path)
-
-
-# =========================
-# Block Helpers
-# =========================
-def _detect_block_col(
-    pipeline_name: str, df: pd.DataFrame, default: str = "block"
-) -> str | None:
-    project_root = get_pipelines_root()
-    cfg_path = project_root / "pipelines" / pipeline_name / "config" / "config.json"
-    try:
-        if cfg_path.exists():
-            cfg = _read_json_cached(str(cfg_path), _mtime(str(cfg_path))) or {}
-            if cfg.get("block_col") and cfg["block_col"] in df.columns:
-                return cfg["block_col"]
-    except Exception:
-        pass
-    if default in df.columns:
-        return default
-    for c in df.columns:
-        if "block" in c.lower() or "chunk" in c.lower():
-            return c
-    return None
-
-
-def _sorted_blocks(series: pd.Series):
-    vals = series.dropna().unique().tolist()
-    try:
-        # Try sorting numerically
-        return sorted(vals, key=float)
-    except (ValueError, TypeError):
-        # Fallback to string sorting
-        return sorted(vals, key=str)
+# Sanitizers, caching helpers, and block sorting logic have been moved to dashboard_common.py
 
 
 # =========================
@@ -131,6 +54,15 @@ def _sorted_blocks(series: pd.Series):
 def show_dataset_section(
     df: pd.DataFrame, last_file: str, pipeline_name: str, block_col: Optional[str]
 ):
+    """
+    Displays the Dataset tab, including preview, statistics, missingness, and block distribution.
+
+    Args:
+        df: The loaded dataframe of the current/latest data.
+        last_file: Filename of the last processed file.
+        pipeline_name: Name of the current pipeline (for finding control files).
+        block_col: Name of the block column if detected.
+    """
     st.subheader("Dataset Inspector")
 
     if df.empty or not last_file:
@@ -300,6 +232,10 @@ def show_dataset_section(
 # Train/Retrain Tab
 # =========================
 def show_train_section(pipeline_name: str):
+    """
+    Displays training and retraining results, including IPIP model structure and ensemble composition.
+    Reads from `train_results.json` or `retrain_results.json`.
+    """
     st.subheader("Train / Retrain Results")
     project_root = get_pipelines_root()
     metrics_dir = project_root / "pipelines" / pipeline_name / "metrics"
@@ -413,6 +349,10 @@ def show_train_section(pipeline_name: str):
 # Evaluator Tab
 # =========================
 def show_evaluator_section(pipeline_name: str):
+    """
+    Displays evaluation metrics for the current model.
+    Reads from `eval_results.json` and shows metrics, thresholds, and predictions.
+    """
     st.subheader("Model Evaluation")
     project_root = get_pipelines_root()
     metrics_dir = project_root / "pipelines" / pipeline_name / "metrics"
@@ -499,6 +439,10 @@ def show_evaluator_section(pipeline_name: str):
 # Historical Performance Tab
 # =========================
 def show_historical_performance_section(pipeline_name: str):
+    """
+    Visualizes historical performance metrics over time/blocks.
+    Reads from `metrics/eval_history/` and plots selected metrics with optional CI bands.
+    """
     st.subheader("Historical Performance")
     project_root = get_pipelines_root()
     history_dir = (
@@ -643,6 +587,10 @@ def show_historical_performance_section(pipeline_name: str):
 # IPIP Model Tab
 # =========================
 def show_ipip_section(pipeline_name: str):
+    """
+    Inspects the persisted IPIP model structure (ensembles, base models).
+    Loads from `model_structure.json` or fallback to loading the pickle file directly.
+    """
     st.subheader("IPIP Model Inspector")
     project_root = get_pipelines_root()
     model_path = (
@@ -846,7 +794,7 @@ tab_names = [
     "Dataset",
     "Train/Retrain",
     "Evaluator",
-    "Historical Performance",
+    "Evolution",
     "IPIP Model",
     "Logs",
 ]
@@ -859,7 +807,7 @@ with tabs[1]:
 with tabs[2]:
     show_evaluator_section(pipeline_name)
 with tabs[3]:
-    show_historical_performance_section(pipeline_name)
+    show_evolution_section(pipeline_name)
 with tabs[4]:
     show_ipip_section(pipeline_name)
 with tabs[5]:

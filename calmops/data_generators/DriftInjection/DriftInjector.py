@@ -26,15 +26,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-from calmops.data_generators.Real.RealReporter import RealReporter
-
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
-
-
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-
-tf.get_logger().setLevel("ERROR")
+# from data_generators.Real.RealReporter import RealReporter
 
 
 class DriftInjector:
@@ -75,90 +67,8 @@ class DriftInjector:
         self.target_column = target_column
         self.block_column = block_column
         self.time_col = time_col
-        self.reporter = RealReporter()
-        os.makedirs(self.output_dir, exist_ok=True)  # Ensure output_dir exists
+        from calmops.data_generators.Real.RealReporter import RealReporter
 
-    def _frac(self, x: float) -> float:
-        """Clips a float to the [0.0, 1.0] range."""
-        return float(np.clip(x, 0.0, 1.0))
-
-    def _generate_reports(
-        self, original_df, drifted_df, drift_config, time_col: Optional[str] = None
-    ):
-        """Helper to generate the standard report."""
-        # Generate the primary report in the main output directory
-        self.reporter.update_report_after_drift(
-            original_df=original_df,
-            drifted_df=drifted_df,
-            output_dir=self.output_dir,
-            drift_config=drift_config,
-            time_col=time_col,
-        )
-
-    def _ensure_psd_matrix(self, matrix: np.ndarray) -> np.ndarray:
-        """Ensures a matrix is positive semi-definite (PSD) by adjusting its eigenvalues."""
-        eigenvalues, eigenvectors = np.linalg.eigh(matrix)
-        eigenvalues[eigenvalues < 1e-6] = 1e-6  # Clamp small eigenvalues
-        psd_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
-        # Renormalize to have 1s on the diagonal
-        d = np.sqrt(np.diag(psd_matrix))
-        d_inv = np.where(d > 1e-9, 1.0 / d, 0)
-        psd_matrix = np.diag(d_inv) @ psd_matrix @ np.diag(d_inv)
-        return psd_matrix
-
-
-import pandas as pd
-import numpy as np
-from typing import List, Optional, Dict, Sequence, Tuple, Any
-import warnings
-import os
-
-# Suppress common warnings for cleaner output
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-from data_generators.Real.RealReporter import RealReporter
-
-
-class DriftInjector:
-    """
-    A class to inject various types of drift into a pandas DataFrame.
-    """
-
-    # -------------------------
-    # Init & utils
-    # -------------------------
-    def __init__(
-        self,
-        original_df: pd.DataFrame,
-        output_dir: str,
-        generator_name: str,
-        target_column: Optional[str] = None,
-        block_column: Optional[str] = None,
-        time_col: Optional[str] = None,
-        random_state: Optional[int] = None,
-    ):
-        """
-        Initializes the DriftInjector.
-
-        Args:
-            original_df (pd.DataFrame): The original, clean DataFrame.
-            output_dir (str): Directory to save reports and drifted datasets.
-            generator_name (str): A name for the generator, used in output file names.
-            target_column (Optional[str]): The name of the target variable column.
-            block_column (Optional[str]): The name of the column defining data blocks or chunks.
-            time_col (Optional[str]): The name of the timestamp column.
-            random_state (Optional[int]): Seed for the random number generator for reproducibility.
-        """
-        self.rng = np.random.default_rng(random_state)
-
-        self.original_df = original_df
-        self.output_dir = output_dir
-        self.generator_name = generator_name
-        self.target_column = target_column
-        self.block_column = block_column
-        self.time_col = time_col
         self.reporter = RealReporter()
         os.makedirs(self.output_dir, exist_ok=True)  # Ensure output_dir exists
 
@@ -272,7 +182,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-from data_generators.Real.RealReporter import RealReporter
+# from data_generators.Real.RealReporter import RealReporter
 
 
 class DriftInjector:
@@ -313,6 +223,11 @@ class DriftInjector:
         self.target_column = target_column
         self.block_column = block_column
         self.time_col = time_col
+        from calmops.data_generators.Real.RealReporter import RealReporter
+
+        self.time_col = time_col
+        from calmops.data_generators.Real.RealReporter import RealReporter
+
         self.reporter = RealReporter()
         os.makedirs(self.output_dir, exist_ok=True)  # Ensure output_dir exists
 
@@ -1472,4 +1387,137 @@ class DriftInjector:
             specific_times=specific_times,
         )
         # ... rest of the logic
+        return df_drift
+
+    # -------------------------
+    # Binary Probabilistic Drift
+    # -------------------------
+    def inject_binary_probabilistic_drift(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        probability: float = 0.4,
+        noise_range: Tuple[float, float] = (0.1, 0.7),
+        threshold: float = 0.5,
+        start_index: Optional[int] = None,
+        block_index: Optional[int] = None,
+        block_column: Optional[str] = None,
+        blocks: Optional[Sequence] = None,
+        block_start: Optional[object] = None,
+        n_blocks: Optional[int] = None,
+        time_start: Optional[str] = None,
+        time_end: Optional[str] = None,
+        time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
+        specific_times: Optional[Sequence[str]] = None,
+        center: Optional[int] = None,
+        width: Optional[int] = None,
+        profile: str = "sigmoid",
+        speed_k: float = 1.0,
+        direction: str = "up",
+        auto_report: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Injects probabilistic drift into a binary/boolean variable.
+
+        Logic:
+        1. Calculates a temporal weight 'w' (0 to 1) based on the window parameters (sigmoid, linear, etc.).
+        2. For each eligible row, with probability p = w * probability:
+           - Adds or subtracts a random noise value (from noise_range) to the current binary value (0 or 1).
+           - e.g. NewValue = OldValue +/- Noise
+        3. Re-binarizes the result: 1 if NewValue > threshold, else 0.
+
+        Args:
+            df: Input DataFrame.
+            target_col: The binary column to modify.
+            probability: The maximum probability that a modification occurs (when temporal weight w=1).
+            noise_range: Tuple (min_noise, max_noise) to add/subtract.
+            threshold: Threshold to decide the final 0 or 1.
+            ... standard selection and window params ...
+        """
+        if target_col not in df.columns:
+            raise ValueError(f"Column '{target_col}' not found.")
+
+        df_drift = df.copy()
+
+        # 1. Select Target Rows
+        rows = self._get_target_rows(
+            df,
+            start_index=start_index,
+            block_index=block_index,
+            block_column=block_column,
+            blocks=blocks,
+            block_start=block_start,
+            n_blocks=n_blocks,
+            time_start=time_start,
+            time_end=time_end,
+            time_ranges=time_ranges,
+            specific_times=specific_times,
+        )
+
+        n = len(rows)
+        if n == 0:
+            return df_drift
+
+        # 2. Compute Temporal Weights (w)
+        c = int(n // 2) if center is None else int(np.clip(center, 0, n - 1))
+        w_width = max(1, int(width if width is not None else max(1, n // 5)))
+
+        w = self._window_weights(
+            n,
+            center=c,
+            width=w_width,
+            profile=profile,
+            k=float(speed_k),
+            direction=direction,
+        )
+
+        # 3. Apply Drift
+        current_vals = df_drift.loc[rows, target_col].astype(float).values
+
+        # Decide which rows are modified based on probability * w
+        # random_draw < w * probability
+        modification_mask = self.rng.random(n) < (w * probability)
+
+        if np.any(modification_mask):
+            # Generate noise for all, but only use it where modification_mask is True
+            noise = self.rng.uniform(noise_range[0], noise_range[1], size=n)
+
+            # Decide sign: + or - (50% chance)
+            signs = self.rng.choice([-1, 1], size=n)
+
+            # Apply modifications
+            # We only change values where modification_mask is True
+            # New_val = Old_val + (Sign * Noise)
+            # But efficiently: we keep old_val where mask is False
+
+            deltas = signs * noise
+            # Zero out deltas where we shouldn't modify
+            deltas[~modification_mask] = 0.0
+
+            new_vals_numeric = current_vals + deltas
+
+            # Thresholding
+            final_vals = (new_vals_numeric > threshold).astype(int)
+
+            df_drift.loc[rows, target_col] = final_vals
+
+        if auto_report:
+            drift_config = {
+                "drift_method": "inject_binary_probabilistic_drift",
+                "target_col": target_col,
+                "probability": probability,
+                "noise_range": noise_range,
+                "threshold": threshold,
+                "profile": profile,
+                "center": center,
+                "width": width,
+                "generator_name": f"{self.generator_name}_binary_drift",
+            }
+            # We can't generate the full standard report easily if it expects feature cols list
+            # but we can try generic logging or adaptation if needed.
+            # For now, let's skip complex reporting to avoid breaking existing report logic
+            # if it's strictly expecting 'feature_cols' or 'target_col' for label drift.
+            # Assuming we just update the report with what we have.
+            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
+
         return df_drift

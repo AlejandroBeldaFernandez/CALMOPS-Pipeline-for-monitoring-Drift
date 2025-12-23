@@ -148,7 +148,9 @@ def default_train(
     # If we have a second block, we can define it, but it's not strictly used for ensemble building
     test_block = blocks[1] if len(blocks) > 1 else None
 
-    current_chunk = pd.concat([X[X[block_col] == train_block], y], axis=1)
+    X_chunk = X[X[block_col] == train_block]
+    y_chunk = y.loc[X_chunk.index]
+    current_chunk = pd.concat([X_chunk, y_chunk], axis=1)
     # next_chunk is unused in the ensemble building logic, so we can ignore it if test_block is None
 
     # Split current chunk into train/test for building the ensembles
@@ -164,11 +166,24 @@ def default_train(
 
     # --- Start of the main logic from R file ---
 
-    discharge = train_df[train_df[target_col] == 0]  # Assuming 'NO' class is 0
-    expired = train_df[train_df[target_col] == 1]  # Assuming 'YES' class is 1
-
-    if len(expired) == 0 or len(discharge) == 0:
+    # --- Dynamic Class Identification ---
+    # Determine which label is majority vs minority based on counts
+    values = train_df[target_col].value_counts()
+    if len(values) < 2:
+        logger.error(f"Training data only has 1 class: {values.index.tolist()}.")
         raise ValueError("Training data must contain samples from both classes.")
+
+    # Sort by count: Majority is first (index 0), Minority is last (index 1)
+    # values is sorted descending by default
+    label_majority = values.index[0]
+    label_minority = values.index[1]
+
+    discharge = train_df[train_df[target_col] == label_majority]
+    expired = train_df[train_df[target_col] == label_minority]
+
+    logger.info(
+        f"Class Distribution: Majority='{label_majority}' ({len(discharge)}), Minority='{label_minority}' ({len(expired)})"
+    )
 
     np_val = round(len(expired) * prop_minor_frac)
     if np_val == 0:
@@ -365,7 +380,7 @@ def default_retrain(
 
     # We call default_train on a subset of the data to generate the new ensembles
     # MODIFIED: Pass ONLY the current block to ensure we train on t, not t-1
-    new_model, _, _, _ = default_train(
+    new_model, _, _, new_model_train_results = default_train(
         X=X[X[block_col].isin([new_ensembles_train_block])],
         y=y,
         last_processed_file=last_processed_file,
@@ -450,14 +465,49 @@ def default_retrain(
     # Find the best 'p' ensembles from the combined list
     best_indices = best_models(combined_model, "BA", pruning_X, pruning_y, p, logger)
 
-    final_ensembles = [combined_model.ensembles_[i] for i in best_indices]
-    final_model = IpipModel(ensembles=final_ensembles)
+    pruned_ensembles = [combined_model.ensembles_[i] for i in best_indices]
+    # Calculate replacement percentage
+    # Count how many of the "new" ensembles survived
+    num_new_survivors = 0
+    # The new ensembles were the ones added at the END of the list during step 2.
+    # We added 'p' new ensembles.
+    # Pruned model has sorted indices. We need to check if those indices correspond to the new ones.
+    # best_indices contains indices from 0 to len(combined_ensembles)-1
 
-    logger.info(f"Pruned model to {len(final_model.ensembles_)} ensembles.")
+    # Original ensembles count: len(current_model.ensembles_)
+    # Total combined: len(current_model.ensembles_) + len(new_model.ensembles_)
+
+    original_count = len(prev_model.ensembles_)
+
+    for idx in best_indices:
+        if idx >= original_count:
+            num_new_survivors += 1
+
+    total_new_candidates = len(new_model.ensembles_)
+    replacement_percentage = (
+        (num_new_survivors / total_new_candidates * 100)
+        if total_new_candidates > 0
+        else 0.0
+    )
+
+    final_model = IpipModel(ensembles=pruned_ensembles)
+    logger.info(
+        f"Pruned model to {len(pruned_ensembles)} ensembles. Replacement %: {replacement_percentage:.2f}%"
+    )
 
     # The pipeline's test set is the full dataset
     X_test_pipeline = X
     y_test_pipeline = y
+
+    # Calculate metric: Percentage of new ensembles retained
+    cutoff = len(prev_model.ensembles_)
+    # best_indices contains indices from combined_model (old + new)
+    # Indices >= cutoff are new ensembles
+    new_indices = [i for i in best_indices if i >= cutoff]
+    num_new_retained = len(new_indices)
+    pct_new_retained = (
+        (num_new_retained / len(best_indices)) * 100.0 if best_indices else 0.0
+    )
 
     results = {
         "type": "retrain_ipip",
@@ -465,8 +515,12 @@ def default_retrain(
         "file": last_processed_file,
         "model_type": "IpipModel",
         "p": p,
+        "b": new_model_train_results.get("b"),
         "num_ensembles": len(final_model.ensembles_),
         "models_per_ensemble": [len(e) for e in final_model.ensembles_],
+        "new_ensembles_retained": num_new_retained,
+        "pct_new_ensembles_retained": pct_new_retained,
+        "replacement_percentage": pct_new_retained,
     }
     _save_results(Path(output_dir) / "retrain_results.json", results, logger)
 
