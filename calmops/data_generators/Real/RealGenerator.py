@@ -63,9 +63,9 @@ class RealGenerator:
 
     def __init__(
         self,
-        original_data: pd.DataFrame,
+        data: pd.DataFrame,
         method: str = "cart",
-        target_column: Optional[str] = None,
+        target_col: Optional[str] = None,
         block_column: Optional[str] = None,
         auto_report: bool = True,
         logger: Optional[logging.Logger] = None,
@@ -77,9 +77,9 @@ class RealGenerator:
         Initializes the RealGenerator.
 
         Args:
-            original_data (pd.DataFrame): The real dataset to be synthesized.
+            data (pd.DataFrame): The real dataset to be synthesized.
             method (str): The synthesis method to use. See class docstring for options.
-            target_column (Optional[str]): The name of the target variable column.
+            target_col (Optional[str]): The name of the target variable column.
             block_column (Optional[str]): The name of the column defining data blocks.
             auto_report (bool): If True, automatically generates a quality report after synthesis.
             logger (Optional[logging.Logger]): An external logger instance. If None, a new one is created.
@@ -87,9 +87,9 @@ class RealGenerator:
             balance_target (bool): If True, balances the distribution of the target column.
             model_params (Optional[Dict[str, Any]]): A dictionary of hyperparameters for the chosen synthesis model.
         """
-        self.original_data = original_data
+        self.data = data
         self.method = method
-        self.target_column = target_column
+        self.target_col = target_col
         self.block_column = block_column
         self.auto_report = auto_report
         self.logger = logger if logger else get_logger("RealGenerator")
@@ -178,7 +178,7 @@ class RealGenerator:
                 "The 'sdv' library is required for deep learning methods. Please install it using 'pip install sdv'."
             )
 
-        self.metadata = self._build_metadata(self.original_data)
+        self.metadata = self._build_metadata(self.data)
         if self.method == "ctgan":
             return CTGANSynthesizer(
                 metadata=self.metadata,
@@ -244,7 +244,7 @@ class RealGenerator:
         )
         if self.synthesizer is None:
             self.synthesizer = self._get_synthesizer()
-            self.synthesizer.fit(self.original_data)
+            self.synthesizer.fit(self.data)
         if not custom_distributions:
             self.logger.info(
                 "No custom distributions provided. Generating samples unconditionally."
@@ -259,8 +259,8 @@ class RealGenerator:
                 f"Multiple columns found in custom_distributions. Conditioning on first column: '{next(iter(custom_distributions))}'."
             )
         col_to_condition = (
-            self.target_column
-            if self.target_column in custom_distributions
+            self.target_col
+            if self.target_col in custom_distributions
             else next(iter(custom_distributions))
         )
         dist = custom_distributions[col_to_condition]
@@ -308,7 +308,7 @@ class RealGenerator:
         """Synthesizes data by resampling from the original dataset, with optional weighting."""
         self.logger.info("Starting synthesis by resampling...")
         if not custom_distributions:
-            return self.original_data.sample(
+            return self.data.sample(
                 n=n_samples, replace=True, random_state=self.random_state
             )
         self.logger.info(
@@ -318,22 +318,22 @@ class RealGenerator:
             "The 'resample' method with custom distributions changes proportions but does not generate new data."
         )
         col_to_condition = (
-            self.target_column
-            if self.target_column in custom_distributions
+            self.target_col
+            if self.target_col in custom_distributions
             else next(iter(custom_distributions))
         )
         dist = custom_distributions[col_to_condition]
-        weights = pd.Series(0.0, index=self.original_data.index)
+        weights = pd.Series(0.0, index=self.data.index)
         for category, proportion in dist.items():
-            weights[self.original_data[col_to_condition] == category] = proportion
+            weights[self.data[col_to_condition] == category] = proportion
         if weights.sum() == 0:
             self.logger.warning(
                 "Weights are all zero. Falling back to uniform resampling."
             )
-            return self.original_data.sample(
+            return self.data.sample(
                 n=n_samples, replace=True, random_state=self.random_state
             )
-        return self.original_data.sample(
+        return self.data.sample(
             n=n_samples, replace=True, random_state=self.random_state, weights=weights
         )
 
@@ -342,7 +342,7 @@ class RealGenerator:
     ) -> pd.DataFrame:
         """Synthesizes data using Gaussian Mixture Models. Only supports numeric data."""
         self.logger.info("Starting GMM synthesis...")
-        non_numeric_cols = self.original_data.select_dtypes(exclude=np.number).columns
+        non_numeric_cols = self.data.select_dtypes(exclude=np.number).columns
         if not non_numeric_cols.empty:
             raise ValueError(
                 f"The 'gmm' method only supports numeric data, but found non-numeric columns: {list(non_numeric_cols)}."
@@ -352,19 +352,19 @@ class RealGenerator:
             covariance_type=self.gmm_covariance_type,
             random_state=self.random_state,
         )
-        gmm.fit(self.original_data)
+        gmm.fit(self.data)
         synth_data, _ = gmm.sample(n_samples)
-        synth = pd.DataFrame(synth_data, columns=self.original_data.columns)
+        synth = pd.DataFrame(synth_data, columns=self.data.columns)
 
         # If the target is supposed to be classification, round the results
-        if self.target_column and self.target_column in synth.columns:
-            unique_values = self.original_data[self.target_column].nunique()
-            if unique_values < 25 or (unique_values / len(self.original_data)) < 0.05:
+        if self.target_col and self.target_col in synth.columns:
+            unique_values = self.data[self.target_col].nunique()
+            if unique_values < 25 or (unique_values / len(self.data)) < 0.05:
                 self.logger.info(
-                    f"Rounding GMM results for target column '{self.target_column}' to nearest integer."
+                    f"Rounding GMM results for target column '{self.target_col}' to nearest integer."
                 )
-                synth[self.target_column] = (
-                    synth[self.target_column].round().astype(int)
+                synth[self.target_col] = (
+                    synth[self.target_col].round().astype(int)
                 )
 
         if custom_distributions:
@@ -372,8 +372,8 @@ class RealGenerator:
                 "Applying custom distributions to GMM output via post-processing. This may break learned correlations."
             )
             col_to_condition = (
-                self.target_column
-                if self.target_column in custom_distributions
+                self.target_col
+                if self.target_col in custom_distributions
                 else next(iter(custom_distributions))
             )
             dist = custom_distributions[col_to_condition]
@@ -470,7 +470,7 @@ class RealGenerator:
                     if not pd.api.types.is_numeric_dtype(y_real_train):
                         is_classification = True
                     # Heuristic for low-cardinality numeric targets (treat as class)
-                    elif col == self.target_column:
+                    elif col == self.target_col:
                         unique_values = y_real_train.nunique()
                         if (
                             unique_values < 25
@@ -739,7 +739,7 @@ class RealGenerator:
                         "The 'DataSynthesizer' library is required for this method. Please install it."
                     )
                 # Save the original data to the secure temporary location.
-                self.original_data.to_csv(temp_csv_path, index=False)
+                self.data.to_csv(temp_csv_path, index=False)
 
                 # Describe the dataset
                 describer = DataDescriber()
@@ -762,8 +762,8 @@ class RealGenerator:
                         "Applying custom distributions to DataSynthesizer output via post-processing."
                     )
                     col_to_condition = (
-                        self.target_column
-                        if self.target_column in custom_distributions
+                        self.target_col
+                        if self.target_col in custom_distributions
                         else next(iter(custom_distributions))
                     )
                     dist = custom_distributions[col_to_condition]
@@ -877,22 +877,22 @@ class RealGenerator:
         )
         if custom_distributions:
             custom_distributions = self._validate_custom_distributions(
-                custom_distributions, self.original_data
+                custom_distributions, self.data
             )
         if (
             self.balance_target
-            and self.target_column
+            and self.target_col
             and (
                 custom_distributions is None
-                or self.target_column not in custom_distributions
+                or self.target_col not in custom_distributions
             )
         ):
             self.logger.info(
-                f"'balance_target' is True. Generating balanced distribution for '{self.target_column}'."
+                f"'balance_target' is True. Generating balanced distribution for '{self.target_col}'."
             )
-            target_classes = self.original_data[self.target_column].unique()
+            target_classes = self.data[self.target_col].unique()
             custom_distributions = custom_distributions or {}
-            custom_distributions[self.target_column] = {
+            custom_distributions[self.target_col] = {
                 c: 1 / len(target_classes) for c in target_classes
             }
         try:
@@ -907,19 +907,19 @@ class RealGenerator:
                 )
             elif self.method == "cart":
                 synth = self._synthesize_cart(
-                    self.original_data,
+                    self.data,
                     n_samples,
                     custom_distributions=custom_distributions,
                 )
             elif self.method == "rf":
                 synth = self._synthesize_rf(
-                    self.original_data,
+                    self.data,
                     n_samples,
                     custom_distributions=custom_distributions,
                 )
             elif self.method == "lgbm":
                 synth = self._synthesize_lgbm(
-                    self.original_data,
+                    self.data,
                     n_samples,
                     custom_distributions=custom_distributions,
                 )
@@ -986,7 +986,7 @@ class RealGenerator:
                         original_df=synth,  # We drift the synthetic data
                         output_dir=output_dir,
                         generator_name=f"{self.method}_drifted",
-                        target_column=self.target_column,
+                        target_column=self.target_col,
                         block_column=self.block_column,
                         time_col=date_col,
                         random_state=self.random_state,
@@ -1021,11 +1021,11 @@ class RealGenerator:
 
                 if self.auto_report:
                     self.reporter.generate_comprehensive_report(
-                        real_df=self.original_data,
+                        real_df=self.data,
                         synthetic_df=synth,
                         generator_name=f"RealGenerator_{self.method}",
                         output_dir=output_dir,
-                        target_column=self.target_column,
+                        target_column=self.target_col,
                         time_col=date_col,
                     )
 

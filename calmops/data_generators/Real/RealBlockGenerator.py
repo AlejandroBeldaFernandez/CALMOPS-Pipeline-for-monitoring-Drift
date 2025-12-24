@@ -39,9 +39,9 @@ class RealBlockGenerator(RealGenerator):
 
     def __init__(
         self,
-        original_data: pd.DataFrame,
+        data: pd.DataFrame,
         method: str = "cart",
-        target_column: Optional[str] = None,
+        target_col: Optional[str] = None,
         block_column: Optional[str] = None,
         chunk_size: Optional[int] = None,
         chunk_by_timestamp: Optional[str] = None,
@@ -54,9 +54,9 @@ class RealBlockGenerator(RealGenerator):
         Initializes the RealBlockGenerator.
 
         Args:
-            original_data (pd.DataFrame): The full, original dataset.
+            data (pd.DataFrame): The full, original dataset.
             method (str): The synthesis method to use for each block (e.g., 'cart', 'ctgan').
-            target_column (Optional[str]): Name of the target variable column.
+            target_col (Optional[str]): Name of the target variable column.
             block_column (Optional[str]): Name of an existing column that defines the blocks.
             chunk_size (Optional[int]): If provided, creates blocks of this fixed size.
             chunk_by_timestamp (Optional[str]): If provided, creates blocks based on changes in this timestamp column.
@@ -66,13 +66,13 @@ class RealBlockGenerator(RealGenerator):
             model_params (Optional[Dict[str, Any]]): Dictionary of hyperparameters for the synthesis model.
         """
         # Create a copy to avoid modifying the original dataframe in place
-        original_data = original_data.copy()
+        data = data.copy()
 
         # Call parent constructor
         super().__init__(
-            original_data=original_data,
+            data=data,
             method=method,
-            target_column=target_column,
+            target_col=target_col,
             auto_report=auto_report,
             random_state=random_state,
             model_params=model_params,
@@ -91,7 +91,7 @@ class RealBlockGenerator(RealGenerator):
         )
 
         # Robust ordering in case of mixed types
-        self.blocks = sorted(self.original_data[self.block_column].unique(), key=str)
+        self.blocks = sorted(self.data[self.block_column].unique(), key=str)
         self.n_blocks = len(self.blocks)
 
         self.reporter = RealReporter()
@@ -101,7 +101,7 @@ class RealBlockGenerator(RealGenerator):
         self.logger.info("Blocks: %s", self.blocks)
         self.logger.info(
             "Block sizes: %s",
-            self.original_data[self.block_column].value_counts().sort_index().to_dict(),
+            self.data[self.block_column].value_counts().sort_index().to_dict(),
         )
 
     # --------------------------------------------------------------------------- #
@@ -132,7 +132,7 @@ class RealBlockGenerator(RealGenerator):
 
         if block_column:
             self.logger.info("Using existing column '%s' for blocks.", block_column)
-            if block_column not in self.original_data.columns:
+            if block_column not in self.data.columns:
                 raise ValueError(f"Block column '{block_column}' not found in dataset")
             return block_column
 
@@ -142,15 +142,15 @@ class RealBlockGenerator(RealGenerator):
                 "Creating chunks based on changes in timestamp column '%s'.",
                 chunk_by_timestamp,
             )
-            if chunk_by_timestamp not in self.original_data.columns:
+            if chunk_by_timestamp not in self.data.columns:
                 raise ValueError(
                     f"Timestamp column '{chunk_by_timestamp}' not found for chunking."
                 )
 
             # Increment chunk ID every time the timestamp value changes
-            self.original_data[new_chunk_col_name] = (
-                self.original_data[chunk_by_timestamp]
-                .ne(self.original_data[chunk_by_timestamp].shift())
+            self.data[new_chunk_col_name] = (
+                self.data[chunk_by_timestamp]
+                .ne(self.data[chunk_by_timestamp].shift())
                 .cumsum()
             )
 
@@ -160,9 +160,7 @@ class RealBlockGenerator(RealGenerator):
                 raise ValueError("'chunk_size' must be a positive integer.")
 
             # Create chunks of fixed size
-            self.original_data[new_chunk_col_name] = (
-                np.arange(len(self.original_data)) // chunk_size
-            )
+            self.data[new_chunk_col_name] = np.arange(len(self.data)) // chunk_size
 
         return new_chunk_col_name
 
@@ -176,9 +174,7 @@ class RealBlockGenerator(RealGenerator):
         """
         Generates synthetic data for a specific block by creating a temporary RealGenerator instance for that block.
         """
-        block_data = self.original_data[
-            self.original_data[self.block_column] == block_id
-        ].copy()
+        block_data = self.data[self.data[self.block_column] == block_id].copy()
         block_data_no_block = block_data.drop(columns=[self.block_column])
 
         if len(block_data) == 0:
@@ -196,16 +192,16 @@ class RealBlockGenerator(RealGenerator):
 
         # Create a new RealGenerator instance for this specific block
         block_generator = RealGenerator(
-            original_data=block_data_no_block,
+            data=block_data_no_block,
             method=self.method,
-            target_column=self.target_column,
+            target_col=self.target_col,
             auto_report=False,  # Reporting is done at the end for the whole dataset
             random_state=self.random_state,
             model_params=self.model_params,  # Pass down model params
         )
 
         # Synthesize data for the block
-        synthetic_block = block_generator.synthesize(
+        synthetic_block = block_generator.generate(
             n_samples=n_samples,
             output_dir=output_dir,
             custom_distributions=custom_distributions,
@@ -223,11 +219,11 @@ class RealBlockGenerator(RealGenerator):
     #                                 PUBLIC API                                  #
     # --------------------------------------------------------------------------- #
 
-    def generate_block_dataset(
+    def generate(
         self,
         output_dir: str,
-        samples_per_block: Optional[Union[int, Dict[Any, int]]] = None,
-        drift_schedule: Optional[List[Dict[str, Any]]] = None,
+        n_samples_block: Optional[Union[int, Dict[Any, int]]] = None,
+        drift_config: Optional[List[Dict[str, Any]]] = None,
         custom_distributions: Optional[Dict] = None,
         date_start: Optional[str] = None,
         date_step: Optional[Dict[str, int]] = None,
@@ -257,21 +253,13 @@ class RealBlockGenerator(RealGenerator):
         for i, block_id in enumerate(self.blocks):
             # Determine samples for this block
             if samples_per_block is None:
-                n_samples = len(
-                    self.original_data[
-                        self.original_data[self.block_column] == block_id
-                    ]
-                )
+                n_samples = len(self.data[self.data[self.block_column] == block_id])
             elif isinstance(samples_per_block, int):
                 n_samples = samples_per_block
             else:
                 n_samples = samples_per_block.get(
                     block_id,
-                    len(
-                        self.original_data[
-                            self.original_data[self.block_column] == block_id
-                        ]
-                    ),
+                    len(self.data[self.data[self.block_column] == block_id]),
                 )
 
             # Generate block without drift
@@ -301,10 +289,10 @@ class RealBlockGenerator(RealGenerator):
             self.logger.info("Applying drift schedule to the complete dataset.")
 
             drift_injector = DriftInjector(
-                original_df=self.original_data,
+                original_df=self.data,
                 output_dir=output_dir,
                 generator_name=f"RealBlockGenerator_{self.method}",
-                target_column=self.target_column,
+                target_column=self.target_col,
                 block_column=self.block_column,
                 time_col=date_col,
                 random_state=self.random_state,
@@ -357,11 +345,11 @@ class RealBlockGenerator(RealGenerator):
             os.makedirs(output_dir, exist_ok=True)
 
             self.reporter.generate_comprehensive_report(
-                real_df=self.original_data,
+                real_df=self.data,
                 synthetic_df=synthetic_dataset,
                 generator_name=f"RealBlockGenerator_{self.method}",
                 output_dir=output_dir,
-                target_column=self.target_column,
+                target_column=self.target_col,
                 block_column=self.block_column,
                 time_col=time_col,
             )
@@ -378,9 +366,7 @@ class RealBlockGenerator(RealGenerator):
         block_stats: Dict[Any, Any] = {}
 
         for block_id in self.blocks:
-            original_block = self.original_data[
-                self.original_data[self.block_column] == block_id
-            ]
+            original_block = self.data[self.data[self.block_column] == block_id]
             synthetic_block = synthetic_dataset[
                 synthetic_dataset[self.block_column] == block_id
             ]
@@ -393,12 +379,12 @@ class RealBlockGenerator(RealGenerator):
             }
 
             # Target distribution if available
-            if self.target_column and self.target_column in original_block.columns:
+            if self.target_col and self.target_col in original_block.columns:
                 stats["original_target_dist"] = (
-                    original_block[self.target_column].value_counts().to_dict()
+                    original_block[self.target_col].value_counts().to_dict()
                 )
                 stats["synthetic_target_dist"] = (
-                    synthetic_block[self.target_column].value_counts().to_dict()
+                    synthetic_block[self.target_col].value_counts().to_dict()
                 )
 
             # Numeric stats
@@ -427,22 +413,20 @@ class RealBlockGenerator(RealGenerator):
         block_info: Dict[Any, Any] = {}
 
         for block_id in self.blocks:
-            block_data = self.original_data[
-                self.original_data[self.block_column] == block_id
-            ]
+            block_data = self.data[self.data[self.block_column] == block_id]
             info = {
                 "size": len(block_data),
-                "percentage": (len(block_data) / len(self.original_data) * 100.0)
-                if len(self.original_data)
+                "percentage": (len(block_data) / len(self.data) * 100.0)
+                if len(self.data)
                 else 0.0,
                 "target_distribution": None,
                 "feature_means": None,
                 "missing_values": int(block_data.isnull().sum().sum()),
             }
 
-            if self.target_column and self.target_column in block_data.columns:
+            if self.target_col and self.target_col in block_data.columns:
                 info["target_distribution"] = (
-                    block_data[self.target_column].value_counts().to_dict()
+                    block_data[self.target_col].value_counts().to_dict()
                 )
 
             numeric_cols = block_data.select_dtypes(include=[np.number]).columns

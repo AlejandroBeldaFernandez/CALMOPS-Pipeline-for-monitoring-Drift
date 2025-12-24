@@ -22,15 +22,21 @@ Key Features:
 import pandas as pd
 import numpy as np
 from typing import Optional, Dict, Any, List
-import matplotlib.pyplot as plt
-import seaborn as sns
+
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from matplotlib.patches import Patch
+except ImportError:
+    plt = None
+    sns = None
+    Patch = None
 import warnings
 import logging
 from datetime import datetime
 import os
 import json
 from scipy import stats
-from matplotlib.patches import Patch
 
 # Suppress common warnings for cleaner output
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -86,21 +92,22 @@ class SyntheticReporter:
         self.verbose = verbose
         self.logger = logging.getLogger(self.__class__.__name__)
 
-        plt.style.use("default")
-        sns.set_palette("husl")
-        plt.rcParams.update(
-            {
-                "figure.dpi": 300,
-                "savefig.dpi": 300,
-                "savefig.bbox": "tight",
-                "font.size": 14,
-                "axes.titlesize": 16,
-                "axes.labelsize": 14,
-                "xtick.labelsize": 12,
-                "ytick.labelsize": 12,
-                "legend.fontsize": 12,
-            }
-        )
+        if plt:
+            plt.style.use("default")
+            sns.set_palette("husl")
+            plt.rcParams.update(
+                {
+                    "figure.dpi": 300,
+                    "savefig.dpi": 300,
+                    "savefig.bbox": "tight",
+                    "font.size": 14,
+                    "axes.titlesize": 16,
+                    "axes.labelsize": 14,
+                    "xtick.labelsize": 12,
+                    "ytick.labelsize": 12,
+                    "legend.fontsize": 12,
+                }
+            )
 
     def generate_report(
         self,
@@ -163,57 +170,68 @@ class SyntheticReporter:
         )
 
         # --- Generate and Save Plots for the entire dataset --- #
+        # --- Generate and Save Plots for the entire dataset --- #
         plots = {}
-        plots["pca"] = self._save_pca_plot(synthetic_df, output_dir, generator_name)
-        plots["correlation_heatmap"] = self._save_correlation_heatmap(
-            synthetic_df, output_dir, focus_cols=focus_cols
-        )
-        plots["interaction_plots"] = self._save_interaction_plots(
-            synthetic_df, output_dir, focus_cols=focus_cols
-        )
-        plots["mode_analysis"] = self._save_mode_analysis_plot(
-            report["mode_analysis"], output_dir
-        )
+        if plt:
+            plots["pca"] = self._save_pca_plot(synthetic_df, output_dir, generator_name)
+            plots["correlation_heatmap"] = self._save_correlation_heatmap(
+                synthetic_df, output_dir, focus_cols=focus_cols
+            )
+            plots["interaction_plots"] = self._save_interaction_plots(
+                synthetic_df, output_dir, focus_cols=focus_cols
+            )
+            plots["mode_analysis"] = self._save_mode_analysis_plot(
+                report["mode_analysis"], output_dir
+            )
+        else:
+            self.logger.warning("Matplotlib not installed. Skipping all plots.")
 
         dist_plots = {}
         box_plots = {}
         balance_plots = {}
-        for col in cols_to_plot:
-            if col in synthetic_df.columns:
-                if col == final_time_col:
-                    continue
-                dist_plots[col] = self._save_distribution_plot(
-                    synthetic_df, col, output_dir
+
+        if plt:
+            for col in cols_to_plot:
+                if col in synthetic_df.columns:
+                    if col == final_time_col:
+                        continue
+                    dist_plots[col] = self._save_distribution_plot(
+                        synthetic_df, col, output_dir
+                    )
+
+                is_categorical = (
+                    pd.api.types.is_string_dtype(synthetic_df[col])
+                    or pd.api.types.is_categorical_dtype(synthetic_df[col])
+                    or (
+                        pd.api.types.is_numeric_dtype(synthetic_df[col])
+                        and synthetic_df[col].nunique() < 25
+                    )
                 )
 
-            is_categorical = (
-                pd.api.types.is_string_dtype(synthetic_df[col])
-                or pd.api.types.is_categorical_dtype(synthetic_df[col])
-                or (
-                    pd.api.types.is_numeric_dtype(synthetic_df[col])
-                    and synthetic_df[col].nunique() < 25
-                )
-            )
+                if is_categorical:
+                    balance_plots[col] = self._save_instances_balance_plot(
+                        synthetic_df, col, output_dir
+                    )
 
-            if is_categorical:
-                balance_plots[col] = self._save_instances_balance_plot(
-                    synthetic_df, col, output_dir
-                )
-
-            if pd.api.types.is_numeric_dtype(synthetic_df[col]):
-                box_plots[col] = self._save_boxplot_plot(synthetic_df, col, output_dir)
+                if pd.api.types.is_numeric_dtype(synthetic_df[col]):
+                    box_plots[col] = self._save_boxplot_plot(
+                        synthetic_df, col, output_dir
+                    )
 
         plots["distribution_plots"] = dist_plots
         plots["box_plots"] = box_plots
         plots["instances_balance_plots"] = balance_plots
 
-        plots["time_evolution_plots"] = self._save_time_evolution_plots(
-            synthetic_df,
-            output_dir,
-            time_col=final_time_col,
-            focus_cols=focus_cols,
-            drift_config=drift_config,
-        )
+        if plt:
+            plots["time_evolution_plots"] = self._save_time_evolution_plots(
+                synthetic_df,
+                output_dir,
+                time_col=final_time_col,
+                focus_cols=focus_cols,
+                drift_config=drift_config,
+            )
+        else:
+            plots["time_evolution_plots"] = {}
 
         report["plots"] = plots
 
@@ -248,40 +266,46 @@ class SyntheticReporter:
                     "instances_balance_plots": {},
                 }
 
-                for col in block_df.columns:
-                    if col == block_column:
-                        continue
+                if plt:
+                    for col in block_df.columns:
+                        if col == block_column:
+                            continue
 
-                    plot_path = self._save_distribution_plot(
-                        block_df, col, block_output_dir
-                    )
-                    if plot_path:
-                        block_plots_report[str(block_id)]["distribution_plots"][col] = (
-                            plot_path
-                        )
-
-                    is_categorical = (
-                        pd.api.types.is_string_dtype(block_df[col])
-                        or pd.api.types.is_categorical_dtype(block_df[col])
-                        or (
-                            pd.api.types.is_numeric_dtype(block_df[col])
-                            and block_df[col].nunique() < 25
-                        )
-                    )
-
-                    if is_categorical:
-                        balance_plot_path = self._save_instances_balance_plot(
+                        plot_path = self._save_distribution_plot(
                             block_df, col, block_output_dir
                         )
-                        if balance_plot_path:
-                            block_plots_report[str(block_id)][
-                                "instances_balance_plots"
-                            ][col] = balance_plot_path
+                        if plot_path:
+                            block_plots_report[str(block_id)]["distribution_plots"][
+                                col
+                            ] = plot_path
 
-                if self.verbose:
-                    print(
-                        f"  -> Plots for block '{block_id}' saved to: {block_output_dir}"
-                    )
+                        is_categorical = (
+                            pd.api.types.is_string_dtype(block_df[col])
+                            or pd.api.types.is_categorical_dtype(block_df[col])
+                            or (
+                                pd.api.types.is_numeric_dtype(block_df[col])
+                                and block_df[col].nunique() < 25
+                            )
+                        )
+
+                        if is_categorical:
+                            balance_plot_path = self._save_instances_balance_plot(
+                                block_df, col, block_output_dir
+                            )
+                            if balance_plot_path:
+                                block_plots_report[str(block_id)][
+                                    "instances_balance_plots"
+                                ][col] = balance_plot_path
+
+                    if self.verbose:
+                        print(
+                            f"  -> Plots for block '{block_id}' saved to: {block_output_dir}"
+                        )
+                else:
+                    if self.verbose:
+                        print(
+                            f"  -> Plots skipped for block '{block_id}' (Matplotlib missing)."
+                        )
 
             report["plots"]["per_block_plots"] = block_plots_report
 

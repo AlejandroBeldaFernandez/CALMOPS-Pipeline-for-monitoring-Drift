@@ -69,7 +69,7 @@ class ClinicGenerator(SyntheticGenerator):
         if original_gen_report:
             # We must trigger report generation manually here because we skipped it in super()
             # to wait for renaming.
-            out_dir = kwargs.get("output_path") or self.DEFAULT_OUTPUT_DIR
+            out_dir = kwargs.get("output_dir") or self.DEFAULT_OUTPUT_DIR
 
             # Reconstruct variables needed for reporting
             report_kwargs = {

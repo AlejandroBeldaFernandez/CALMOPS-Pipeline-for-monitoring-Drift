@@ -63,7 +63,7 @@ class SyntheticGenerator:
     def generate(
         self,
         generator_instance,
-        output_path: Optional[str],
+        output_dir: Optional[str],
         filename: str,
         n_samples: int,
         drift_type: str = "none",
@@ -91,7 +91,7 @@ class SyntheticGenerator:
         save_dataset: bool = True,
         generate_report: bool = True,
         metadata_generator_instance: Optional[object] = None,
-        drift_injection_config: Optional[List[Dict]] = None,
+        drift_config: Optional[List[Dict]] = None,
         dynamics_config: Optional[Dict] = None,
     ) -> Union[pd.DataFrame, str]:
         """
@@ -120,11 +120,11 @@ class SyntheticGenerator:
         Returns:
             Union[pd.DataFrame, str]: The generated DataFrame or the path to the saved CSV file.
         """
-        out_dir = self._resolve_output_dir(output_path)
+        out_dir = self._resolve_output_dir(output_dir)
         df = self._generate_internal(
             generator_instance=generator_instance,
             metadata_generator_instance=metadata_generator_instance,
-            output_path=out_dir,
+            output_dir=out_dir,
             filename=filename,
             n_samples=n_samples,
             generator_instance_drift=drift_generator,
@@ -150,7 +150,7 @@ class SyntheticGenerator:
             transition_width=transition_width,
             segment_label_ratios=segment_label_ratios,
             generate_report=generate_report,
-            drift_injection_config=drift_injection_config,
+            drift_config=drift_config,
             dynamics_config=dynamics_config,
         )
         if save_dataset:
@@ -273,19 +273,19 @@ class SyntheticGenerator:
                 df = injector.construct_target(df, **target_args)
 
         # --- Drift Injection ---
-        drift_injection_config = kwargs.get("drift_injection_config")
-        if drift_injection_config:
+        drift_config = kwargs.get("drift_config")
+        if drift_config:
             logger.info("Applying drift injection...")
             injector = DriftInjector(
                 original_df=df,
-                output_dir=kwargs["output_path"],
+                output_dir=kwargs["output_dir"],
                 generator_name="SyntheticGenerator_Drifted",  # Generic name or infer
                 target_column=kwargs["target_col"],
                 block_column=kwargs["block_column"],
                 time_col=kwargs["date_col"],
             )
 
-            for drift_conf in drift_injection_config:
+            for drift_conf in drift_config:
                 method_name = drift_conf.get("method")
                 params = drift_conf.get("params", {})
 
@@ -315,7 +315,7 @@ class SyntheticGenerator:
                 or kwargs["generator_instance"]
             )
             self._save_report_json(
-                df=df, output_dir=kwargs["output_path"], **report_kwargs
+                df=df, output_dir=kwargs["output_dir"], **report_kwargs
             )
         return df
 
@@ -430,6 +430,8 @@ class SyntheticGenerator:
             data_iterator = gen.take(n_samples)
         else:
             # For standard Python generators (like _virtual_drift_generator)
+            if not hasattr(gen, "__next__") and hasattr(gen, "__iter__"):
+                gen = iter(gen)
             data_iterator = (next(gen) for _ in range(n_samples))
 
         return [list(x.values()) + [y] for x, y in data_iterator]
