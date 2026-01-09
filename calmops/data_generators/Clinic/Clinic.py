@@ -4,7 +4,7 @@ import scipy.stats as stats
 from scipy.linalg import eigh
 import os
 import io
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional
 from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
 from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
 

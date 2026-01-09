@@ -1,6 +1,6 @@
 import json
 import os
-from typing import List, Dict, Union
+from typing import List, Dict
 from datetime import datetime
 
 

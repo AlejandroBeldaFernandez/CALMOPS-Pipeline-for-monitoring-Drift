@@ -1,11 +1,10 @@
 # monitor_dashboard.py
 import os
-import sys
 import json
 import re
 import argparse
 from pathlib import Path
-from typing import Optional, Tuple, Any, Dict, List
+from typing import Optional, List
 
 import numpy as np
 import pandas as pd
@@ -16,16 +15,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
 from calmops.utils import get_pipelines_root
-from utils import _load_any_dataset, dashboard_data_loader, show_evolution_section
+from utils import dashboard_data_loader, show_evolution_section
 from dashboard_common import (
     _mtime,
     _read_json_cached,
     _read_text_cached,
-    _read_csv_cached,
     _load_any_dataset_cached,
     _sanitize_text,
     _sanitize_df,
-    _sanitize_figure,
     _safe_table,
     _safe_table_static,
     _safe_markdown,
@@ -39,10 +36,7 @@ from dashboard_common import (
 )
 
 
-import os
-
 # Suppress TensorFlow logs before importing it
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 # import tensorflow as tf
 
 # tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)

@@ -1,13 +1,12 @@
 import os
 import pandas as pd
 import warnings
-from collections import defaultdict
 from .SyntheticReporter import SyntheticReporter
 from .GeneratorFactory import GeneratorFactory, GeneratorType, GeneratorConfig
 from .SyntheticGenerator import SyntheticGenerator
 from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
 from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any
 
 
 # Suppress common warnings for cleaner output

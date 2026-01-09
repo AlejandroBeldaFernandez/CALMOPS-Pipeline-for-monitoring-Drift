@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 from calmops.privacy.privacy import (
     pseudonymize_columns,
     add_laplace_noise,

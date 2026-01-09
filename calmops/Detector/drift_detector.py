@@ -13,13 +13,11 @@ from sklearn.metrics import (
 from pandas.api.types import is_numeric_dtype
 
 # Frouros imports (drift detection)
-from frouros.detectors.data_drift import MMD  # batch MMD
 from frouros.detectors.data_drift.batch.distance_based import PSI as PSI_Detector
 from frouros.detectors.data_drift.batch.statistical_test import (
     KSTest,
     MannWhitneyUTest,
     ChiSquareTest,
-    CVMTest,
 )
 
 # Optional: Suppress Tensorflow warnings if TF is installed

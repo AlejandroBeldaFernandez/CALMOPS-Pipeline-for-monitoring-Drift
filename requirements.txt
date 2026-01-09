@@ -14,3 +14,6 @@ seaborn==0.13.2
 streamlit==1.47.1
 watchdog==5.0.3
 umap-learn
+river
+sdv
+torch

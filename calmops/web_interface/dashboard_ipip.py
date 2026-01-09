@@ -1,21 +1,18 @@
 import os
-import json
 import re
 import argparse
-from pathlib import Path
-from typing import Optional, Any, Dict, List
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-import joblib
+
 
 # Import shared utilities
 from calmops.utils import get_pipelines_root
 from utils import (
-    _load_any_dataset,
     dashboard_data_loader,
     show_evolution_section,  # We reuse the generic one but wrap it
 )
@@ -23,16 +20,12 @@ from dashboard_common import (
     _mtime,
     _read_json_cached,
     _read_text_cached,
-    _read_csv_cached,
     _load_joblib_cached,
-    _load_any_dataset_cached,
-    _sanitize_text,
     _safe_table,
     _safe_table_static,
     _safe_plot,
     _safe_json_display,
     _sorted_blocks,
-    _get_pipeline_base_dir,
     _detect_block_col,
 )
 
@@ -453,6 +446,8 @@ def show_historical_performance_section(pipeline_name: str):
     if not all_data:
         st.warning("Could not load any historical performance data.")
         return
+
+    df_history = pd.DataFrame(all_data)
 
     # Merge with Training History (for IPIP parameters)
     metrics_dir = project_root / "pipelines" / pipeline_name / "metrics"

@@ -17,11 +17,10 @@ Key Features:
   information about their properties (`get_generator_info`).
 """
 
-import os
 import warnings
 from enum import Enum
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 # from river.datasets import synth  <-- Lazy loaded now
 
 # Suppress common warnings for cleaner output

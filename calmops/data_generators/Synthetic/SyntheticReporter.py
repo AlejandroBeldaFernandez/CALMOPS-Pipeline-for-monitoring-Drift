@@ -36,7 +36,6 @@ import logging
 from datetime import datetime
 import os
 import json
-from scipy import stats
 from calmops.utils.distribution_fitter import fit_distribution
 
 # Suppress common warnings for cleaner output

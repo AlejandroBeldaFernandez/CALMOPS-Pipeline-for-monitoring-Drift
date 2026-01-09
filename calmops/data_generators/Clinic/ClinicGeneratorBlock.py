@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-from typing import List, Dict, Optional, Union, Any
+from typing import List, Dict, Optional, Any
 from calmops.data_generators.Synthetic.SyntheticBlockGenerator import (
     SyntheticBlockGenerator,
 )

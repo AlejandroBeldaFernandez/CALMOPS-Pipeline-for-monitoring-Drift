@@ -31,8 +31,7 @@ import os
 import json
 from scipy import stats
 from scipy.spatial.distance import jensenshannon
-from scipy.stats import ks_2samp, chisquare, ks_2samp
-from matplotlib.patches import Patch
+from scipy.stats import ks_2samp, ks_2samp
 
 try:
     import umap

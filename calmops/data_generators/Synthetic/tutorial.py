@@ -1,4 +1,3 @@
-import pandas as pd
 import os
 from calmops.data_generators.Synthetic.SyntheticGenerator import SyntheticGenerator
 from river.datasets import synth

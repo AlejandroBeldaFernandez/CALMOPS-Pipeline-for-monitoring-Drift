@@ -3,12 +3,8 @@ import json
 from pathlib import Path
 import pandas as pd
 from scipy.io import arff
-import pandas as pd
-from scipy.io import arff
 import streamlit as st
 import plotly.express as px
-import plotly.graph_objects as go
-import numpy as np
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 # import tensorflow as tf

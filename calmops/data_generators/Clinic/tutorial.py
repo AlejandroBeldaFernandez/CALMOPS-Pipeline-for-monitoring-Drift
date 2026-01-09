@@ -1,7 +1,4 @@
 import numpy as np
-import pandas as pd
-import scipy.stats as stats
-import os
 from calmops.data_generators.Clinic.Clinic import ClinicGenerator
 
 
