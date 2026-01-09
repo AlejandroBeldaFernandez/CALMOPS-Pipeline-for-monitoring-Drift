@@ -19,27 +19,39 @@ generator = ClinicGenerator(seed=42)
 
 ## Main Features
 
-The `ClinicGenerator` provides several methods to generate different types of data:
+### 1. Unified Generation (Recommended)
 
-### 1. Generating Demographic Data
-
-The `generate_demographic_data` method allows you to create a synthetic patient cohort with various demographic and clinical features.
+The `generate` method creates all data types (Demographics, Genes, Proteins) in one go, handling correlations automatically.
 
 ```python
-import scipy.stats as stats
+from calmops.data_generators.Clinic.Clinic import ClinicGenerator
 
-demographic_df, raw_demographic_data = generator.generate_demographic_data(
-    n_samples=150,
-    control_disease_ratio=0.6,
-    custom_demographic_columns={
-        'Biomarker_A': stats.norm(loc=10, scale=2),
-        'Treatment_Group': stats.binom(n=1, p=0.5)
-    },
-    date_column_name="Recruitment_Date",
-    date_value="2024-01-01"
+generator = ClinicGenerator(seed=42)
+
+# Generate everything
+datasets = generator.generate(
+    n_patients=100,
+    n_genes=200,
+    n_proteins=50,
+    # Optional: Define target variable
+    target_variable_config={"weights": {"Age": 0.5}, "name": "diagnosis"}
 )
 
-print(demographic_df.head())
+demo_df = datasets["demographics"]
+genes_df = datasets["genes"]
+print(demo_df.head())
+```
+
+### 2. Component Generation (Advanced)
+
+If you need granular control, you can call individual methods:
+
+#### Generating Demographic Data
+```python
+demographic_df, raw_demographic_data = generator.generate_demographic_data(
+    n_samples=150,
+    control_disease_ratio=0.6
+)
 ```
 
 ### 2. Generating Gene Expression Data

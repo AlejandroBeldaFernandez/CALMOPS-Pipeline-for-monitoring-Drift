@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, Optional, Union, Callable
+from typing import Dict, Optional, Union, Callable, Any
+import os
 
 
 class DynamicsInjector:
@@ -16,6 +17,9 @@ class DynamicsInjector:
         df: pd.DataFrame,
         evolution_config: Dict[str, Dict[str, Union[str, float, int]]],
         time_col: Optional[str] = None,
+        output_dir: Optional[str] = None,
+        auto_report: bool = True,
+        generator_name: str = "DynamicsInjector",
     ) -> pd.DataFrame:
         """
         Evolves features in the DataFrame based on the provided configuration.
@@ -81,6 +85,28 @@ class DynamicsInjector:
             # Apply delta
             # Assuming additive drift for now. Could add 'mode': 'multiplicative' later.
             df_evolved[col] = df_evolved[col] + delta
+
+        if auto_report and output_dir:
+            from calmops.data_generators.Real.RealReporter import RealReporter
+
+            reporter = RealReporter(verbose=True)
+            drift_config = {
+                "generator_name": generator_name,
+                "feature_cols": list(evolution_config.keys()),
+                "drift_type": "dynamics_evolution",
+                "evolution_config": evolution_config,
+            }
+            # Create output dir if needed
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Use the new updated report method which focuses on feature_cols
+            reporter.update_report_after_drift(
+                original_df=df,
+                drifted_df=df_evolved,
+                output_dir=output_dir,
+                drift_config=drift_config,
+                time_col=time_col,
+            )
 
         return df_evolved
 

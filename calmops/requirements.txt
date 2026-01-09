@@ -19,3 +19,4 @@ streamlit==1.47.1
 torch==2.7.1
 watchdog==5.0.3
 tensorflow
+umap-learn

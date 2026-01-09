@@ -4,14 +4,17 @@ import scipy.stats as stats
 from scipy.linalg import eigh
 import os
 import io
+from typing import List, Dict, Optional, Union
+from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
+from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
+# import tensorflow as tf
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+# tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
-tf.get_logger().setLevel("ERROR")
+# tf.get_logger().setLevel("ERROR")
 
 
 class ClinicGenerator:
@@ -103,6 +106,8 @@ class ClinicGenerator:
         date_column_name: str = None,
         date_value: str = None,
         class_assignment_function: callable = None,
+        drift_injection_config: Optional[List[Dict]] = None,
+        dynamics_config: Optional[Dict] = None,
     ):
         """
         Generates synthetic demographic data for a given number of samples.
@@ -251,6 +256,43 @@ class ClinicGenerator:
         df_temp = df_temp.drop(columns=["Binary_Group", "Propensity"])
         if "Sex_Binario" in df_temp.columns:
             df_temp = df_temp.drop(columns=["Sex_Binario"])
+
+        # --- Dynamics Injection ---
+        if dynamics_config:
+            injector = DynamicsInjector()
+            if "evolve_features" in dynamics_config:
+                evolve_args = dynamics_config["evolve_features"]
+                # If date_column_name was used, use it as time_col
+                df_temp = injector.evolve_features(
+                    df_temp, time_col=date_column_name, **evolve_args
+                )
+            if "construct_target" in dynamics_config:
+                target_args = dynamics_config["construct_target"]
+                df_temp = injector.construct_target(df_temp, **target_args)
+
+        # --- Drift Injection ---
+        if drift_injection_config:
+            injector = DriftInjector(
+                original_df=df_temp,
+                generator_name="ClinicGenerator_Demographic",
+                time_col=date_column_name,
+            )
+            for drift_conf in drift_injection_config:
+                method_name = drift_conf.get("method")
+                params = drift_conf.get("params", {})
+                if hasattr(injector, method_name):
+                    drift_method = getattr(injector, method_name)
+                    try:
+                        if "df" not in params:
+                            params["df"] = df_temp
+                        res = drift_method(**params)
+                        if isinstance(res, pd.DataFrame):
+                            df_temp = res
+                    except Exception as e:
+                        print(f"Failed to apply drift {method_name}: {e}")
+                        raise e
+                else:
+                    print(f"Drift method '{method_name}' not found.")
 
         return df_temp, raw_demographic_data
 
@@ -471,6 +513,9 @@ class ClinicGenerator:
         control_disease_ratio: float = 0.5,
         custom_gene_parameters: dict = None,
         n_samples: int = 100,
+        random_state: int = 42,  # Added for completeness/drift
+        drift_injection_config: Optional[List[Dict]] = None,
+        dynamics_config: Optional[Dict] = None,
     ):
         """
         Generates synthetic gene expression data.
@@ -641,6 +686,40 @@ class ClinicGenerator:
         if gene_type.lower() == "rna-seq":
             df_genes = df_genes.round(0).astype(int)
 
+        # --- Dynamics Injection ---
+        if dynamics_config:
+            injector = DynamicsInjector()
+            if "evolve_features" in dynamics_config:
+                evolve_args = dynamics_config["evolve_features"]
+                df_genes = injector.evolve_features(df_genes, **evolve_args)
+            if "construct_target" in dynamics_config:
+                target_args = dynamics_config["construct_target"]
+                df_genes = injector.construct_target(df_genes, **target_args)
+
+        # --- Drift Injection ---
+        if drift_injection_config:
+            injector = DriftInjector(
+                original_df=df_genes,
+                generator_name="ClinicGenerator_Gene",
+                # Genes usually don't have time column unless passed or index logic
+            )
+            for drift_conf in drift_injection_config:
+                method_name = drift_conf.get("method")
+                params = drift_conf.get("params", {})
+                if hasattr(injector, method_name):
+                    drift_method = getattr(injector, method_name)
+                    try:
+                        if "df" not in params:
+                            params["df"] = df_genes
+                        res = drift_method(**params)
+                        if isinstance(res, pd.DataFrame):
+                            df_genes = res
+                    except Exception as e:
+                        print(f"Failed to apply drift {method_name}: {e}")
+                        raise e
+                else:
+                    print(f"Drift method '{method_name}' not found.")
+
         return df_genes
 
     def _apply_effect_to_patients(self, df_omics, patient_ids, effect_config):
@@ -730,7 +809,10 @@ class ClinicGenerator:
         disease_effects_config: list = None,  # New parameter
         control_disease_ratio: float = 0.5,
         custom_protein_parameters: dict = None,
+        protein_mean_log_center: float = 3.0,
         n_samples: int = 100,
+        drift_injection_config: Optional[List[Dict]] = None,
+        dynamics_config: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """
         Generates synthetic protein expression data using post-generation stochastic effects.
@@ -752,7 +834,7 @@ class ClinicGenerator:
         base_protein_marginals = [None] * n_proteins
         for i in range(n_proteins):
             # Simplified parameter design
-            log_mean = np.random.normal(loc=3.0, scale=0.8)
+            log_mean = np.random.normal(loc=protein_mean_log_center, scale=0.8)
             log_std = np.random.uniform(low=0.1, high=0.4)
             base_protein_marginals[i] = stats.lognorm(s=log_std, scale=np.exp(log_mean))
 
@@ -824,6 +906,11 @@ class ClinicGenerator:
                     df_proteins.loc[disease_patient_ids, protein_cols_to_affect] *= (
                         fold_changes[:, np.newaxis]
                     )
+                elif effect_type == "simple_additive_shift":
+                    # Direct additive shift in original space (User requested behavior)
+                    df_proteins.loc[disease_patient_ids, protein_cols_to_affect] += (
+                        patient_offsets[:, np.newaxis]
+                    )
                 elif effect_type == "variance_scale":
                     print(
                         f"Warning: 'variance_scale' is not supported with the per-patient stochastic effect model for proteins. Skipping effect '{effect['name']}'."
@@ -833,6 +920,38 @@ class ClinicGenerator:
                     raise ValueError(
                         f"Unsupported effect_type '{effect_type}' in per-patient stochastic model for proteins."
                     )
+
+        # --- Dynamics Injection ---
+        if dynamics_config:
+            injector = DynamicsInjector()
+            if "evolve_features" in dynamics_config:
+                evolve_args = dynamics_config["evolve_features"]
+                df_proteins = injector.evolve_features(df_proteins, **evolve_args)
+            if "construct_target" in dynamics_config:
+                target_args = dynamics_config["construct_target"]
+                df_proteins = injector.construct_target(df_proteins, **target_args)
+
+        # --- Drift Injection ---
+        if drift_injection_config:
+            injector = DriftInjector(
+                original_df=df_proteins, generator_name="ClinicGenerator_Protein"
+            )
+            for drift_conf in drift_injection_config:
+                method_name = drift_conf.get("method")
+                params = drift_conf.get("params", {})
+                if hasattr(injector, method_name):
+                    drift_method = getattr(injector, method_name)
+                    try:
+                        if "df" not in params:
+                            params["df"] = df_proteins
+                        res = drift_method(**params)
+                        if isinstance(res, pd.DataFrame):
+                            df_proteins = res
+                    except Exception as e:
+                        print(f"Failed to apply drift {method_name}: {e}")
+                        raise e
+                else:
+                    print(f"Drift method '{method_name}' not found.")
 
         return df_proteins
 

@@ -1314,7 +1314,19 @@ class DriftInjector:
             time_ranges=time_ranges,
             specific_times=specific_times,
         )
-        # ... rest of the logic
+        if len(rows) == 0:
+            return df_drift
+
+        for col in feature_cols:
+            if col not in df.columns:
+                continue
+
+            # Simple random injection for now, can be upgraded to windowed later if needed
+            mask = self.rng.random(len(rows)) < missing_fraction
+            target_indices = rows[mask]
+
+            df_drift.loc[target_indices, col] = np.nan
+
         return df_drift
 
     # -------------------------

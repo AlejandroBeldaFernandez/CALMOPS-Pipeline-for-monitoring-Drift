@@ -21,12 +21,19 @@ Ensure `calmops` and `river` are installed.
 
 ```python
 from calmops.data_generators.Synthetic.SyntheticGenerator import SyntheticGenerator
+from river.datasets import synth
 
-# Initialize generator (e.g., SEA dataset)
-generator = SyntheticGenerator(method="sea", seed=42)
+# 1. Initialize Generator (Lightweight)
+generator = SyntheticGenerator(seed=42)
 
-# Generate data
-data = generator.generate(n_samples=1000, method_params={'function': 1})
+# 2. Define Stream Source (River)
+sea_stream = synth.SEA(variant=0)
+
+# 3. Generate Data
+data = generator.generate(
+    generator_instance=sea_stream,
+    n_samples=1000
+)
 ```
 
 ## Block Usage (`SyntheticBlockGenerator`)

@@ -56,6 +56,8 @@ except ImportError:
     SDV_AVAILABLE = False
     warnings.warn("SDV not available. Quality assessment will be limited.")
 
+from calmops.utils.distribution_fitter import fit_distribution
+
 # Statistical tests
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
@@ -178,6 +180,7 @@ class RealReporter:
         focus_cols: Optional[List[str]] = None,
         drift_config: Optional[Dict[str, Any]] = None,
         time_col: Optional[str] = None,
+        drift_history: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """
         Generates a comprehensive file-based report comparing real and synthetic data.
@@ -227,6 +230,7 @@ class RealReporter:
             ),
             "statistical_tests": self._compute_statistical_tests(real_df, synthetic_df),
             "block_analysis": None,
+            "drift_history": drift_history,
             "plots": {},
         }
 
@@ -439,14 +443,49 @@ class RealReporter:
 
         # --- Calculate duplication percentage ---
         # 1. Get indices of rows that are internal duplicates in the synthetic data
+        # Use duplicated() which is vectorized and efficient
         internal_dup_indices = synthetic_df[synthetic_df.duplicated()].index
 
         # 2. Get indices of rows in synthetic data that are copies of rows in real data
-        # Using hashing for efficient comparison of rows.
-        real_hashes = set(real_df.apply(lambda row: hash(tuple(row)), axis=1))
-        synth_hashes = synthetic_df.apply(lambda row: hash(tuple(row)), axis=1)
-        cross_dup_mask = synth_hashes.isin(real_hashes)
-        cross_dup_indices = synthetic_df[cross_dup_mask].index
+        # Optimized approach: Inner join on all columns to find exact matches
+        # This avoids the slow and memory-intensive apply(hash)
+        try:
+            # We only care IF it exists in real_df, not how many times
+            # dropping duplicates in real_df first speeds up the merge
+            real_unique = real_df.drop_duplicates()
+
+            # Merge is much faster than row-wise iteration
+            merged = synthetic_df.merge(
+                real_unique,
+                on=list(synthetic_df.columns),
+                how="inner",
+                suffixes=("", "_real"),
+            )
+
+            # The indices in synthetic_df that are present in merged are the cross-duplicates
+            # Note: merge resets index by default, so we need to be careful if we wanted exact indices,
+            # but for counting how many rows are copies, we just need the count of the merge logic applied to the original synthetic.
+            # Simpler approach: usage of isin if all columns match is tricky with NaNs.
+            # Robust approach with merge:
+
+            # Let's count rows in synthetic that have a match in real.
+            # We can mark synthetic rows that are in real.
+
+            # Filter synthetic rows that are in real_df
+            # Indicator=True gives us a column '_merge' with 'both', 'left_only', 'right_only'
+            merged_indicator = synthetic_df.merge(
+                real_unique, on=list(synthetic_df.columns), how="left", indicator=True
+            )
+            cross_dup_indices = merged_indicator[
+                merged_indicator["_merge"] == "both"
+            ].index
+
+        except Exception as e:
+            self.logger.warning(
+                f"Optimization for duplicate detection failed: {e}. Falling back to row-wise (slow)."
+            )
+            # fallback or safe count
+            cross_dup_indices = pd.Index([])
 
         # 3. Combine the indices to get a unique set of "bad" rows
         bad_indices = internal_dup_indices.union(cross_dup_indices)
@@ -1029,12 +1068,22 @@ class RealReporter:
         """Saves a distribution comparison plot (KDE) for a single numeric feature."""
         try:
             fig = plt.figure(figsize=(10, 6))
+            fig = plt.figure(figsize=(10, 6))
             is_numeric = pd.api.types.is_numeric_dtype(real_df[column])
-            if is_numeric:
-                sns.kdeplot(real_df[column], label="Real", fill=True)
-                sns.kdeplot(
-                    synthetic_df[column], label="Synthetic", fill=True, alpha=0.7
-                )
+            # User requested KDE style even for low cardinality (like booleans)
+            if is_numeric and real_df[column].nunique() > 1:
+                # Downsample for plotting performance if needed
+                MAX_SAMPLES = 50000
+                real_plot = real_df[column]
+                if len(real_plot) > MAX_SAMPLES:
+                    real_plot = real_plot.sample(n=MAX_SAMPLES, random_state=42)
+
+                synth_plot = synthetic_df[column]
+                if len(synth_plot) > MAX_SAMPLES:
+                    synth_plot = synth_plot.sample(n=MAX_SAMPLES, random_state=42)
+
+                sns.kdeplot(real_plot, label="Real", fill=True)
+                sns.kdeplot(synth_plot, label="Synthetic", fill=True, alpha=0.7)
                 plt.title(f"Distribution Comparison: {column}")
             else:
                 HIGH_CARDINALITY_THRESHOLD = 30
@@ -1120,16 +1169,43 @@ class RealReporter:
             synth_corr = synthetic_df[numeric_cols].corr()
             diff_corr = (real_corr - synth_corr).abs()
 
-            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 7))
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(40, 12))
 
-            sns.heatmap(real_corr, ax=ax1, annot=True, cmap="viridis", fmt=".2f")
-            ax1.set_title("Real Data Correlation")
+            sns.heatmap(
+                real_corr,
+                ax=ax1,
+                annot=True,
+                cmap="viridis",
+                fmt=".2f",
+                annot_kws={"size": 12},
+            )
+            ax1.set_title("Real Data Correlation", fontsize=16)
+            ax1.tick_params(axis="x", rotation=45, labelsize=12)
+            ax1.tick_params(axis="y", rotation=0, labelsize=12)
 
-            sns.heatmap(synth_corr, ax=ax2, annot=True, cmap="viridis", fmt=".2f")
-            ax2.set_title("Synthetic Data Correlation")
+            sns.heatmap(
+                synth_corr,
+                ax=ax2,
+                annot=True,
+                cmap="viridis",
+                fmt=".2f",
+                annot_kws={"size": 12},
+            )
+            ax2.set_title("Synthetic Data Correlation", fontsize=16)
+            ax2.tick_params(axis="x", rotation=45, labelsize=12)
+            ax2.tick_params(axis="y", rotation=0, labelsize=12)
 
-            sns.heatmap(diff_corr, ax=ax3, annot=True, cmap="hot_r", fmt=".2f")
-            ax3.set_title("Absolute Difference")
+            sns.heatmap(
+                diff_corr,
+                ax=ax3,
+                annot=True,
+                cmap="hot_r",
+                fmt=".2f",
+                annot_kws={"size": 12},
+            )
+            ax3.set_title("Absolute Difference", fontsize=16)
+            ax3.tick_params(axis="x", rotation=45, labelsize=12)
+            ax3.tick_params(axis="y", rotation=0, labelsize=12)
 
             plt.tight_layout()
             plot_path = os.path.join(output_dir, "correlation_heatmap.png")
@@ -1165,14 +1241,28 @@ class RealReporter:
                         break
                     if 2 <= real_df[cat_col].nunique() <= 10:
                         try:
+                            # Downsample for plotting performance if needed
+                            MAX_SAMPLES = 50000
+                            real_plot = real_df
+                            if len(real_plot) > MAX_SAMPLES:
+                                real_plot = real_plot.sample(
+                                    n=MAX_SAMPLES, random_state=42
+                                )
+
+                            synth_plot = synthetic_df
+                            if len(synth_plot) > MAX_SAMPLES:
+                                synth_plot = synth_plot.sample(
+                                    n=MAX_SAMPLES, random_state=42
+                                )
+
                             fig, (ax1, ax2) = plt.subplots(
                                 1, 2, figsize=(20, 8), sharey=True
                             )
-                            sns.boxplot(x=cat_col, y=num_col, data=real_df, ax=ax1)
+                            sns.boxplot(x=cat_col, y=num_col, data=real_plot, ax=ax1)
                             ax1.set_title(f"Real: {num_col} by {cat_col}")
                             ax1.tick_params(axis="x", rotation=45)
 
-                            sns.boxplot(x=cat_col, y=num_col, data=synthetic_df, ax=ax2)
+                            sns.boxplot(x=cat_col, y=num_col, data=synth_plot, ax=ax2)
                             ax2.set_title(f"Synthetic: {num_col} by {cat_col}")
                             ax2.tick_params(axis="x", rotation=45)
 
@@ -1444,12 +1534,19 @@ class RealReporter:
             fig, ax = plt.subplots(figsize=(8, 6))
 
             # Combine data for plotting with seaborn
-            real_df_copy = real_df[[column]].copy()
-            real_df_copy["source"] = "Real"
-            synth_df_copy = synthetic_df[[column]].copy()
-            synth_df_copy["source"] = "Synthetic"
+            # Downsample for plotting performance if needed
+            MAX_SAMPLES = 50000
+            real_plot = real_df[[column]].copy()
+            if len(real_plot) > MAX_SAMPLES:
+                real_plot = real_plot.sample(n=MAX_SAMPLES, random_state=42)
+            real_plot["source"] = "Real"
 
-            combined_df = pd.concat([real_df_copy, synth_df_copy], ignore_index=True)
+            synth_plot = synthetic_df[[column]].copy()
+            if len(synth_plot) > MAX_SAMPLES:
+                synth_plot = synth_plot.sample(n=MAX_SAMPLES, random_state=42)
+            synth_plot["source"] = "Synthetic"
+
+            combined_df = pd.concat([real_plot, synth_plot], ignore_index=True)
 
             sns.boxplot(x="source", y=column, data=combined_df, ax=ax)
 
@@ -1803,6 +1900,44 @@ class RealReporter:
             print("DRIFT INJECTION REPORT")
             print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             print("=" * 80)
+
+        # --- 1. Load/Update Drift History to JSON first ---
+        report_path = os.path.join(output_dir, "report.json")
+        drift_history = []
+        full_report_json = {}
+
+        try:
+            if os.path.exists(report_path):
+                with open(report_path, "r") as f:
+                    try:
+                        full_report_json = json.load(f)
+                        # Check for existing history or single config
+                        if "drift_history" in full_report_json:
+                            drift_history = full_report_json["drift_history"]
+                        elif "drift_config" in full_report_json:
+                            # Migrate old single config to history
+                            drift_history = [full_report_json["drift_config"]]
+                    except json.JSONDecodeError:
+                        full_report_json = {}
+
+            # Append current config
+            # Add timestamp to config if not present
+            if "timestamp" not in drift_config:
+                drift_config["timestamp"] = datetime.now().isoformat()
+
+            drift_history.append(drift_config)
+            full_report_json["drift_history"] = drift_history
+            # Keep "drift_config" as the latest for backwards compatibility if needed,
+            # or just rely on history[-1]
+            full_report_json["drift_config"] = drift_config
+
+            # Write back immediately so we have it saved
+            with open(report_path, "w") as f:
+                json.dump(full_report_json, f, indent=4, cls=NumpyEncoder)
+
+        except Exception as e:
+            self.logger.error(f"Failed to update drift history in report.json: {e}")
+
         generator_name = drift_config.get("generator_name", "Drifted Data")
         target_column = drift_config.get("target_column")
         block_column = drift_config.get("block_column")
@@ -1832,17 +1967,8 @@ class RealReporter:
             focus_cols=focus_cols,
             drift_config=drift_config,
             time_col=time_col,
+            drift_history=drift_history,
         )
-
-        report_path = os.path.join(output_dir, "report.json")
-        try:
-            with open(report_path, "r+") as f:
-                report = json.load(f)
-                report["drift_config"] = drift_config
-                f.seek(0)
-                json.dump(report, f, indent=4, cls=NumpyEncoder)
-        except Exception as e:
-            self.logger.error(f"Failed to add drift config to report: {e}")
 
     def _save_umap_plot(
         self,
@@ -1918,6 +2044,53 @@ class RealReporter:
             self.logger.error(f"Failed to generate UMAP plot: {e}")
             return None
 
+    def _compare_numeric_distributions(
+        self, real_df: pd.DataFrame, synthetic_df: pd.DataFrame
+    ) -> Dict[str, Any]:
+        """Compares distributions of numeric columns."""
+        comparison = {}
+        try:
+            numeric_cols = real_df.select_dtypes(include=[np.number]).columns
+
+            for col in numeric_cols:
+                if col not in synthetic_df.columns:
+                    continue
+
+                real_data = real_df[col].dropna()
+                synth_data = synthetic_df[col].dropna()
+
+                if len(real_data) == 0 or len(synth_data) == 0:
+                    continue
+
+                # Basic stats
+                r_mean = real_data.mean()
+                r_std = real_data.std()
+                s_mean = synth_data.mean()
+                s_std = synth_data.std()
+
+                # KS Test
+                is_match = False
+                try:
+                    ks_stat, p_value = ks_2samp(real_data, synth_data)
+                    # Use standard alpha=0.05
+                    is_match = p_value > 0.05
+                except Exception:
+                    p_value = None
+
+                comparison[col] = {
+                    "real_distribution": f"Mean: {r_mean:.2f}, Std: {r_std:.2f}",
+                    "synthetic_distribution": f"Mean: {s_mean:.2f}, Std: {s_std:.2f}",
+                    "match": is_match,
+                    "stats": {
+                        "ks_stat": float(ks_stat) if p_value is not None else None,
+                        "p_value": float(p_value) if p_value is not None else None,
+                    },
+                }
+        except Exception as e:
+            self.logger.error(f"Failed to compare numeric distributions: {e}")
+
+        return comparison
+
     def _compute_statistical_tests(
         self, real_df: pd.DataFrame, synthetic_df: pd.DataFrame
     ) -> Dict[str, Any]:
@@ -1977,6 +2150,19 @@ class RealReporter:
 
                 except Exception as e:
                     col_res["error"] = str(e)
+
+            # --- Add Distribution Fit Analysis ---
+            try:
+                real_fit = fit_distribution(real_data)
+                synth_fit = fit_distribution(synth_data)
+
+                col_res["real_dist_fit"] = real_fit["distribution"]
+                col_res["real_dist_p"] = real_fit["p_value"]
+                col_res["synth_dist_fit"] = synth_fit["distribution"]
+                col_res["synth_dist_p"] = synth_fit["p_value"]
+
+            except Exception as e:
+                col_res["dist_fit_error"] = str(e)
 
             results[col] = col_res
 
@@ -2047,6 +2233,23 @@ class RealReporter:
                 f.write(f"**Generator:** {report.get('generator_name')}\n")
                 f.write(f"**Date:** {report.get('generation_timestamp')}\n\n")
 
+                # Drift History
+                if "drift_history" in report and report["drift_history"]:
+                    f.write("## 📜 Drift Injection History\n")
+                    history = report["drift_history"]
+                    for i, drift in enumerate(history):
+                        f.write(f"### Injection #{i + 1}\n")
+                        f.write(f"- **Method:** {drift.get('drift_method', 'N/A')}\n")
+                        f.write(f"- **Type:** {drift.get('drift_type', 'N/A')}\n")
+                        if "feature_cols" in drift:
+                            f.write(
+                                f"- **Features:** {', '.join(drift['feature_cols'])}\n"
+                            )
+                        if "drift_magnitude" in drift:
+                            f.write(f"- **Magnitude:** {drift['drift_magnitude']}\n")
+                        if "timestamp" in drift:
+                            f.write(f"- **Time:** {drift['timestamp']}\n")
+                        f.write("\n")
                 # Sdv Score
                 if "sdv_quality" in report and report["sdv_quality"]:
                     sdv = report["sdv_quality"]
@@ -2079,15 +2282,30 @@ class RealReporter:
 
                 # Statistical Tests
                 if "statistical_tests" in report and report["statistical_tests"]:
-                    f.write("## 📉 Statistical Tests\n")
-                    f.write("| Column | Test | Statistic | P-Value | Conclusion |\n")
-                    f.write("| :--- | :--- | :--- | :--- | :--- |\n")
+                    f.write("## 📉 Statistical Tests & Distribution Fit\n")
+                    f.write(
+                        "| Column | Test | Statistic | P-Value | Real Dist | Synth Dist | Conclusion |\n"
+                    )
+                    f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
                     for col, res in report["statistical_tests"].items():
                         if "error" in res:
-                            f.write(f"| {col} | Error | - | - | {res['error']} |\n")
-                        else:
                             f.write(
-                                f"| {col} | {res.get('test')} | {res.get('statistic'):.4f} | {res.get('p_value', '-') if res.get('p_value') else '-'} | {res.get('conclusion')} |\n"
+                                f"| {col} | Error | - | - | - | - | {res['error']} |\n"
+                            )
+                        else:
+                            real_dist = res.get("real_dist_fit", "-")
+                            synth_dist = res.get("synth_dist_fit", "-")
+
+                            p_val = res.get("p_value", "-")
+                            if p_val != "-":
+                                p_val = (
+                                    f"{p_val:.4f}"
+                                    if isinstance(p_val, float)
+                                    else str(p_val)
+                                )
+
+                            f.write(
+                                f"| {col} | {res.get('test')} | {res.get('statistic'):.4f} | {p_val} | {real_dist} | {synth_dist} | {res.get('conclusion')} |\n"
                             )
                     f.write("\n")
 

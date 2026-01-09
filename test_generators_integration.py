@@ -19,7 +19,7 @@ df_mock = pd.DataFrame(
 def test_real_generator():
     print("Testing RealGenerator...")
     gen = RealGenerator(
-        original_data=df_mock, method="cart", target_column="target", random_state=42
+        data=df_mock, method="cart", target_col="target", random_state=42
     )
 
     drift_conf = [
@@ -33,7 +33,7 @@ def test_real_generator():
         }
     ]
 
-    df_synth = gen.synthesize(
+    df_synth = gen.generate(
         n_samples=50, drift_injection_config=drift_conf, output_dir="test_output_real"
     )
 
@@ -87,6 +87,21 @@ def test_clinic_generator():
     df_genes = gen.generate_gene_data(n_genes=10, gene_type="Microarray", n_samples=50)
     assert len(df_genes) == 50
     print("ClinicGenerator generate_gene_data n_samples check passed.")
+
+    # Test Unified API (Dashboard Usage)
+    print("Testing ClinicGenerator Unified API...")
+    results = gen.generate(
+        n_samples=20,
+        control_disease_ratio=0.5,
+        gene_config={"n_genes": 10, "gene_type": "Microarray"},
+        protein_config={"n_proteins": 5},
+    )
+    assert isinstance(results, dict)
+    assert "demographics" in results
+    assert "genes" in results
+    assert "proteins" in results
+    assert len(results["demographics"]) == 20
+    print("ClinicGenerator Unified API passed.")
 
 
 if __name__ == "__main__":

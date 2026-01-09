@@ -4,7 +4,6 @@ import numpy as np
 import os
 import sys
 import inspect
-import json
 import time
 
 # Add project root to path
@@ -25,7 +24,12 @@ with st.sidebar:
     st.header("Generator Configuration")
     generator_type = st.selectbox(
         "Select Generator Engine",
-        ["Synthetic (River)", "Real (from Data)", "Clinic (Medical)"],
+        [
+            "Synthetic (River)",
+            "Real (from Data)",
+            "Clinic (Medical)",
+            "Scenario (Time Series)",
+        ],
     )
 
 
@@ -254,6 +258,182 @@ def render_synthetic_river():
             index=river_gens.index("Agrawal") if "Agrawal" in river_gens else 0,
         )
 
+        # --- Instantiate Generator ---
+        gen_class = getattr(rv_synth, selected_gen)
+        sig = inspect.signature(gen_class.__init__)
+
+        gen_params = {}
+        st.caption(f"Configuring {selected_gen} parameters:")
+
+        for name, param in sig.parameters.items():
+            if name == "self":
+                continue
+
+            label = name.replace("_", " ").title()
+
+            # Heuristics for input types
+            if param.annotation == int or isinstance(param.default, int):
+                val = param.default if param.default != inspect.Parameter.empty else 0
+                # Special cases for choices
+                if name == "classification_function" and selected_gen == "Agrawal":
+                    gen_params[name] = st.selectbox(
+                        label,
+                        options=range(10),
+                        index=val if isinstance(val, int) else 0,
+                    )
+                elif name == "classification_function" and selected_gen == "SEA":
+                    gen_params[name] = st.selectbox(
+                        label,
+                        options=range(4),
+                        index=val if isinstance(val, int) else 0,
+                    )
+                else:
+                    gen_params[name] = st.number_input(label, value=val, step=1)
+
+            elif param.annotation == float or isinstance(param.default, float):
+                val = param.default if param.default != inspect.Parameter.empty else 0.0
+                gen_params[name] = st.number_input(
+                    label, value=val, step=0.01, format="%.4f"
+                )
+
+            elif param.annotation == bool or isinstance(param.default, bool):
+                val = (
+                    param.default if param.default != inspect.Parameter.empty else False
+                )
+                gen_params[name] = st.checkbox(label, value=val)
+
+            elif name == "seed" or name == "random_state":
+                gen_params[name] = st.number_input(label, value=42, step=1)
+
+            else:
+                pass  # Ignore unknowables
+
+        st.divider()
+        n_samples = st.number_input(
+            "Total Samples to Generate",
+            min_value=100,
+            max_value=1000000,
+            value=1000,
+            step=100,
+        )
+
+    with col2:
+        st.subheader("Unified Generator Options")
+
+        st.markdown("**Drift Configuration**")
+        drift_type = st.selectbox(
+            "Drift Type", ["none", "abrupt", "gradual", "incremental", "virtual"]
+        )
+
+        drift_gen_instance = None
+        drift_point = 0
+        transition_width = 0
+        inconsistency = 0.0
+
+        if drift_type != "none":
+            if drift_type == "virtual":
+                inconsistency = st.slider("Inconsistency (Noise)", 0.0, 1.0, 0.1)
+            else:
+                drift_point = st.slider(
+                    "Drift Start Position", 0, n_samples, int(n_samples / 2)
+                )
+
+                if drift_type == "gradual":
+                    transition_width = st.slider(
+                        "Transition Width", 10, n_samples // 2, 100
+                    )
+
+                # Configure Concept B
+                st.markdown("#### Concept B (Drift Target)")
+                selected_gen_drift = st.selectbox(
+                    "Select Drift Simulator",
+                    sorted(river_gens),
+                    index=river_gens.index("Agrawal") if "Agrawal" in river_gens else 0,
+                    key="drift_gen_select",
+                )
+                st.caption(f"Configuring {selected_gen_drift} (Concept B):")
+                gen_class_drift = getattr(rv_synth, selected_gen_drift)
+                # For simplicity in UI, we instantiate with default params or would need duplicate UI
+                # Here we just use default constructor for Concept B to keep UI clean,
+                # or we could duplicate the form. Let's assume defaults for now as per previous logic.
+                # Or better, let's just instantiate it cleanly:
+                try:
+                    drift_gen_instance = gen_class_drift()
+                except:
+                    st.warning("Concept B used default parameters.")
+
+        st.markdown("**General Options**")
+        balance = st.checkbox("Balance Classes", value=True)
+        inject_dates = st.checkbox("Inject Timestamps", value=True)
+        date_start = "2024-01-01"
+        if inject_dates:
+            date_start = st.text_input("Start Date", value="2024-01-01")
+
+        # Advanced Post-Processing
+        st.divider()
+        dynamics_conf = render_dynamics_ui("synthetic")
+        st.divider()
+        drift_inj_conf = render_drift_injection_ui("synthetic")
+
+    if st.button("🚀 Generate Synthetic Data", type="primary"):
+        with st.spinner("Simulating data stream..."):
+            try:
+                # 1. Instantiate Concept A
+                stream_gen = gen_class(**gen_params)
+
+                # 2. Instantiate Generator
+                seed = gen_params.get("seed") or gen_params.get("random_state") or 42
+                # Use standard DateConfig if needed via kwargs, but unified API accepts date_start
+                synth_gen = SyntheticGenerator(random_state=seed)
+
+                # 3. Call Unified API
+                # Note: We pass kwargs that match SyntheticGenerator.generate signature
+                df_result = synth_gen.generate(
+                    generator_instance=stream_gen,
+                    n_samples=n_samples,
+                    drift_type=drift_type,
+                    generator_instance_drift=drift_gen_instance,
+                    drift_point=drift_point,
+                    transition_width=transition_width,
+                    inconsistency=inconsistency,  # Virtual drift param
+                    balance=balance,
+                    date_start=date_start if inject_dates else None,
+                    drift_injection_config=drift_inj_conf,
+                    dynamics_config=dynamics_conf,
+                    save_dataset=False,  # We handle download manually
+                )
+
+                if df_result is not None:
+                    st.success(f"Generated {len(df_result)} samples!")
+                    st.dataframe(df_result.head(100))
+
+                    csv = df_result.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "⬇ Download CSV",
+                        csv,
+                        f"synthetic_{selected_gen}.csv",
+                        "text/csv",
+                    )
+                else:
+                    st.error("Generation failed (returned None).")
+
+            except Exception as e:
+                st.error(f"Error during generation: {e}")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("River Simulator Props")
+        # Get list of river generators
+        river_gens = [
+            name for name, obj in inspect.getmembers(rv_synth) if inspect.isclass(obj)
+        ]
+        selected_gen = st.selectbox(
+            "Select Simulator",
+            sorted(river_gens),
+            index=river_gens.index("Agrawal") if "Agrawal" in river_gens else 0,
+        )
+
         # --- Attempt to inspect and expose common params for the selected generator ---
         gen_class = getattr(rv_synth, selected_gen)
         sig = inspect.signature(gen_class.__init__)
@@ -333,7 +513,7 @@ def render_synthetic_river():
                 "Drift Position (Sample Index)", 0, n_samples, int(n_samples / 2)
             )
             if drift_type == "gradual":
-                width = st.slider(
+                _ = st.slider(
                     "Gradual Width (Transition Length)", 1, n_samples // 2, 50
                 )
                 # We can pass width as a generic drift option if supported,
@@ -430,13 +610,9 @@ def render_synthetic_river():
         st.markdown("**Date Injection**")
         inject_dates = st.checkbox("Inject Timestamps", value=True)
         date_start = None
-        date_every = 1
 
         if inject_dates:
             date_start = st.text_input("Start Date (YYYY-MM-DD)", value="2024-01-01")
-            date_every = st.number_input(
-                "Step (Rows per timestamp increment)", value=1, min_value=1
-            )
 
         # Dynamics & Post-Hoc Drift Injection Config
         st.divider()
@@ -571,6 +747,97 @@ def render_real_data():
             )
             n_samples = st.number_input("Samples to Generate", value=len(df_orig))
 
+            st.markdown("**Advanced Model Parameters**")
+            epochs = 300
+            if method in ["tvae", "ctgan", "copula"]:
+                epochs = st.number_input("Training Epochs (SDV)", value=300, step=50)
+
+        with c2:
+            target_col = st.selectbox(
+                "Target Column (Optional)", [None] + list(df_orig.columns)
+            )
+            balance = st.checkbox("Balance Target")
+            auto_report = st.checkbox("Generate Quality Report", value=True)
+
+            st.divider()
+            custom_dists = render_custom_dist_ui("real")
+            st.divider()
+            dynamics_conf = render_dynamics_ui("real")
+            st.divider()
+            drift_inj_conf = render_drift_injection_ui("real")
+
+        if st.button("🚀 Train & Synthesize", type="primary"):
+            with st.spinner(f"Training {method.upper()} and Synthesizing..."):
+                try:
+                    # Model config
+                    model_params = {}
+                    if method in ["tvae", "ctgan", "copula"]:
+                        model_params["sdv_epochs"] = epochs
+
+                    # Initialize Generator
+                    gen = RealGenerator(
+                        data=df_orig,
+                        method=method,
+                        target_col=target_col,
+                        balance_target=balance,
+                        auto_report=auto_report,
+                        model_params=model_params,
+                    )
+
+                    # Unified Call
+                    df_synth = gen.generate(
+                        n_samples=n_samples,
+                        output_dir=".",
+                        save_dataset=False,
+                        custom_distributions=custom_dists,
+                        drift_injection_config=drift_inj_conf,
+                        dynamics_config=dynamics_conf,
+                    )
+
+                    if df_synth is not None:
+                        st.success("Synthesis complete!")
+                        st.dataframe(df_synth.head(100))
+
+                        csv = df_synth.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            "⬇ Download Synthetic Data",
+                            csv,
+                            f"real_synth_{method}.csv",
+                            "text/csv",
+                        )
+                        if auto_report:
+                            st.info(
+                                "Quality report generated (check output directory)."
+                            )
+
+                except Exception as e:
+                    st.error(f"Synthesis failed: {e}")
+
+    uploaded_file = st.file_uploader("Upload Original CSV", type=["csv"])
+
+    if uploaded_file:
+        df_orig = pd.read_csv(uploaded_file)
+        st.write("Original Data Preview:")
+        st.dataframe(df_orig.head())
+
+        c1, c2 = st.columns(2)
+        with c1:
+            method = st.selectbox(
+                "Method",
+                [
+                    "tvae",
+                    "ctgan",
+                    "copula",
+                    "cart",
+                    "rf",
+                    "lgbm",
+                    "gmm",
+                    "datasynth",
+                    "resample",
+                ],
+            )
+            n_samples = st.number_input("Samples to Generate", value=len(df_orig))
+
             # Advanced Model Params
             st.markdown("**Advanced Model Parameters**")
             epochs = 300
@@ -611,9 +878,9 @@ def render_real_data():
                         model_params["sdv_epochs"] = epochs
 
                     gen = RealGenerator(
-                        original_data=df_orig,
+                        data=df_orig,
                         method=method,
-                        target_column=target_col,
+                        target_col=target_col,
                         balance_target=balance,
                         auto_report=auto_report,
                         model_params=model_params,
@@ -622,7 +889,7 @@ def render_real_data():
                     # We output to a temp dir current dir to allow finding the report?
                     # RealGenerator saves strictly to output_dir
 
-                    df_synth = gen.synthesize(
+                    df_synth = gen.generate(
                         n_samples=n_samples,
                         output_dir=".",
                         save_dataset=False,
@@ -660,91 +927,18 @@ def render_clinic():
 
     c1, c2 = st.columns(2)
     with c1:
-        n_patients = st.number_input("Number of Patients", min_value=10, value=100)
+        n_samples = st.number_input("Number of Patients", min_value=10, value=100)
         control_ratio = st.slider("Control Ratio (vs Disease)", 0.0, 1.0, 0.5)
     with c2:
         n_genes = st.number_input("Number of Genes", value=100)
         n_proteins = st.number_input("Number of Proteins", value=50)
         seed_clinic = st.number_input("Random Seed", value=42)
 
-    st.subheader("Distribution Controls (Advanced)")
-    # --- Advanced Parameters ---
-    st.markdown("### Advanced Distribution Control")
+    st.subheader("Configuration")
+    gene_type = st.selectbox("Gene Expression Type", ["RNA-Seq", "Microarray"])
+    custom_cols = render_custom_dist_ui("clinic")
 
-    with st.expander("Mean / Center Parameters"):
-        c_gen1, c_gen2 = st.columns(2)
-        # Defaults from Clinic.py: RNA-seq ~ log(80) approx 4.38, Microarray ~ 7.0
-        # Protein ~ 3.0
-        with c_gen1:
-            gene_mean_rna = st.number_input(
-                "Gene Mean Log Center (RNA-Seq)", value=4.4, step=0.1
-            )
-            gene_mean_micro = st.number_input(
-                "Gene Mean Loc Center (Microarray)", value=7.0, step=0.5
-            )
-        with c_gen2:
-            protein_mean = st.number_input(
-                "Protein Mean Log Center", value=3.0, step=0.1
-            )
-
-    with st.expander("Add Custom Demographic Variable"):
-        st.info("Define new columns with specific distributions.")
-
-        # We need session state to store added columns across reruns
-        if "custom_demo_cols" not in st.session_state:
-            st.session_state.custom_demo_cols = {}
-
-        c_new1, c_new2, c_new3 = st.columns(3)
-        with c_new1:
-            new_col_name = st.text_input("Column Name", placeholder="e.g. BMI")
-        with c_new2:
-            dist_type = st.selectbox(
-                "Distribution", ["norm", "uniform", "binom", "poisson", "randint"]
-            )
-
-        # Dynamic params based on dist
-        params = {}
-        with c_new3:
-            if dist_type == "norm":
-                loc = st.number_input("Mean (loc)", value=0.0)
-                scale = st.number_input("Std Dev (scale)", value=1.0)
-                params = {"loc": loc, "scale": scale}
-            elif dist_type == "uniform":
-                loc = st.number_input("Start (loc)", value=0.0)
-                scale = st.number_input("Width (scale)", value=1.0)
-                params = {"loc": loc, "scale": scale}
-            elif dist_type == "binom":
-                n = st.number_input("Trials (n)", value=1, min_value=1)
-                p = st.number_input("Prob (p)", value=0.5, min_value=0.0, max_value=1.0)
-                params = {"n": int(n), "p": p}
-            elif dist_type == "randint":
-                low = st.number_input("Low", value=0)
-                high = st.number_input("High", value=10)
-                params = {"low": int(low), "high": int(high)}
-
-        if st.button("Add Variable"):
-            if new_col_name:
-                full_spec = {"distribution": dist_type, **params}
-                st.session_state.custom_demo_cols[new_col_name] = full_spec
-                st.success(f"Added {new_col_name}")
-            else:
-                st.warning("Enter a column name")
-
-        # Display current Custom Vars
-        if st.session_state.custom_demo_cols:
-            st.write("Current Custom Variables:")
-            st.json(st.session_state.custom_demo_cols)
-            if st.button("Clear Custom Variables"):
-                st.session_state.custom_demo_cols = {}
-                st.rerun()
-
-    # --- Gene Type Selection ---
-    st.markdown("### Genetic Data Configuration")
-    gene_type_opts = ["RNA-Seq", "Microarray"]
-    gene_type = st.selectbox("Gene Expression Type", gene_type_opts)
-
-    # --- Disease Effects Configuration ---
-    st.markdown("### Disease Effects (Bio-Markers)")
+    st.subheader("Disease Effects (Advanced)")
     st.info("Define how the disease affects specific Genes or Proteins.")
 
     if "disease_effects" not in st.session_state:
@@ -758,330 +952,445 @@ def render_clinic():
                 "Effect Name",
                 value=f"Effect_{len(st.session_state.disease_effects) + 1}",
             )
-
         with c_eff2:
             eff_type = st.selectbox(
                 "Effect Type",
-                ["additive_shift", "fold_change", "log_transform"]
+                ["additive_shift", "fold_change"]
                 if target_scope == "Genes"
-                else [
-                    "additive_shift",
-                    "simple_additive_shift",
-                ],  # Proteins use lognorm, additive in log space = fold change
+                else ["additive_shift"],
             )
             eff_val = st.number_input("Effect Value (Magnitude)", value=1.0)
 
-        c_eff3, c_eff4 = st.columns(2)
-        with c_eff3:
-            # Indices selection
-            idx_mode = st.radio("Indices Selection", ["Range", "List"])
-        with c_eff4:
-            indices_list = []
-            max_idx = n_genes if target_scope == "Genes" else n_proteins
-            if idx_mode == "Range":
-                start_i = st.number_input("Start Index", 0, max_idx - 1, 0)
-                end_i = st.number_input(
-                    "End Index (Exclusive)",
-                    start_i + 1,
-                    max_idx,
-                    min(start_i + 10, max_idx),
-                )
-                indices_list = list(range(start_i, end_i))
-            else:
-                idx_str = st.text_input("Indices (comma separated)", "0, 1, 5")
-                try:
-                    indices_list = [
-                        int(x.strip())
-                        for x in idx_str.split(",")
-                        if x.strip().isdigit()
-                    ]
-                except Exception:
-                    st.error("Invalid format")
+        indices_str = st.text_input("Indices (comma separated)", "0, 1, 5")
 
         if st.button("Add Effect"):
-            if indices_list:
-                effect_def = {
-                    "name": eff_name,
-                    "target": target_scope,
-                    "effect_type": eff_type,
-                    "effect_value": eff_val,
-                    "indices": indices_list,
-                }
-                st.session_state.disease_effects.append(effect_def)
-                st.success(f"Added effect to {len(indices_list)} {target_scope}")
-            else:
-                st.warning("No indices selected")
+            try:
+                indices = [
+                    int(x.strip())
+                    for x in indices_str.split(",")
+                    if x.strip().isdigit()
+                ]
+                if indices:
+                    st.session_state.disease_effects.append(
+                        {
+                            "name": eff_name,
+                            "target": target_scope,
+                            "effect_type": eff_type,
+                            "effect_value": eff_val,
+                            "indices": indices,
+                        }
+                    )
+                    st.success("Added effect")
+            except:
+                st.error("Invalid indices")
 
-    # Display current effects
     if st.session_state.disease_effects:
-        st.write("Active Disease Effects:")
-        for i, eff in enumerate(st.session_state.disease_effects):
-            st.code(
-                f"{eff['target']} | {eff['name']}: {eff['effect_type']}={eff['effect_value']} on {len(eff['indices'])} features"
-            )
+        st.write(st.session_state.disease_effects)
         if st.button("Clear Effects"):
             st.session_state.disease_effects = []
             st.rerun()
 
-    # --- Correlation Configuration ---
-    st.markdown("### Correlation Structure")
-    corr_mode = st.radio(
-        "Correlation Mode",
-        ["None (Independent)", "Random (Weak)", "Random (Strong)", "Block Diagonal"],
-    )
-
-    def generate_random_corr(n, scale=0.1):
-        # Random correlation matrix: A * A.T
-        A = np.random.normal(0, scale, size=(n, n))
-        cov = np.dot(A, A.T)
-        d = np.sqrt(np.diag(cov))
-        corr = cov / np.outer(d, d)
-        np.fill_diagonal(corr, 1.0)
-        return corr
-
-    def generate_block_corr(n, n_blocks, block_corr=0.8):
-        corr = np.eye(n)
-        block_size = n // n_blocks
-        for b in range(n_blocks):
-            start = b * block_size
-            end = start + block_size if b < n_blocks - 1 else n
-            # Set block correlation
-            corr[start:end, start:end] = block_corr
-            np.fill_diagonal(corr, 1.0)
-        return corr
-
-    gene_corr = None
-    prot_corr = None
-
-    if corr_mode != "None (Independent)":
-        with st.expander("Correlation Details"):
-            if "Random" in corr_mode:
-                scale = 0.5 if "Strong" in corr_mode else 0.1
-                # Generate on the fly? Might be slow for large N.
-                if st.button("Generate Correlation Matrices"):
-                    st.session_state.gene_corr = generate_random_corr(n_genes, scale)
-                    st.session_state.prot_corr = generate_random_corr(n_proteins, scale)
-                    st.success("Generated random correlations.")
-            elif corr_mode == "Block Diagonal":
-                n_blocks = st.slider("Number of Blocks", 1, 20, 5)
-                block_val = st.slider("Intra-Block Correlation", 0.0, 1.0, 0.7)
-                if st.button("Generate Block Correlations"):
-                    st.session_state.gene_corr = generate_block_corr(
-                        n_genes, n_blocks, block_val
-                    )
-                    st.session_state.prot_corr = generate_block_corr(
-                        n_proteins, n_blocks, block_val
-                    )
-                    st.success(f"Generated {n_blocks} blocks.")
-    else:
-        st.session_state.gene_corr = None
-        st.session_state.prot_corr = None
-
-    # --- Target Variable Generation (Post-Processing) ---
-    st.markdown("### Target Variable Generation (Diagnosis)")
-    target_mode = st.radio(
-        "Detailed Target Strategy", ["Default (Ratio-based)", "Rule-based (Formula)"]
-    )
-
-    formula_str = ""
-    target_noise = 0.0
-    if target_mode == "Rule-based (Formula)":
-        st.info(
-            "Define a pandas.eval expression. Columns: Demographic vars, 'G_0'...'G_N', 'P_0'...'P_M'."
-        )
-        formula_str = st.text_area("Formula", "Age > 65 and G_0 > 5 and Sex == 'Male'")
-        target_noise = st.slider("Noise (Std Dev)", 0.0, 2.0, 0.0)
-
-    # --- Dynamics & Drift UI ---
     st.divider()
-    clinic_dynamics = render_dynamics_ui("clinic")
-    st.divider()
-    clinic_drift = render_drift_injection_ui("clinic")
+    st.markdown("### Target Variable")
+    target_mode = st.radio("Target Strategy", ["Default (Diagnosis)", "Custom Weights"])
+    target_weights = None
+    if target_mode == "Custom Weights":
+        w_age = st.slider("Weight: Age", 0.0, 1.0, 0.5)
+        w_sex = st.slider("Weight: Sex", 0.0, 1.0, 0.2)
+        target_weights = {"Age": w_age, "Sex": w_sex}
 
-    if st.button("🚀 Generate Clinical Cohort"):
+    if st.button("🚀 Generate Clinical Cohort", type="primary"):
         with st.spinner("Simulating clinical cohort..."):
             try:
                 gen = ClinicGenerator(seed=seed_clinic)
 
-                # Separate effects for Genes and Proteins
-                gene_effects_config = []
-                protein_effects_config = []
+                # Split effects
+                gene_effects = [
+                    e
+                    for e in st.session_state.disease_effects
+                    if e["target"] == "Genes"
+                ]
+                prot_effects = [
+                    e
+                    for e in st.session_state.disease_effects
+                    if e["target"] == "Proteins"
+                ]
 
-                for eff in st.session_state.disease_effects:
-                    clean_eff = {k: v for k, v in eff.items() if k != "target"}
-                    if eff["target"] == "Genes":
-                        gene_effects_config.append(clean_eff)
-                    else:
-                        protein_effects_config.append(clean_eff)
+                # Prepare Target Config
+                target_config = None
+                if target_weights:
+                    target_config = {"name": "Diagnosis", "weights": target_weights}
 
-                # Demographics
-                custom_cols = st.session_state.get("custom_demo_cols", None)
-
-                df_dem, _ = gen.generate_demographic_data(
-                    n_samples=n_patients,
-                    custom_demographic_columns=custom_cols,
+                # Unified Call - Flattened Args
+                results = gen.generate(
+                    n_samples=n_samples,
                     control_disease_ratio=control_ratio,
-                )
-
-                # Genes
-                # Use cached correlations if available
-                # Note: Session state corr might mismatch if N_genes changed. Check shape.
-                g_corr = st.session_state.get("gene_corr")
-                if g_corr is not None and g_corr.shape != (n_genes, n_genes):
-                    g_corr = None  # Invalid shape, ignore or regen
-
-                df_genes = gen.generate_gene_data(
+                    # Flattened Demographics
+                    custom_demographic_columns=custom_cols if custom_cols else None,
+                    # Flattened Genes
                     n_genes=n_genes,
                     gene_type=gene_type,
-                    demographic_df=df_dem,
-                    demographic_id_col="Patient_ID",
-                    gene_mean_log_center=gene_mean_rna if gene_type == "RNA-Seq" else 0,
-                    gene_mean_loc_center=gene_mean_micro
-                    if gene_type == "Microarray"
-                    else 0,
-                    n_samples=n_patients,
-                    control_disease_ratio=control_ratio,
-                    disease_effects_config=gene_effects_config
-                    if gene_effects_config
-                    else None,
-                    gene_correlations=g_corr,
-                )
-
-                # Proteins
-                p_corr = st.session_state.get("prot_corr")
-                if p_corr is not None and p_corr.shape != (n_proteins, n_proteins):
-                    p_corr = None
-
-                df_prot = gen.generate_protein_data(
+                    gene_disease_effects=gene_effects,
+                    # Flattened Proteins
                     n_proteins=n_proteins,
-                    demographic_df=df_dem,
-                    demographic_id_col="Patient_ID",
-                    protein_mean_log_center=protein_mean,
+                    protein_disease_effects=prot_effects,
+                    # Target
+                    target_variable_config=target_config,
+                    save_dataset=False,
+                )
+
+                if isinstance(results, dict):
+                    # Merge for display
+                    df_full = results["demographics"]
+                    if "genes" in results:
+                        df_full = df_full.join(results["genes"])
+                    if "proteins" in results:
+                        df_full = df_full.join(results["proteins"])
+
+                    st.success("Generation Complete!")
+                    st.dataframe(df_full.head(50))
+
+                    csv = df_full.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "⬇ Download Clinical Data",
+                        csv,
+                        "clinical_cohort.csv",
+                        "text/csv",
+                    )
+                else:
+                    st.error("Generator returned invalid format.")
+
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        n_patients = st.number_input("Number of Patients", min_value=10, value=100)
+        control_ratio = st.slider("Control Ratio (vs Disease)", 0.0, 1.0, 0.5)
+    with c2:
+        n_genes = st.number_input("Number of Genes", value=100)
+        n_proteins = st.number_input("Number of Proteins", value=50)
+        seed_clinic = st.number_input("Random Seed", value=42)
+
+    st.subheader("Distribution & Configuration")
+
+    # Gene Configuration
+    gene_type = st.selectbox("Gene Expression Type", ["RNA-Seq", "Microarray"])
+
+    # Custom Demographics UI
+    custom_cols = render_custom_dist_ui("clinic")
+
+    # Advanced: Disease Effects
+    st.subheader("Disease Effects (Advanced)")
+    st.info("Define how the disease affects specific Genes or Proteins.")
+
+    if "disease_effects" not in st.session_state:
+        st.session_state.disease_effects = []
+
+    with st.expander("Add New Disease Effect"):
+        c_eff1, c_eff2 = st.columns(2)
+        with c_eff1:
+            target_scope = st.selectbox("Target Data", ["Genes", "Proteins"])
+            eff_name = st.text_input(
+                "Effect Name",
+                value=f"Effect_{len(st.session_state.disease_effects) + 1}",
+            )
+        with c_eff2:
+            eff_type = st.selectbox(
+                "Effect Type",
+                ["additive_shift", "fold_change"]
+                if target_scope == "Genes"
+                else ["additive_shift"],
+            )
+            eff_val = st.number_input("Effect Value (Magnitude)", value=1.0)
+
+        indices_str = st.text_input("Indices (comma separated)", "0, 1, 5")
+
+        if st.button("Add Effect"):
+            try:
+                indices = [
+                    int(x.strip())
+                    for x in indices_str.split(",")
+                    if x.strip().isdigit()
+                ]
+                if indices:
+                    st.session_state.disease_effects.append(
+                        {
+                            "name": eff_name,
+                            "target": target_scope,
+                            "effect_type": eff_type,
+                            "effect_value": eff_val,
+                            "indices": indices,
+                        }
+                    )
+                    st.success("Added effect")
+            except:
+                st.error("Invalid indices")
+
+    if st.session_state.disease_effects:
+        st.write(st.session_state.disease_effects)
+        if st.button("Clear Effects"):
+            st.session_state.disease_effects = []
+            st.rerun()
+
+    # Target Variable
+    st.divider()
+    st.markdown("### Target Variable")
+    target_mode = st.radio("Target Strategy", ["Default (Diagnosis)", "Custom Weights"])
+    target_weights = None
+    if target_mode == "Custom Weights":
+        st.info("Assign weights to demographic columns for target generation")
+        w_age = st.slider("Weight: Age", 0.0, 1.0, 0.5)
+        w_sex = st.slider("Weight: Sex", 0.0, 1.0, 0.2)
+        target_weights = {"Age": w_age, "Sex": w_sex}
+
+    # Generate
+    if st.button("🚀 Generate Clinical Cohort", type="primary"):
+        with st.spinner("Simulating clinical cohort..."):
+            try:
+                gen = ClinicGenerator(seed=seed_clinic)
+
+                # Separate effects
+                gene_effects = [
+                    e
+                    for e in st.session_state.disease_effects
+                    if e["target"] == "Genes"
+                ]
+                prot_effects = [
+                    e
+                    for e in st.session_state.disease_effects
+                    if e["target"] == "Proteins"
+                ]
+
+                # Configs
+                gene_config = {
+                    "n_genes": n_genes,
+                    "gene_type": gene_type,
+                    "disease_effects": gene_effects,
+                }
+
+                protein_config = {
+                    "n_proteins": n_proteins,
+                    "disease_effects": prot_effects,
+                }
+
+                target_config = (
+                    {"name": "Diagnosis", "weights": target_weights}
+                    if target_weights
+                    else None
+                )
+
+                # Unified Call
+                results = gen.generate(
                     n_samples=n_patients,
                     control_disease_ratio=control_ratio,
-                    disease_effects_config=protein_effects_config
-                    if protein_effects_config
+                    clinical_config={"custom_demographic_columns": custom_cols}
+                    if custom_cols
                     else None,
-                    protein_correlations=p_corr,
+                    gene_config=gene_config,
+                    protein_config=protein_config,
+                    target_variable_config=target_config,
                 )
 
-                # --- Post-Processing: Target Generation & Dynamics & Drift ---
-
-                # Merge everything first for unified processing
-                df_full = df_dem.join(df_genes).join(df_prot)
-
-                from calmops.data_generators.Dynamics.DynamicsInjector import (
-                    DynamicsInjector,
-                )
-                from calmops.data_generators.DriftInjection import DriftInjector
-
-                injector = DynamicsInjector(seed=seed_clinic)
-
-                # 1. Custom Target (Formula)
-                if target_mode == "Rule-based (Formula)" and formula_str:
-                    try:
-                        df_full = injector.construct_target(
-                            df_full,
-                            target_col="Diagnosis_Rule",
-                            formula=formula_str,
-                            task_type="classification",
-                            noise_std=target_noise,
-                        )
-                        st.success("Apply custom diagnosis rule!")
-                    except Exception as e:
-                        st.error(f"Rule application failed: {e}")
-
-                # 2. Dynamics (Feature Evolution)
-                if clinic_dynamics and "evolve_features" in clinic_dynamics:
-                    try:
-                        # We need a time column for evolution. Clinic data is usually static snapshot.
-                        # But we can simulate time or just use index as proxy if requested?
-                        # Usually DynamicsInjector requires time_col.
-                        # If no time_col, maybe skipped or use mock?
-                        # Let's assume user knows what they are doing or use index.
-                        if "Time" not in df_full.columns:
-                            df_full["Time"] = range(len(df_full))
-
-                        df_full = injector.evolve_features(
-                            df_full,
-                            time_col="Time",
-                            **clinic_dynamics["evolve_features"],
-                        )
-                        st.success(" Applied Feature Evolution (Dynamics)!")
-                    except Exception as e:
-                        st.warning(f"Dynamics failed: {e}")
-
-                # 3. Drift Injection
-                if clinic_drift:
-                    drift_inj = DriftInjector(
-                        original_df=df_full,
-                        output_dir=".",
-                        generator_name="ClinicDrift",
-                        random_state=seed_clinic,
+                # Results is {demographics: df, genes: df, proteins: df}
+                if isinstance(results, dict):
+                    # Merge for display
+                    df_full = (
+                        results["demographics"]
+                        .join(results["genes"])
+                        .join(results["proteins"])
                     )
-                    for drift_conf in clinic_drift:
-                        method_name = drift_conf.get("method")
-                        params = drift_conf.get("params", {})
-                        if hasattr(drift_inj, method_name):
-                            # Auto-inject df if missing
-                            if "df" not in params:
-                                params["df"] = df_full
 
-                            try:
-                                res = getattr(drift_inj, method_name)(**params)
-                                if isinstance(res, pd.DataFrame):
-                                    df_full = res
-                                st.success(f"Applied drift: {method_name}")
-                            except Exception as e:
-                                st.error(f"Drift {method_name} failed: {e}")
+                    st.success("Generation Complete!")
+                    st.subheader("Combined Data Preview")
+                    st.dataframe(df_full.head())
 
-                # --- Split Back for Display/Download ---
-                # We assume column names are unique enough.
-                # Update cols in sub-dfs if they exist in df_full
-                cols_dem = [c for c in df_dem.columns if c in df_full.columns]
-                # Diagnosis_Rule might be new, usually desired in Demographics
-                if "Diagnosis_Rule" in df_full.columns:
-                    if "Diagnosis_Rule" not in cols_dem:
-                        cols_dem.append("Diagnosis_Rule")
+                    c1, c2, c3 = st.columns(3)
+                    c1.download_button(
+                        "⬇ Demographics",
+                        results["demographics"].to_csv(index=False).encode(),
+                        "demographics.csv",
+                        "text/csv",
+                    )
+                    c2.download_button(
+                        "⬇ Genes",
+                        results["genes"].to_csv(index=False).encode(),
+                        "genes.csv",
+                        "text/csv",
+                    )
+                    c3.download_button(
+                        "⬇ Proteins",
+                        results["proteins"].to_csv(index=False).encode(),
+                        "proteins.csv",
+                        "text/csv",
+                    )
 
-                df_dem = df_full[cols_dem]
-
-                cols_genes = [c for c in df_genes.columns if c in df_full.columns]
-                df_genes = df_full[cols_genes]
-
-                cols_prot = [c for c in df_prot.columns if c in df_full.columns]
-                df_prot = df_full[cols_prot]
-
-                st.subheader("Demographics")
-                st.dataframe(df_dem.head())
-
-                st.subheader(f"Genes ({gene_type})")
-                st.dataframe(df_genes.head())
-
-                st.subheader("Proteins (Expression)")
-                st.dataframe(df_prot.head())
-
-                c_d, c_g, c_p, c_all = st.columns(4)
-
-                csv_d = df_dem.to_csv(index=False).encode("utf-8")
-                c_d.download_button(
-                    "⬇ Demographics", csv_d, "demographics.csv", "text/csv"
-                )
-
-                csv_g = df_genes.to_csv(index=False).encode("utf-8")
-                c_g.download_button("⬇ Genes", csv_g, "genes.csv", "text/csv")
-
-                csv_p = df_prot.to_csv(index=False).encode("utf-8")
-                c_p.download_button("⬇ Proteins", csv_p, "proteins.csv", "text/csv")
-
-                # Merged download
-                csv_m = df_full.to_csv(index=True).encode("utf-8")
-                c_all.download_button(
-                    "⬇ Merged Dataset", csv_m, "clinical_full.csv", "text/csv"
-                )
+                else:
+                    st.error("Unexpected return type from generate()")
 
             except Exception as e:
                 st.error(f"Clinical simulation failed: {e}")
+
+
+def render_scenario_generator():
+    st.header("Scenario Generator (Time Series & Benchmarks)")
+    st.markdown(
+        "Run pre-defined complex scenarios to validate pipelines or demonstrate capabilities."
+    )
+
+    scenario_type = st.selectbox(
+        "Select Scenario",
+        [
+            "Synthetic Agrawal (Abrupt Drift)",
+            "Clinic Patients (Multi-Omics with Correlations)",
+            "Real Benchmark (Drift Robustness)",
+            "Privacy Demonstration",
+        ],
+    )
+
+    if st.button(f"🚀 Run {scenario_type}"):
+        with st.spinner(f"Running {scenario_type}... check terminal for details"):
+            try:
+                if scenario_type == "Synthetic Agrawal (Abrupt Drift)":
+                    from river.datasets import synth
+                    from calmops.data_generators.Synthetic.SyntheticGenerator import (
+                        SyntheticGenerator,
+                    )
+
+                    st.info("Generating Concept A (Func 0) and Concept B (Func 1)")
+                    gen = SyntheticGenerator(random_state=42)
+
+                    # Concept A
+                    df0 = gen.generate(
+                        generator_instance=synth.Agrawal(
+                            classification_function=0, seed=42
+                        ),
+                        n_samples=1000,
+                        filename="agrawal_0.csv",
+                        output_path=".",  # Temp
+                        generate_report=False,
+                    )
+
+                    # Concept B
+                    df1 = gen.generate(
+                        generator_instance=synth.Agrawal(
+                            classification_function=1, seed=42
+                        ),
+                        n_samples=500,
+                        filename="agrawal_1.csv",
+                        output_path=".",  # Temp
+                        generate_report=False,
+                    )
+
+                    st.success("Generated Datasets!")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.write("Concept A (Func 0)")
+                        st.dataframe(df0.head())
+                    with c2:
+                        st.write("Concept B (Func 1)")
+                        st.dataframe(df1.head())
+
+                    # Simple Drift Plot explanation
+                    st.markdown("### Drift Visualization")
+                    st.line_chart(
+                        pd.concat([df0["salary"], df1["salary"]], ignore_index=True)
+                    )
+                    st.caption("Salary distribution change (Concatenated)")
+
+                elif scenario_type == "Clinic Patients (Multi-Omics with Correlations)":
+                    from calmops.data_generators.Clinic.Clinic import ClinicGenerator
+
+                    gen = ClinicGenerator(seed=42)
+
+                    # Use unified generate API
+                    st.info("Generating Clinical Data with Correlations...")
+
+                    # Define simple scenario config (similar to tutorial)
+                    gene_config = {
+                        "n_genes": 20,
+                        "gene_type": "Microarray",
+                        "correlations": "block_diagonal",  # Simplified for demo
+                    }
+
+                    results = gen.generate(
+                        n_samples=200,
+                        control_disease_ratio=0.4,
+                        gene_config=gene_config,
+                        protein_config={"n_proteins": 10},
+                        target_variable_config={
+                            "name": "Diagnosis",
+                            "weights": {"Age": 0.5},
+                        },
+                    )
+
+                    # Results is a dict {demographics: df, genes: df...}
+                    if isinstance(results, dict):
+                        for name, df in results.items():
+                            st.subheader(f"{name.capitalize()} Data")
+                            st.dataframe(df.head())
+                    else:
+                        st.dataframe(results.head())
+
+                elif scenario_type == "Real Benchmark (Drift Robustness)":
+                    st.warning(
+                        "This scenario requires the Iris dataset and trains generic models. (Simplified for Demo)"
+                    )
+                    from sklearn.datasets import load_iris
+
+                    iris = load_iris(as_frame=True)
+                    df = iris.frame
+                    st.write("Original Data (Iris):", df.head())
+
+                    from calmops.data_generators.Real.RealGenerator import RealGenerator
+
+                    gen = RealGenerator(
+                        data=df,
+                        method="tvae",
+                        auto_report=False,
+                        model_params={"epochs": 50},
+                    )
+
+                    st.info("Training TVAE (fast)...")
+                    synth_df = gen.generate(n_samples=200, save_dataset=False)
+
+                    st.success("Generated Synthetic Replicas")
+                    st.write(synth_df.head())
+
+                    # Compare
+                    st.subheader("Distribution Comparison (Sepal Length)")
+                    chart_data = pd.DataFrame(
+                        {
+                            "Original": df["sepal length (cm)"],
+                            "Synthetic": synth_df["sepal length (cm)"],
+                        }
+                    )
+                    st.line_chart(chart_data)
+
+                elif scenario_type == "Privacy Demonstration":
+                    st.info("Demonstrating pseudonymization and generalization")
+
+                    data = {
+                        "Name": [f"Person_{i}" for i in range(10)],
+                        "Age": np.random.randint(20, 80, 10),
+                        "Salary": np.random.randint(30000, 90000, 10),
+                        "City": ["Madrid", "Barcelona", "Valencia"] * 3 + ["Madrid"],
+                    }
+                    df = pd.DataFrame(data)
+                    st.write("Original Protected Data", df)
+
+                    from calmops.privacy.privacy import (
+                        pseudonymize_columns,
+                        generalize_numeric_to_ranges,
+                    )
+
+                    df_priv = pseudonymize_columns(df, ["Name"], salt="demo")
+                    df_priv = generalize_numeric_to_ranges(df_priv, ["Age"], num_bins=3)
+
+                    st.write("Privatized Data", df_priv)
+
+            except Exception as e:
+                st.error(f"Scenario failed: {e}")
 
 
 # Main Routing
@@ -1091,3 +1400,5 @@ elif generator_type == "Real (from Data)":
     render_real_data()
 elif generator_type == "Clinic (Medical)":
     render_clinic()
+elif generator_type == "Scenario (Time Series)":
+    render_scenario_generator()

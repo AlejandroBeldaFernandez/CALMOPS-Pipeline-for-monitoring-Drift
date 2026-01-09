@@ -78,9 +78,12 @@ A flexible pipeline orchestrator that supports custom logic and circuit breakers
     - **`_update_on_result(...)`**: Updates failure counts and triggers backoff if threshold `max_failures` is reached.
 
 ### 3.5. Data Generators (`calmops/data_generators/`)
-- **RealGenerator (`Real/RealGenerator.py`)**:
-  - **`synthesize(...)`**: Main entry point. Supports multiple methods (`cart`, `rf`, `lgbm`, `sdv`, `resample`).
-  - **`_synthesize_fcs_generic(...)`**: (Refactored) Generic helper for Fully Conditional Specification synthesis. Iterates through columns, training regressors/classifiers to predict missing values based on others.
+- **Unified API**: All generators (`Real`, `Synthetic`, `Clinic`) now implement a standard `generate()` method.
+  - **`generate(n_samples, drift_injection_config, date_config, ...)`**: Main entry point.
+- **Key Classes**:
+  - `RealGenerator`: For deep learning synthesis (using `sdv`).
+  - `SyntheticGenerator`: For stream data drift (using `river`).
+  - `ClinicGenerator`: For complex multi-omics clinical data.
 
 ### 3.6. Monitor & Schedule (`calmops/monitor/`)
 Handles the periodic execution of pipelines.

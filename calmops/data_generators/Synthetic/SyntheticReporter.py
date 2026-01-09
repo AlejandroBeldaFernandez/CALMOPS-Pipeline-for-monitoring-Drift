@@ -37,6 +37,7 @@ from datetime import datetime
 import os
 import json
 from scipy import stats
+from calmops.utils.distribution_fitter import fit_distribution
 
 # Suppress common warnings for cleaner output
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -775,48 +776,21 @@ class SyntheticReporter:
 
     def _detect_distribution(self, data: pd.Series) -> str:
         """
-        Uses Kolmogorov-Smirnov test to identify the best fitting distribution.
-        Candidates: Normal, Uniform, Exponential, LogNormal.
+        Identifies the best fitting distribution using the fit_distribution utility.
         """
-        if len(data) < 30:  # Not enough data for reliable test
-            return "Unknown (Samples < 30)"
+        try:
+            fit_res = fit_distribution(data)
+            dist_name = fit_res["distribution"]
+            p_val = fit_res["p_value"]
 
-        # Normalize data for testing
-        y = (data - data.mean()) / data.std()
+            if dist_name == "Insufficient Data":
+                return dist_name
+            if dist_name in ["None", "Unknown"]:
+                return "Unknown"
 
-        # Distributions to test
-        dist_names = ["norm", "uniform", "expon"]
-        # For lognorm, we need positive data. We'll skip if data has <= 0 values.
-        if (data > 0).all():
-            dist_names.append("lognorm")
-
-        best_dist = "Unknown"
-        best_p = 0.0
-
-        for dist_name in dist_names:
-            dist = getattr(stats, dist_name)
-            # Fit distribution to data
-            params = dist.fit(y)
-            # Perform KS Test
-            D, p = stats.kstest(y, dist_name, args=params)
-
-            # Use p-value as metric (higher is better fit, though strictly it means "fail to reject not-fit")
-            # We select the one with highest p-value if it's significant (>0.05)
-            if p > best_p:
-                best_p = p
-                best_dist = dist_name
-
-        if best_p < 0.05:
-            return "Unknown (No good fit)"
-
-        # Map scipy names to human readable
-        name_map = {
-            "norm": "Normal",
-            "uniform": "Uniform",
-            "expon": "Exponential",
-            "lognorm": "LogNormal",
-        }
-        return name_map.get(best_dist, best_dist)
+            return f"{dist_name} (p={p_val:.4f})"
+        except Exception as e:
+            return f"Error: {e}"
 
     def _report_numeric_analysis(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Analyzes numeric columns, including statistical properties and distribution type."""
@@ -1078,6 +1052,16 @@ class SyntheticReporter:
                     f.write(
                         f"![Correlation]({os.path.basename(plots['correlation_heatmap'])})\n\n"
                     )
+
+            # Save the detailed JSON report
+            # report_path = os.path.join(output_dir, "report.json")
+            # try:
+            #     with open(report_path, "w") as f:
+            #         json.dump(report, f, indent=4, cls=NumpyEncoder)
+            #     if self.verbose:
+            #         print(f"✅ JSON report saved to: {report_path}")
+            # except Exception as e:
+            #     self.logger.error(f"Failed to save JSON report: {e}")
 
             if self.verbose:
                 print(f"✅ Markdown report saved to: {md_path}")

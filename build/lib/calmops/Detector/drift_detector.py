@@ -1,27 +1,41 @@
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, mean_squared_error, r2_score
-from pandas.api.types import is_numeric_dtype
 import os
-# pip install frouros
-import numpy as np
-import pandas as pd
+import logging
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score,
+    mean_squared_error,
+    r2_score,
+    mean_absolute_error,
+)
+from pandas.api.types import is_numeric_dtype
 
-
+# Frouros imports (drift detection)
 from frouros.detectors.data_drift import MMD  # batch MMD
-from frouros.detectors.data_drift.batch.distance_based import (
-    PSI as PSI_Detector
-)
+from frouros.detectors.data_drift.batch.distance_based import PSI as PSI_Detector
 from frouros.detectors.data_drift.batch.statistical_test import (
-    KSTest, MannWhitneyUTest, ChiSquareTest, CVMTest
+    KSTest,
+    MannWhitneyUTest,
+    ChiSquareTest,
+    CVMTest,
 )
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-import tensorflow as tf
+
+# Optional: Suppress Tensorflow warnings if TF is installed
+try:
+    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+    # import tensorflow as tf
+
+    # tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
+    # tf.get_logger().setLevel("ERROR")
+except ImportError:
+    pass
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+def _get_logger(name: str = "DriftDetector") -> logging.Logger:
+    return logging.getLogger(name)
 
-tf.get_logger().setLevel('ERROR')
 
 def _to_float_array(x: pd.Series | np.ndarray) -> np.ndarray:
     """Return a 1D float vector with NaNs removed."""
@@ -43,7 +57,9 @@ class DriftDetector:
     # UNIVARIATE TESTS
     # =========================
 
-    def kolmogorov_smirnov_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05):
+    def kolmogorov_smirnov_test(
+        self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05
+    ):
         """Column-wise KS; drift if p < alpha."""
         drift_detected, results = False, {}
         det = KSTest()
@@ -62,13 +78,20 @@ class DriftDetector:
                 p = float(res.p_value)
                 stat = float(res.statistic)
                 d = p < alpha
-                results[col] = {"statistic": stat, "p_value": p, "alpha": alpha, "drift": d}
+                results[col] = {
+                    "statistic": stat,
+                    "p_value": p,
+                    "alpha": alpha,
+                    "drift": d,
+                }
                 drift_detected |= d
             except Exception as e:
                 results[col] = {"error": str(e), "drift": False}
         return drift_detected, results
 
-    def mann_whitney_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05):
+    def mann_whitney_test(
+        self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05
+    ):
         """Column-wise Mann–Whitney; drift if p < alpha."""
         drift_detected, results = False, {}
         det = MannWhitneyUTest()
@@ -87,15 +110,24 @@ class DriftDetector:
                 p = float(res.p_value)
                 stat = float(res.statistic)
                 d = p < alpha
-                results[col] = {"statistic": stat, "p_value": p, "alpha": alpha, "drift": d}
+                results[col] = {
+                    "statistic": stat,
+                    "p_value": p,
+                    "alpha": alpha,
+                    "drift": d,
+                }
                 drift_detected |= d
             except Exception as e:
                 results[col] = {"error": str(e), "drift": False}
         return drift_detected, results
 
-    
-
-    def population_stability_index_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame, psi_threshold: float = 0.10, num_bins: int = 10):
+    def population_stability_index_test(
+        self,
+        X_ref: pd.DataFrame,
+        X_new: pd.DataFrame,
+        psi_threshold: float = 0.10,
+        num_bins: int = 10,
+    ):
         """Column-wise PSI; drift if PSI > psi_threshold."""
         drift_detected, results = False, {}
         det = PSI_Detector(num_bins=num_bins)
@@ -113,13 +145,20 @@ class DriftDetector:
                 res, _ = det.compare(X=x2)  # res.distance = PSI
                 psi_val = float(res.distance)
                 d = psi_val > psi_threshold
-                results[col] = {"psi": psi_val, "threshold": psi_threshold, "num_bins": num_bins, "drift": d}
+                results[col] = {
+                    "psi": psi_val,
+                    "threshold": psi_threshold,
+                    "num_bins": num_bins,
+                    "drift": d,
+                }
                 drift_detected |= d
             except Exception as e:
                 results[col] = {"error": str(e), "drift": False}
         return drift_detected, results
 
-    def chi_squared_test(self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05):
+    def chi_squared_test(
+        self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05
+    ):
         """Column-wise Chi-squared test; drift if p < alpha. For categorical features."""
         drift_detected, results = False, {}
         det = ChiSquareTest()
@@ -139,16 +178,25 @@ class DriftDetector:
                 p = float(res.p_value)
                 stat = float(res.statistic)
                 d = p < alpha
-                results[col] = {"statistic": stat, "p_value": p, "alpha": alpha, "drift": d}
+                results[col] = {
+                    "statistic": stat,
+                    "p_value": p,
+                    "alpha": alpha,
+                    "drift": d,
+                }
                 drift_detected |= d
             except Exception as e:
                 results[col] = {"error": str(e), "drift": False}
         return drift_detected, results
 
-    def data_drift_suite(self, X_ref: pd.DataFrame, X_new: pd.DataFrame,
-                         alpha: float = 0.05,
-                         psi_threshold: float = 0.10,
-                         num_bins: int = 10):
+    def data_drift_suite(
+        self,
+        X_ref: pd.DataFrame,
+        X_new: pd.DataFrame,
+        alpha: float = 0.05,
+        psi_threshold: float = 0.10,
+        num_bins: int = 10,
+    ):
         """Run a suite of univariate data drift tests, adapting to column types."""
         drift_detected, results, flags = False, {}, {}
 
@@ -162,7 +210,9 @@ class DriftDetector:
             # Determine column type
             if is_numeric_dtype(X_ref[col]):
                 # Numerical tests
-                d, r = self.kolmogorov_smirnov_test(X_ref[[col]], X_new[[col]], alpha=alpha)
+                d, r = self.kolmogorov_smirnov_test(
+                    X_ref[[col]], X_new[[col]], alpha=alpha
+                )
                 results[f"{col}_ks"] = r[col]
                 flags[f"{col}_ks"] = d
                 drift_detected |= d
@@ -172,7 +222,12 @@ class DriftDetector:
                 flags[f"{col}_mw"] = d
                 drift_detected |= d
 
-                d, r = self.population_stability_index_test(X_ref[[col]], X_new[[col]], psi_threshold=psi_threshold, num_bins=num_bins)
+                d, r = self.population_stability_index_test(
+                    X_ref[[col]],
+                    X_new[[col]],
+                    psi_threshold=psi_threshold,
+                    num_bins=num_bins,
+                )
                 results[f"{col}_psi"] = r[col]
                 flags[f"{col}_psi"] = d
                 drift_detected |= d
@@ -182,20 +237,24 @@ class DriftDetector:
                 results[f"{col}_chi2"] = r[col]
                 flags[f"{col}_chi2"] = d
                 drift_detected |= d
-        
+
         return drift_detected, results, flags
 
-
-    def absolute_performance_degradation_suite(self, X: pd.DataFrame, y: pd.Series, model,
-                                               task: str = "classification",
-                                               balanced_accuracy_threshold: float = 0.9,
-                                               accuracy_threshold: float = 0.9,
-                                               f1_threshold: float = 0.9,
-                                               rmse_threshold: float = 1.2,
-                                               r2_threshold: float = 0.5,
-                                               mae_threshold: float = 0.2,
-                                               mse_threshold: float = 0.4,
-                                               average: str = "macro"):
+    def absolute_performance_degradation_suite(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model,
+        task: str = "classification",
+        balanced_accuracy_threshold: float = 0.9,
+        accuracy_threshold: float = 0.9,
+        f1_threshold: float = 0.9,
+        rmse_threshold: float = 1.2,
+        r2_threshold: float = 0.5,
+        mae_threshold: float = 0.2,
+        mse_threshold: float = 0.4,
+        average: str = "macro",
+    ):
         """
         Run a suite of absolute performance degradation tests.
         Returns:
@@ -206,12 +265,16 @@ class DriftDetector:
         drift_detected = False
 
         if task == "classification":
-            d, r = self.performance_degradation_test_balanced_accuracy(X, y, model, balanced_accuracy_threshold)
+            d, r = self.performance_degradation_test_balanced_accuracy(
+                X, y, model, balanced_accuracy_threshold
+            )
             results["balanced_accuracy"] = r
             flags["balanced_accuracy"] = d
             drift_detected |= d
 
-            d, r = self.performance_degradation_test_accuracy(X, y, model, accuracy_threshold)
+            d, r = self.performance_degradation_test_accuracy(
+                X, y, model, accuracy_threshold
+            )
             results["accuracy"] = r
             flags["accuracy"] = d
             drift_detected |= d
@@ -246,64 +309,85 @@ class DriftDetector:
 
         # Majority rule: drift if >= 50% of selected metrics flag drift
         n = len(flags)
-        drift_detected = (n > 0 and sum(bool(v) for v in flags.values()) >= (n / 2.0))
+        drift_detected = n > 0 and sum(bool(v) for v in flags.values()) >= (n / 2.0)
         return drift_detected, results, flags
 
-
-    def performance_degradation_test_balanced_accuracy(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9):
+    def performance_degradation_test_balanced_accuracy(
+        self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9
+    ):
         """Performance degradation test using balanced accuracy."""
         try:
             predictions = model.predict(X)
             new_acc = balanced_accuracy_score(y, predictions)
-            return new_acc < threshold, {'balanced_accuracy': new_acc, 'threshold': threshold}
+            return new_acc < threshold, {
+                "balanced_accuracy": new_acc,
+                "threshold": threshold,
+            }
         except Exception as e:
-            return False, {'error': str(e)}
+            return False, {"error": str(e)}
 
-    def performance_degradation_test_accuracy(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9):
+    def performance_degradation_test_accuracy(
+        self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9
+    ):
         """Performance degradation test using accuracy."""
         try:
             predictions = model.predict(X)
             new_acc = accuracy_score(y, predictions)
-            return new_acc < threshold, {'accuracy': new_acc, 'threshold': threshold}
+            return new_acc < threshold, {"accuracy": new_acc, "threshold": threshold}
         except Exception as e:
-            return False, {'error': str(e)}
-        
-    def performance_degradation_test_f1(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9):
+            return False, {"error": str(e)}
+
+    def performance_degradation_test_f1(
+        self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9
+    ):
         """Performance degradation test using F1 score."""
         y_pred = model.predict(X)
-        f1 = f1_score(y, y_pred, average='binary')  # Or 'macro' for multi-class
-        return f1 < threshold,  {'F1': f1, 'threshold': threshold}
+        f1 = f1_score(y, y_pred, average="binary")  # Or 'macro' for multi-class
+        return f1 < threshold, {"F1": f1, "threshold": threshold}
 
-    def performance_degradation_test_rmse(self, X: pd.DataFrame, y: pd.Series, model, threshold=1.2):
+    def performance_degradation_test_rmse(
+        self, X: pd.DataFrame, y: pd.Series, model, threshold=1.2
+    ):
         """Performance degradation test using RMSE (Root Mean Squared Error)."""
         y_pred = model.predict(X)
         rmse = mean_squared_error(y, y_pred, squared=False)
-        return rmse > threshold, {'RMSE': rmse, 'threshold': threshold}
-    
-    def performance_degradation_test_r2(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.5):
+        return rmse > threshold, {"RMSE": rmse, "threshold": threshold}
+
+    def performance_degradation_test_r2(
+        self, X: pd.DataFrame, y: pd.Series, model, threshold=0.5
+    ):
         """Performance degradation test using R2 score."""
         r2 = r2_score(y, model.predict(X))
-        return r2 < threshold, {'R2': r2, 'threshold': threshold}
+        return r2 < threshold, {"R2": r2, "threshold": threshold}
 
-    def performance_degradation_test_mae(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.2):
+    def performance_degradation_test_mae(
+        self, X: pd.DataFrame, y: pd.Series, model, threshold=0.2
+    ):
         """Performance degradation test using MAE (Mean Absolute Error)."""
-        from sklearn.metrics import mean_absolute_error
         y_pred = model.predict(X)
         mae = mean_absolute_error(y, y_pred)
-        return mae > threshold, {'MAE': mae, 'threshold': threshold}
+        return mae > threshold, {"MAE": mae, "threshold": threshold}
 
-    def performance_degradation_test_mse(self, X: pd.DataFrame, y: pd.Series, model, threshold=0.4):
+    def performance_degradation_test_mse(
+        self, X: pd.DataFrame, y: pd.Series, model, threshold=0.4
+    ):
         """Performance degradation test using MSE (Mean Squared Error)."""
         y_pred = model.predict(X)
         mse = mean_squared_error(y, y_pred)
-        return mse > threshold, {'MSE': mse, 'threshold': threshold}
+        return mse > threshold, {"MSE": mse, "threshold": threshold}
 
     # ===========================
     # Comparative performance tests (previous vs current)
     # Drift if current degrades >= decay_ratio (default 0.30)
     # ===========================
     @staticmethod
-    def _safe_rel_drop(prev_value: float, curr_value: float, higher_is_better: bool, decay_ratio: float, eps: float = 1e-12):
+    def _safe_rel_drop(
+        prev_value: float,
+        curr_value: float,
+        higher_is_better: bool,
+        decay_ratio: float,
+        eps: float = 1e-12,
+    ):
         """
         Compute relative change (drop or increase) robustly.
         Returns:
@@ -326,66 +410,179 @@ class DriftDetector:
         # If prev is ~0 (e.g., r2 near 0), the relative change can be noisy; still return the computed value.
         return drift, rel_change
 
-    def compare_accuracy_drop(self, X: pd.DataFrame, y: pd.Series, model_prev, model_curr, decay_ratio: float = 0.30):
+    def compare_accuracy_drop(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model_prev,
+        model_curr,
+        decay_ratio: float = 0.30,
+    ):
         """Drift if accuracy(current) dropped >= decay_ratio vs previous."""
         y_prev = model_prev.predict(X)
         y_curr = model_curr.predict(X)
         acc_prev = accuracy_score(y, y_prev)
         acc_curr = accuracy_score(y, y_curr)
-        drift, rel = self._safe_rel_drop(acc_prev, acc_curr, higher_is_better=True, decay_ratio=decay_ratio)
-        return drift, {"metric": "accuracy", "prev": acc_prev, "current": acc_curr, "relative_drop": rel, "threshold": decay_ratio}
+        drift, rel = self._safe_rel_drop(
+            acc_prev, acc_curr, higher_is_better=True, decay_ratio=decay_ratio
+        )
+        return drift, {
+            "metric": "accuracy",
+            "prev": acc_prev,
+            "current": acc_curr,
+            "relative_drop": rel,
+            "threshold": decay_ratio,
+        }
 
-    def compare_balanced_accuracy_drop(self, X: pd.DataFrame, y: pd.Series, model_prev, model_curr, decay_ratio: float = 0.30):
+    def compare_balanced_accuracy_drop(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model_prev,
+        model_curr,
+        decay_ratio: float = 0.30,
+    ):
         """Drift if balanced_accuracy(current) dropped >= decay_ratio vs previous."""
         y_prev = model_prev.predict(X)
         y_curr = model_curr.predict(X)
         b_prev = balanced_accuracy_score(y, y_prev)
         b_curr = balanced_accuracy_score(y, y_curr)
-        drift, rel = self._safe_rel_drop(b_prev, b_curr, higher_is_better=True, decay_ratio=decay_ratio)
-        return drift, {"metric": "balanced_accuracy", "prev": b_prev, "current": b_curr, "relative_drop": rel, "threshold": decay_ratio}
+        drift, rel = self._safe_rel_drop(
+            b_prev, b_curr, higher_is_better=True, decay_ratio=decay_ratio
+        )
+        return drift, {
+            "metric": "balanced_accuracy",
+            "prev": b_prev,
+            "current": b_curr,
+            "relative_drop": rel,
+            "threshold": decay_ratio,
+        }
 
-    def compare_f1_drop(self, X: pd.DataFrame, y: pd.Series, model_prev, model_curr, decay_ratio: float = 0.30, average: str = "macro"):
+    def compare_f1_drop(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model_prev,
+        model_curr,
+        decay_ratio: float = 0.30,
+        average: str = "macro",
+    ):
         """Drift if F1(current) dropped >= decay_ratio vs previous. Use average='macro' (multi-class) or 'binary'."""
         y_prev = model_prev.predict(X)
         y_curr = model_curr.predict(X)
         f_prev = f1_score(y, y_prev, average=average)
         f_curr = f1_score(y, y_curr, average=average)
-        drift, rel = self._safe_rel_drop(f_prev, f_curr, higher_is_better=True, decay_ratio=decay_ratio)
-        return drift, {"metric": f"F1_{average}", "prev": f_prev, "current": f_curr, "relative_drop": rel, "threshold": decay_ratio}
+        drift, rel = self._safe_rel_drop(
+            f_prev, f_curr, higher_is_better=True, decay_ratio=decay_ratio
+        )
+        return drift, {
+            "metric": f"F1_{average}",
+            "prev": f_prev,
+            "current": f_curr,
+            "relative_drop": rel,
+            "threshold": decay_ratio,
+        }
 
-    def compare_r2_drop(self, X: pd.DataFrame, y: pd.Series, model_prev, model_curr, decay_ratio: float = 0.30):
+    def compare_r2_drop(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model_prev,
+        model_curr,
+        decay_ratio: float = 0.30,
+    ):
         """Drift if R2(current) dropped >= decay_ratio vs previous."""
         r_prev = r2_score(y, model_prev.predict(X))
         r_curr = r2_score(y, model_curr.predict(X))
-        drift, rel = self._safe_rel_drop(r_prev, r_curr, higher_is_better=True, decay_ratio=decay_ratio)
-        return drift, {"metric": "r2", "prev": r_prev, "current": r_curr, "relative_drop": rel, "threshold": decay_ratio}
+        drift, rel = self._safe_rel_drop(
+            r_prev, r_curr, higher_is_better=True, decay_ratio=decay_ratio
+        )
+        return drift, {
+            "metric": "r2",
+            "prev": r_prev,
+            "current": r_curr,
+            "relative_drop": rel,
+            "threshold": decay_ratio,
+        }
 
-    def compare_rmse_increase(self, X: pd.DataFrame, y: pd.Series, model_prev, model_curr, decay_ratio: float = 0.30):
+    def compare_rmse_increase(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model_prev,
+        model_curr,
+        decay_ratio: float = 0.30,
+    ):
         """Drift if RMSE(current) increased >= decay_ratio vs previous."""
         rmse_prev = mean_squared_error(y, model_prev.predict(X), squared=False)
         rmse_curr = mean_squared_error(y, model_curr.predict(X), squared=False)
-        drift, rel = self._safe_rel_drop(rmse_prev, rmse_curr, higher_is_better=False, decay_ratio=decay_ratio)
-        return drift, {"metric": "rmse", "prev": rmse_prev, "current": rmse_curr, "relative_increase": rel, "threshold": decay_ratio}
+        drift, rel = self._safe_rel_drop(
+            rmse_prev, rmse_curr, higher_is_better=False, decay_ratio=decay_ratio
+        )
+        return drift, {
+            "metric": "rmse",
+            "prev": rmse_prev,
+            "current": rmse_curr,
+            "relative_increase": rel,
+            "threshold": decay_ratio,
+        }
 
-    def compare_mae_increase(self, X: pd.DataFrame, y: pd.Series, model_prev, model_curr, decay_ratio: float = 0.30):
+    def compare_mae_increase(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model_prev,
+        model_curr,
+        decay_ratio: float = 0.30,
+    ):
         """Drift if MAE(current) increased >= decay_ratio vs previous."""
         from sklearn.metrics import mean_absolute_error
+
         mae_prev = mean_absolute_error(y, model_prev.predict(X))
         mae_curr = mean_absolute_error(y, model_curr.predict(X))
-        drift, rel = self._safe_rel_drop(mae_prev, mae_curr, higher_is_better=False, decay_ratio=decay_ratio)
-        return drift, {"metric": "mae", "prev": mae_prev, "current": mae_curr, "relative_increase": rel, "threshold": decay_ratio}
+        drift, rel = self._safe_rel_drop(
+            mae_prev, mae_curr, higher_is_better=False, decay_ratio=decay_ratio
+        )
+        return drift, {
+            "metric": "mae",
+            "prev": mae_prev,
+            "current": mae_curr,
+            "relative_increase": rel,
+            "threshold": decay_ratio,
+        }
 
-    def compare_mse_increase(self, X: pd.DataFrame, y: pd.Series, model_prev, model_curr, decay_ratio: float = 0.30):
+    def compare_mse_increase(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model_prev,
+        model_curr,
+        decay_ratio: float = 0.30,
+    ):
         """Drift if MSE(current) increased >= decay_ratio vs previous."""
         mse_prev = mean_squared_error(y, model_prev.predict(X))
         mse_curr = mean_squared_error(y, model_curr.predict(X))
-        drift, rel = self._safe_rel_drop(mse_prev, mse_curr, higher_is_better=False, decay_ratio=decay_ratio)
-        return drift, {"metric": "mse", "prev": mse_prev, "current": mse_curr, "relative_increase": rel, "threshold": decay_ratio}
+        drift, rel = self._safe_rel_drop(
+            mse_prev, mse_curr, higher_is_better=False, decay_ratio=decay_ratio
+        )
+        return drift, {
+            "metric": "mse",
+            "prev": mse_prev,
+            "current": mse_curr,
+            "relative_increase": rel,
+            "threshold": decay_ratio,
+        }
 
-    def performance_comparison_suite(self, X: pd.DataFrame, y: pd.Series, model_prev, model_curr,
-                                     task: str = "classification",
-                                     decay_ratio: float = 0.30,
-                                     average: str = "macro"):
+    def performance_comparison_suite(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model_prev,
+        model_curr,
+        task: str = "classification",
+        decay_ratio: float = 0.30,
+        average: str = "macro",
+    ):
         """
         Run a set of comparative tests (previous vs current).
         Returns:
@@ -395,19 +592,36 @@ class DriftDetector:
         flags = {}
 
         if task == "classification":
-            d, r = self.compare_accuracy_drop(X, y, model_prev, model_curr, decay_ratio); results["accuracy"] = r; flags["accuracy"] = d
-            d, r = self.compare_balanced_accuracy_drop(X, y, model_prev, model_curr, decay_ratio); results["balanced_accuracy"] = r; flags["balanced_accuracy"] = d
-            d, r = self.compare_f1_drop(X, y, model_prev, model_curr, decay_ratio, average=average); results[f"F1_{average}"] = r; flags["f1"] = d
+            d, r = self.compare_accuracy_drop(X, y, model_prev, model_curr, decay_ratio)
+            results["accuracy"] = r
+            flags["accuracy"] = d
+            d, r = self.compare_balanced_accuracy_drop(
+                X, y, model_prev, model_curr, decay_ratio
+            )
+            results["balanced_accuracy"] = r
+            flags["balanced_accuracy"] = d
+            d, r = self.compare_f1_drop(
+                X, y, model_prev, model_curr, decay_ratio, average=average
+            )
+            results[f"F1_{average}"] = r
+            flags["f1"] = d
         elif task == "regression":
-            d, r = self.compare_r2_drop(X, y, model_prev, model_curr, decay_ratio); results["r2"] = r; flags["r2"] = d
-            d, r = self.compare_rmse_increase(X, y, model_prev, model_curr, decay_ratio); results["rmse"] = r; flags["rmse"] = d
-            d, r = self.compare_mae_increase(X, y, model_prev, model_curr, decay_ratio); results["mae"] = r; flags["mae"] = d
-            d, r = self.compare_mse_increase(X, y, model_prev, model_curr, decay_ratio); results["mse"] = r; flags["mse"] = d
+            d, r = self.compare_r2_drop(X, y, model_prev, model_curr, decay_ratio)
+            results["r2"] = r
+            flags["r2"] = d
+            d, r = self.compare_rmse_increase(X, y, model_prev, model_curr, decay_ratio)
+            results["rmse"] = r
+            flags["rmse"] = d
+            d, r = self.compare_mae_increase(X, y, model_prev, model_curr, decay_ratio)
+            results["mae"] = r
+            flags["mae"] = d
+            d, r = self.compare_mse_increase(X, y, model_prev, model_curr, decay_ratio)
+            results["mse"] = r
+            flags["mse"] = d
         else:
             raise ValueError("task must be 'classification' or 'regression'")
 
         # Majority rule: drift if >= 50% of selected metrics flag drift
         n = len(flags)
-        drift_detected = (n > 0 and sum(bool(v) for v in flags.values()) >= (n / 2.0))
+        drift_detected = n > 0 and sum(bool(v) for v in flags.values()) >= (n / 2.0)
         return drift_detected, results, flags
-

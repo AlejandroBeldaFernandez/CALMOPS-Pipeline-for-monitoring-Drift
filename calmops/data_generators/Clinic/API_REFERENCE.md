@@ -12,7 +12,33 @@ Initializes the generator with a random seed for reproducibility.
 
 ---
 
-## Data Generation Methods
+## Main Generation Method
+
+### `generate`
+Unified entry point for generating clinical datasets (Demographics + Omics).
+
+```python
+def generate(
+    self,
+    n_patients: int = 100,
+    n_genes: int = 200,
+    n_proteins: int = 50,
+    date_config: Optional[DateConfig] = None,
+    output_dir: Optional[str] = None,
+    save_dataset: bool = False,
+    # Kwargs for sub-generators:
+    # control_disease_ratio, custom_demographic_columns,
+    # gene_type, demographic_gene_correlations, gene_correlations,
+    # target_variable_config, drift_injection_config, etc.
+    **kwargs
+) -> Dict[str, pd.DataFrame]
+```
+
+- **Returns:** Dictionary with keys `['demographics', 'genes', 'proteins']`.
+
+---
+
+## Component Methods (Advanced)
 
 ### `generate_demographic_data`
 Generates synthetic demographic data for a cohort of patients.

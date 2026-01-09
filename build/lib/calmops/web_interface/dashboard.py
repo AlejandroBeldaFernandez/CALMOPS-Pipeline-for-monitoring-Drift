@@ -1,12 +1,18 @@
+import os
+
+# Suppress TensorFlow logs before importing it
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+# import tensorflow as tf
+
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
+# tf.get_logger().setLevel("ERROR")
+
 import streamlit as st
 import pandas as pd
 import json
-import os
 import re
 import plotly.express as px
 import plotly.graph_objects as go
-import plotly.figure_factory as ff
-import argparse
 import numpy as np
 from typing import Optional, Tuple, Dict, List
 from sklearn.metrics import roc_curve, precision_recall_curve, auc, confusion_matrix
@@ -15,15 +21,15 @@ from sklearn.preprocessing import StandardScaler
 from calmops.utils import get_pipelines_root
 from pathlib import Path
 from utils import _load_any_dataset, load_log, dashboard_data_loader, update_record
-
-
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
-
-
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-
-tf.get_logger().setLevel("ERROR")
+from dashboard_common import (
+    _mtime,
+    _read_json_cached,
+    _read_csv_cached,
+    _load_any_dataset_cached,
+    _sample_series,
+    _ecdf_quantile_curve,
+    _paired_hist,
+)
 
 # =========================
 # Streamlit Configuration & Performance Optimization
@@ -35,140 +41,7 @@ st.set_page_config(page_title="Monitor ML Pipeline", layout="wide")
 st.title("ML Pipeline Monitor")
 
 
-def _mtime(path: str | Path) -> float:
-    try:
-        return Path(path).stat().st_mtime
-    except Exception:
-        return 0.0
-
-
-# NOTE: Caching is removed to ensure the latest JSON is always loaded, preventing stale data issues.
-def _load_json_cached(path: str, stamp: float) -> dict:
-    """Load JSON file, ensuring the latest version is always read from disk."""
-    with open(path, "r") as f:
-        return json.load(f)
-
-
-@st.cache_data(show_spinner=False)
-def _load_csv_cached(path: str, stamp: float) -> pd.DataFrame:
-    """Load CSV file with Streamlit caching for performance optimization.
-
-    Args:
-        path: File path to CSV file
-        stamp: Modification timestamp for cache invalidation
-
-    Returns:
-        Pandas DataFrame with loaded data
-    """
-    return pd.read_csv(path)
-
-
-@st.cache_data(show_spinner=False)
-def _load_any_cached(path: str, stamp: float) -> pd.DataFrame:
-    """Load any supported dataset format with caching.
-
-    Supports multiple formats: CSV, ARFF, JSON, Excel, Parquet, TXT
-    Uses modification timestamp for efficient cache invalidation.
-
-    Args:
-        path: File path to dataset
-        stamp: Modification timestamp for cache invalidation
-
-    Returns:
-        Pandas DataFrame with loaded dataset
-    """
-    return _load_any_dataset(path)
-
-
-def _sample_series(values: np.ndarray, max_points: int, seed: int = 0) -> np.ndarray:
-    """Efficiently sample large arrays for visualization performance.
-
-    Reduces large datasets to manageable size for plotting while maintaining
-    statistical representativeness through random sampling.
-
-    Args:
-        values: Input array to sample
-        max_points: Maximum number of points to return
-        seed: Random seed for reproducible sampling
-
-    Returns:
-        Sampled array with at most max_points elements
-    """
-    n = values.shape[0]
-    if n <= max_points:
-        return values
-    rng = np.random.default_rng(seed)
-    idx = rng.choice(n, size=max_points, replace=False)
-    return values[idx]
-
-
-def _ecdf_quantile_curve(
-    values: np.ndarray, q_points: int = 512, logx: bool = False
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Generate empirical cumulative distribution function curve.
-
-    Creates smooth ECDF curves for statistical visualization by computing
-    quantile points. Supports logarithmic x-axis scaling for skewed distributions.
-
-    Args:
-        values: Input data array
-        q_points: Number of quantile points to compute (higher = smoother)
-        logx: Apply log transformation to x-axis (excludes non-positive values)
-
-    Returns:
-        Tuple of (x_values, cumulative_probabilities) for plotting
-    """
-
-    q = np.linspace(0.0, 1.0, q_points, endpoint=True)
-    x = np.quantile(values, q)
-    y = q
-    if logx:
-        x = np.where(x <= 0, np.nan, x)
-        mask = ~np.isnan(x)
-        return x[mask], y[mask]
-    return x, y
-
-
-def _paired_hist(
-    prev: np.ndarray, curr: np.ndarray, bins: int, density: bool
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Generate paired histograms for drift detection visualization.
-
-    Computes histograms for two datasets using identical bins for direct comparison.
-    Handles edge cases like empty arrays and identical min/max values gracefully.
-
-    Args:
-        prev: Previous/reference dataset
-        curr: Current dataset to compare
-        bins: Number of histogram bins
-        density: Whether to normalize histograms to probability densities
-
-    Returns:
-        Tuple of (prev_histogram, curr_histogram, bin_centers)
-    """
-
-    if prev.size == 0 or curr.size == 0:
-        return np.array([]), np.array([]), np.array([])
-    vmin = float(min(np.nanmin(prev), np.nanmin(curr)))
-    vmax = float(max(np.nanmax(prev), np.nanmax(curr)))
-
-    if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
-        eps = (
-            1.0
-            if not np.isfinite(vmin) or not np.isfinite(vmax)
-            else max(1e-9, abs(vmin) * 0.01 or 1.0)
-        )
-        vmin, vmax = (
-            (0.0 - eps, 0.0 + eps)
-            if not np.isfinite(vmin) or not np.isfinite(vmax)
-            else (vmin - eps, vmax + eps)
-        )
-    hist_prev, edges = np.histogram(
-        prev, bins=bins, range=(vmin, vmax), density=density
-    )
-    hist_curr, _ = np.histogram(curr, bins=bins, range=(vmin, vmax), density=density)
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    return hist_prev, hist_curr, centers
+# Helpers moved to dashboard_common.py
 
 
 project_root = get_pipelines_root()
@@ -178,6 +51,10 @@ project_root = get_pipelines_root()
 # Dataset Section
 # =========================
 def show_dataset_section(data_dir, pipeline_name):
+    """
+    Displays the standard dataset information tab.
+    Includes preview, lightweight info, descriptive stats, and categorical analysis.
+    """
     """Displays dataset preview, info, stats, top categorical values, and a drift heatmap."""
     st.subheader("Dataset Information")
     control_dir = project_root / "pipelines" / pipeline_name / "control"
@@ -308,6 +185,10 @@ def show_dataset_section(data_dir, pipeline_name):
 # Evaluator Section
 # =========================
 def show_evaluator_section(pipeline_name):
+    """
+    Displays evaluation metrics for the approved model.
+    Includes thresholds, metrics (Accuracy/F1/R2), confusion matrix, and ROC curves.
+    """
     """Displays evaluation metrics for the approved model, including thresholds, circuit breaker status, and an overview of candidates."""
     st.subheader("Approved Model Evaluation Results")
     st.markdown(
@@ -324,7 +205,7 @@ def show_evaluator_section(pipeline_name):
         st.info("No evaluation results found yet.")
         return None  # Important
 
-    results = _load_json_cached(str(eval_path), _mtime(str(eval_path)))
+    results = _read_json_cached(str(eval_path), _mtime(str(eval_path)))
     if not results:
         st.warning("Empty evaluation results.")
         return None  # Important
@@ -467,12 +348,12 @@ def show_evaluator_section(pipeline_name):
             }
             try:
                 if meta_path.exists():
-                    meta = _load_json_cached(str(meta_path), _mtime(str(meta_path)))
+                    meta = _read_json_cached(str(meta_path), _mtime(str(meta_path)))
                     row["approved"] = bool(meta.get("approved", False))
                     row["file"] = meta.get("file")
                     row["timestamp"] = meta.get("timestamp")
                 if eval_p.exists():
-                    ev = _load_json_cached(str(eval_p), _mtime(str(eval_p)))
+                    ev = _read_json_cached(str(eval_p), _mtime(str(eval_p)))
                     m = ev.get("metrics", {})
                     if "accuracy" in m:
                         row["key_metric"] = "accuracy"
@@ -517,6 +398,9 @@ def show_evaluator_section(pipeline_name):
 
 def show_historical_performance_section(pipeline_name):
     """
+    Plots historical performance (Balanced Accuracy) of Champion vs Challenger models over time.
+    """
+    """
     Plots the historical performance of Champion and Challenger models over time
     by reading from a unified evaluation history directory.
     """
@@ -551,7 +435,7 @@ def show_historical_performance_section(pipeline_name):
 
         for file_path in history_files:
             try:
-                results = _load_json_cached(str(file_path), _mtime(str(file_path)))
+                results = _read_json_cached(str(file_path), _mtime(str(file_path)))
 
                 # Safely extract required fields
                 metrics = results.get("metrics", {})
@@ -844,7 +728,7 @@ def show_drift_section(pipeline_name, config):
     if not drift_path.exists():
         st.info("No drift results saved yet.")
         return
-    results = _load_json_cached(str(drift_path), _mtime(str(drift_path)))
+    results = _read_json_cached(str(drift_path), _mtime(str(drift_path)))
     if not results:
         st.warning("Drift results are empty.")
         return
@@ -1192,7 +1076,7 @@ def show_drift_section(pipeline_name, config):
     drift_path = metrics_dir / "drift_results.json"
 
     if drift_path.exists():
-        results = _load_json_cached(str(drift_path), _mtime(str(drift_path)))
+        results = _read_json_cached(str(drift_path), _mtime(str(drift_path)))
         tests = results.get("tests", {})
 
         # Dynamically identify available metric types from the keys
@@ -1343,7 +1227,7 @@ def show_train_section(pipeline_name):
         st.info("No training results found yet.")
         return
 
-    results = _load_json_cached(str(train_path), _mtime(str(train_path)))
+    results = _read_json_cached(str(train_path), _mtime(str(train_path)))
     if not results:
         st.warning("Empty training results.")
         return
@@ -1588,7 +1472,7 @@ config_path = (
     project_root / "pipelines" / pipeline_name / "config" / "runner_config.json"
 )
 if config_path.exists():
-    config = _load_json_cached(str(config_path), _mtime(str(config_path)))
+    config = _read_json_cached(str(config_path), _mtime(str(config_path)))
     pipeline_name = config.get("pipeline_name", pipeline_name)
     data_dir = config.get("data_dir")
     monitor_type = config.get("monitor_type", "unknown")

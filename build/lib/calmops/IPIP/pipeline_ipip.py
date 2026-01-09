@@ -3,19 +3,29 @@ from __future__ import annotations
 
 import os
 import json
+import time
 import logging
 import importlib.util
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, List
 import re
 import numpy as np
 
 
 import joblib
 import pandas as pd
+from datetime import datetime
+from sklearn.metrics import (
+    classification_report,
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score,
+    roc_auc_score,
+)
 
 from calmops.logger.logger import PipelineLogger
 from calmops.utils import get_pipelines_root
+from calmops.utils.HistoryManager import HistoryManager
 
 # --- Robust imports of your modules ---
 from .modules.data_loader import data_loader
@@ -23,12 +33,12 @@ from .modules.default_train_retrain import default_train, default_retrain
 
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
+# import tensorflow as tf
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
 
-tf.get_logger().setLevel("ERROR")
+# tf.get_logger().setLevel("ERROR")
 
 
 # =========================================================
@@ -194,312 +204,31 @@ def _sorted_blocks(block_series: pd.Series) -> list[str]:
     return sorted_unique_blocks
 
 
-# =========================================================
-# Run Pipeline
-# =========================================================
-def run_pipeline(
-    *,
-    pipeline_name: str,
-    data_dir: str,
-    preprocess_file: str,
-    model_instance,
-    random_state: int,
-    custom_train_file: str | None = None,
-    custom_retrain_file: str | None = None,
-    delimiter: str = ",",
-    target_file: str | None = None,
-    window_size: int | None = None,
-    block_col: str | None = None,
-    ipip_config: dict | None = None,
-    dir_predictions: Optional[str] = None,
-    prediction_only: bool = False,
-    encoding: str = "utf-8",
-    file_type: str = "csv",
-) -> None:
-    # Paths
-    project_root = get_pipelines_root()
-    base_dir = project_root / "pipelines" / pipeline_name
-    output_dir = base_dir / "models"
-    control_dir = base_dir / "control"
-    logs_dir = base_dir / "logs"
-    metrics_dir = base_dir / "metrics"
-    for d in (output_dir, control_dir, logs_dir, metrics_dir):
-        d.mkdir(parents=True, exist_ok=True)
+def _jsonable(o):
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, (np.floating,)):
+        return float(o)
+    if isinstance(o, (np.bool_, bool)):
+        return bool(o)
+    if isinstance(o, (np.ndarray, list, tuple)):
+        return [_jsonable(x) for x in o]
+    if isinstance(o, dict):
+        return {k: _jsonable(v) for k, v in o.items()}
+    return o
 
-    model_path = output_dir / f"{pipeline_name}.pkl"
 
-    # Logger
-    logger = PipelineLogger(pipeline_name, log_dir=logs_dir).get_logger()
-
-    logger.info("Pipeline (IPIP) started — GLOBAL mode over all blocks.")
-
-    if not block_col:
-        raise ValueError("You must provide block_col explicitly (e.g., 'chunk').")
-
-    # 1) Load dataset
-    df_full, last_processed_file, last_mtime = data_loader(
-        logger,
-        data_dir,
-        control_dir,
-        delimiter=delimiter,
-        target_file=target_file,
-        block_col=block_col,
-        encoding=encoding,
-        file_type=file_type,
-    )
-    if df_full.empty:
-        logger.warning("No new data to process.")
-        return
-    # 2) Preprocess (the prepro chooses target and returns X,y)
-    spec = importlib.util.spec_from_file_location("custom_preproc", preprocess_file)
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    if not hasattr(mod, "data_preprocessing"):
-        raise AttributeError(
-            f"{preprocess_file} must define data_preprocessing(df)->(X,y)"
-        )
-
-    # Attempt to retrieve block_col from raw data
-    original_blocks_series = None
-    if block_col in df_full.columns:
-        original_blocks_series = df_full[block_col].astype(str)
-
-    X, y = mod.data_preprocessing(df_full)
-    if isinstance(y, pd.DataFrame):
-        y = y.iloc[:, 0]
-    logger.info(f"Preprocessing OK: {X.shape[0]} rows, {X.shape[1]} columns.")
-
-    # Handle block_col logic
-    if original_blocks_series is not None:
-        # Case A: block_col was in raw data -> restore/align it
-        try:
-            blocks_series = original_blocks_series.loc[X.index]
-        except Exception:
-            common = X.index.intersection(original_blocks_series.index)
-            X = X.loc[common]
-            y = y.loc[common]
-            blocks_series = original_blocks_series.loc[common]
-        X = X.copy()
-        X[block_col] = blocks_series
-    else:
-        # Case B: block_col was NOT in raw data -> must be in X (created by prepro)
-        if block_col not in X.columns:
-            raise ValueError(
-                f"block_col='{block_col}' not found in raw data AND not created by preprocessing."
-            )
-        # Ensure it's string/categorical
-        X[block_col] = X[block_col].astype(str)
-
-    # --- Start Sequential IPIP Logic (R-like) ---
-    all_blocks = _sorted_blocks(X[block_col])
-    if len(all_blocks) < 2:
-        logger.warning(
-            "Sequential IPIP evaluation requires at least 2 blocks to start training/evaluation."
-        )
-        return
-
-    current_model = None
-    final_predictions_list = []  # To store {y_true, y_pred, block}
-    training_history = []  # To store p, b, and ensemble info per step
-
-    # Placeholder for `model_instance` from pipeline config
-    _model_instance = model_instance  # Use the `model_instance` passed to run_pipeline
-
-    # 0. Initial Training (Block 0 & 1)
-    logger.info("Sequential Run: Initial training on blocks 0 & 1.")
-    initial_train_blocks = all_blocks[:2]  # First two blocks for default_train
-
-    X_initial_train_data = X[X[block_col].isin(initial_train_blocks)]
-    y_initial_train_data = y.loc[X_initial_train_data.index]
-
-    if X_initial_train_data.empty:
-        logger.error("Initial training data is empty. Cannot proceed.")
-        return
-
-    current_model, X_test_dummy, y_test_dummy, train_results = default_train(
-        X=X_initial_train_data,
-        y=y_initial_train_data,
-        last_processed_file=last_processed_file,
-        model_instance=_model_instance,
-        random_state=random_state,
-        logger=logger,
-        output_dir=metrics_dir,
-        block_col=block_col,
-        ipip_config=ipip_config,
-    )
-
-    if train_results:
-        training_history.append(
-            {
-                "block": str(initial_train_blocks[-1]),
-                "p": train_results.get("p"),
-                "b": train_results.get("b"),
-                "num_ensembles": train_results.get("num_ensembles"),
-                "models_per_ensemble": train_results.get("models_per_ensemble"),
-                "type": "initial_train",
-            }
-        )
-
-    # 1. Initial Evaluation (Evaluate model trained on block 0 and 1 on block 1)
-    # This aligns with R's first evaluation step (model on t=1 evaluates t=2)
-    eval_block_id_initial = all_blocks[1]
-    X_initial_eval = X[X[block_col] == eval_block_id_initial]
-    y_initial_eval = y.loc[X_initial_eval.index]
-
-    if current_model and not X_initial_eval.empty and not y_initial_eval.empty:
-        predictions = current_model.predict(
-            X_initial_eval.drop(columns=[block_col], errors="ignore")
-        )
-        # Capture probabilities (assuming binary classification, take positive class)
-        try:
-            probas = current_model.predict_proba(
-                X_initial_eval.drop(columns=[block_col], errors="ignore")
-            )
-            # If probas has 2 columns, take the second one (index 1) as positive class prob
-            if probas.shape[1] == 2:
-                y_pred_proba = probas[:, 1]
-            else:
-                # Fallback or handle multiclass if needed (for now assume binary)
-                y_pred_proba = probas[:, 1] if probas.shape[1] > 1 else probas[:, 0]
-        except Exception:
-            y_pred_proba = [None] * len(predictions)
-
-        for yt, yp, ypp in zip(y_initial_eval, predictions, y_pred_proba):
-            final_predictions_list.append(
-                {
-                    "y_true": yt,
-                    "y_pred": yp,
-                    "y_pred_proba": ypp,
-                    "block": eval_block_id_initial,
-                }
-            )
-        logger.info(f"Evaluated initial model on block '{eval_block_id_initial}'.")
-
-    # 2. Sequential Retraining and Evaluation Loop (from block 2 onwards)
-    for i in range(
-        1, len(all_blocks) - 1
-    ):  # Start from the second block (index 1, which is all_blocks[1])
-        retrain_up_to_block_id = all_blocks[i]  # Current block for retraining
-        eval_block_id = all_blocks[i + 1]  # Next block for evaluation
-
-        # Retrain model using all data up to the current block (0 to i)
-        logger.info(
-            f"Sequential Run: Retraining with data up to block '{retrain_up_to_block_id}'."
-        )
-        retrain_blocks_mask = X[block_col].isin(all_blocks[: i + 1])
-        X_retrain_data = X[retrain_blocks_mask]
-        y_retrain_data = y.loc[X_retrain_data.index]
-
-        if X_retrain_data.empty:
-            logger.warning(
-                f"Retrain data for block '{retrain_up_to_block_id}' is empty. Skipping."
-            )
-            continue
-
-        # Prepare next block data for transductive pruning (Oracle behavior matching R script)
-        X_eval_step = X[X[block_col] == eval_block_id]
-        y_eval_step = y.loc[X_eval_step.index]
-
-        # Pass the model object directly to default_retrain
-        current_model, X_test_dummy, y_test_dummy, retrain_results = default_retrain(
-            X=X_retrain_data,
-            y=y_retrain_data,
-            last_processed_file=last_processed_file,
-            model_path=current_model,  # Pass model object directly
-            random_state=random_state,
-            logger=logger,
-            output_dir=metrics_dir,
-            block_col=block_col,
-            ipip_config=ipip_config,
-            model_instance=_model_instance,
-            X_next=X_eval_step,  # Transductive pruning data
-            y_next=y_eval_step,  # Transductive pruning data
-        )
-
-        if retrain_results:
-            training_history.append(
-                {
-                    "block": str(retrain_up_to_block_id),
-                    "p": retrain_results.get("p"),
-                    "b": retrain_results.get(
-                        "b"
-                    ),  # default_retrain might not return b, need to check
-                    "num_ensembles": retrain_results.get("num_ensembles"),
-                    "models_per_ensemble": retrain_results.get("models_per_ensemble"),
-                    "type": "retrain",
-                }
-            )
-
-        # Evaluate the newly retrained model on the next block
-        # (X_eval_step and y_eval_step are already defined above)
-
-        if current_model and not X_eval_step.empty and not y_eval_step.empty:
-            predictions = current_model.predict(
-                X_eval_step.drop(columns=[block_col], errors="ignore")
-            )
-            # Capture probabilities
-            try:
-                probas = current_model.predict_proba(
-                    X_eval_step.drop(columns=[block_col], errors="ignore")
-                )
-                if probas.shape[1] == 2:
-                    y_pred_proba = probas[:, 1]
-                else:
-                    y_pred_proba = probas[:, 1] if probas.shape[1] > 1 else probas[:, 0]
-            except Exception:
-                y_pred_proba = [None] * len(predictions)
-
-            for yt, yp, ypp in zip(y_eval_step, predictions, y_pred_proba):
-                final_predictions_list.append(
-                    {
-                        "y_true": yt,
-                        "y_pred": yp,
-                        "y_pred_proba": ypp,
-                        "block": eval_block_id,
-                    }
-                )
-            logger.info(
-                f"Evaluated model (retrained on up to block '{retrain_up_to_block_id}') on block '{eval_block_id}'."
-            )
-        else:
-            logger.warning(
-                f"Could not evaluate on block '{eval_block_id}' (empty data or no model)."
-            )
-
-    # 3. Final Evaluation (Process remaining last block if not covered by loop)
-    # The loop evaluates up to `all_blocks[-1]`. This means the model trained on `all_blocks[-2]`
-    # is evaluated on `all_blocks[-1]`. The last model is never evaluated explicitly.
-    # The R code only evaluates up to `max_chunk - 1`, meaning the last chunk is never used for evaluation.
-    # We will replicate this by ending evaluation at `all_blocks[-1]`.
-
-    # Generate final eval_results.json from collected sequential predictions
+def _save_eval_results(
+    final_predictions_list,
+    metrics_dir,
+    logger,
+    block_col,
+    current_model=None,
+    filename="eval_results.json",
+):
     if not final_predictions_list:
-        logger.warning("No predictions collected for final evaluation.")
+        logger.warning(f"No predictions to save for {filename}.")
         return
-
-    from datetime import datetime
-    from sklearn.metrics import (
-        classification_report,
-        accuracy_score,
-        balanced_accuracy_score,
-        f1_score,
-        roc_auc_score,
-    )
-
-    # Helper to make results JSON-serializable
-    def _jsonable(o):
-        if isinstance(o, (np.integer,)):
-            return int(o)
-        if isinstance(o, (np.floating,)):
-            return float(o)
-        if isinstance(o, (np.bool_, bool)):
-            return bool(o)
-        if isinstance(o, (np.ndarray, list, tuple)):
-            return [_jsonable(x) for x in o]
-        if isinstance(o, dict):
-            return {k: _jsonable(v) for k, v in o.items()}
-        return o
 
     # Process final_predictions_list
     full_predictions_df = pd.DataFrame(final_predictions_list)
@@ -507,19 +236,10 @@ def run_pipeline(
     y_pred_final = full_predictions_df["y_pred"]
 
     # Handle numeric encoding for AUC and saving
-    # Try to infer if y_true is already numeric
     try:
         y_true_numeric = y_true_final.astype(float)
     except ValueError:
-        # If string labels, encode them.
-        # We need to know which is positive.
-        # Usually "SI"/"YES"/1 is positive.
-        # Let's use pd.factorize but we need consistency.
-        # Or simpler: if we have y_pred_proba, we assume it corresponds to the class
-        # that is "greater" in sorting order if sklearn defaults were used.
-        # Let's just use LabelEncoder logic: sorted classes.
         unique_classes = sorted(y_true_final.unique())
-        # Map to 0, 1, ...
         class_map = {c: i for i, c in enumerate(unique_classes)}
         y_true_numeric = y_true_final.map(class_map)
 
@@ -527,13 +247,11 @@ def run_pipeline(
 
     # Calculate Global AUC
     try:
-        # Only if we have valid probabilities and at least 2 classes
         if (
             "y_pred_proba" in full_predictions_df.columns
             and not full_predictions_df["y_pred_proba"].isna().all()
             and len(y_true_final.unique()) > 1
         ):
-            # Fill NaNs if any (shouldn't be if predict_proba worked)
             y_prob_clean = full_predictions_df["y_pred_proba"].fillna(0)
             roc_auc_global = float(roc_auc_score(y_true_numeric, y_prob_clean))
         else:
@@ -542,7 +260,6 @@ def run_pipeline(
         logger.warning(f"Could not calculate global ROC AUC: {e}")
         roc_auc_global = None
 
-    # Global metrics
     metrics_global = {
         "accuracy": float(accuracy_score(y_true_final, y_pred_final)),
         "balanced_accuracy": float(balanced_accuracy_score(y_true_final, y_pred_final)),
@@ -553,10 +270,8 @@ def run_pipeline(
         ),
     }
 
-    # Per-block metrics
     per_block_metrics_full = {}
     for block_id, group in full_predictions_df.groupby("block"):
-        # Calculate per-block AUC
         try:
             if (
                 "y_pred_proba" in group.columns
@@ -564,9 +279,6 @@ def run_pipeline(
                 and len(group["y_true"].unique()) > 1
             ):
                 y_prob_block = group["y_pred_proba"].fillna(0)
-                # Use the same mapping as global to ensure consistency?
-                # Or re-map? Re-mapping might flip classes if one is missing.
-                # Use global mapping.
                 y_true_block_num = (
                     group["y_true"].map(class_map)
                     if "class_map" in locals()
@@ -591,80 +303,678 @@ def run_pipeline(
 
     results = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "task": "classification",  # Assuming classification for now
-        "approved": True,  # Placeholder, actual approval logic would need thresholds
+        "task": "classification",
+        "approved": True,
         "metrics": _jsonable(metrics_global),
-        "thresholds": {},  # No thresholds defined yet
+        "thresholds": {},
         "blocks": {
             "block_col": block_col,
             "evaluated_blocks": _sorted_blocks(full_predictions_df["block"]),
             "per_block_metrics_full": _jsonable(per_block_metrics_full),
-            "per_block_approved": {},  # No per-block approval logic yet
+            "per_block_approved": {},
             "approved_blocks_count": 0,
             "rejected_blocks_count": 0,
             "top_worst_blocks": [],
         },
-        "predictions": full_predictions_df.head(100).to_dict(
-            orient="records"
-        ),  # Sample predictions
+        "predictions": full_predictions_df.head(100).to_dict(orient="records"),
         "model_info": {
-            "type": type(current_model).__name__,
+            "type": type(current_model).__name__ if current_model else "Unknown",
             "is_ipip": True,
         },
     }
 
-    # Save current eval_results.json
-    eval_path = metrics_dir / "eval_results.json"
+    eval_path = metrics_dir / filename
     with open(eval_path, "w") as f:
         json.dump(results, f, indent=4)
-    logger.info(f"Sequential evaluation results saved to {eval_path}.")
+    logger.info(f"Evaluation results saved to {eval_path}.")
 
-    # Save to eval_history
+
+# =========================================================
+# Run Pipeline
+# =========================================================
+def run_pipeline(
+    *,
+    pipeline_name: str,
+    data_dir: str,
+    preprocess_file: str,
+    model_instance,
+    random_state: int,
+    custom_train_file: str | None = None,
+    custom_retrain_file: str | None = None,
+    delimiter: str = ",",
+    target_file: str | None = None,
+    target_files: List[str] | None = None,
+    rest_preprocess_file: str | None = None,
+    skip_initial_preprocessing: bool = False,
+    skip_rest_preprocessing: bool = False,
+    target_col: str | None = None,
+    window_size: int | None = None,
+    block_col: str | None = None,
+    ipip_config: dict | None = None,
+    dir_predictions: Optional[str] = None,
+    prediction_only: bool = False,
+    encoding: str = "utf-8",
+    file_type: str = "csv",
+    max_history_size: int = 5,
+) -> None:
+    # Paths
+    project_root = get_pipelines_root()
+    base_dir = project_root / "pipelines" / pipeline_name
+    output_dir = base_dir / "models"
+    control_dir = base_dir / "control"
+    logs_dir = base_dir / "logs"
+    metrics_dir = base_dir / "metrics"
+    for d in (output_dir, control_dir, logs_dir, metrics_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    control_file = control_dir / "control_file.txt"
+
+    model_path = output_dir / f"{pipeline_name}.pkl"
+
+    # Logger
+    logger = PipelineLogger(pipeline_name, log_dir=logs_dir).get_logger()
+
+    logger.info("Pipeline (IPIP) started — GLOBAL mode over all blocks.")
+
+    if not block_col:
+        raise ValueError("You must provide block_col explicitly (e.g., 'chunk').")
+
+    # 1) Load dataset
+    # 1) Determine files to process
+    files_to_process = []  # List of (filename, preloaded_df_or_None, mtime_or_None)
+
+    # Note: data_loader returns (df, filename, mtime)
+
+    if target_files:
+        for f in target_files:
+            files_to_process.append((f, None, None))
+    elif target_file:
+        files_to_process.append((target_file, None, None))
+    else:
+        # Auto-discovery / Directory scan mode
+        # In this mode, we find ONE new file as per original logic
+        df_found, fname_found, mtime_found = data_loader(
+            logger,
+            data_dir,
+            control_dir,
+            delimiter=delimiter,
+            target_file=None,
+            block_col=block_col,
+            encoding=encoding,
+            file_type=file_type,
+        )
+        if df_found.empty:
+            logger.warning("No new data to process.")
+            return
+        files_to_process.append((fname_found, df_found, mtime_found))
+
+    # Lists to accumulate processed parts
+    X_parts = []
+    y_parts = []
+    processed_files_meta = []  # To update control file later: (filename, mtime)
+
+    for i, (fname, preloaded_df, preloaded_mtime) in enumerate(files_to_process):
+        # Load if needed
+        if preloaded_df is not None:
+            df_curr = preloaded_df
+            current_mtime = preloaded_mtime
+        else:
+            df_curr, _, current_mtime = data_loader(
+                logger,
+                data_dir,
+                control_dir,
+                delimiter=delimiter,
+                target_file=fname,
+                block_col=block_col,
+                encoding=encoding,
+                file_type=file_type,
+            )
+
+        if df_curr.empty:
+            logger.warning(f"File {fname} is empty or could not be loaded. Skipping.")
+            continue
+
+        # Track for control file update
+        if fname and current_mtime:
+            processed_files_meta.append((fname, current_mtime))
+
+        # Check prior history for incremental runs
+        control_file_size = 0
+        if control_file.exists():
+            control_file_size = control_file.stat().st_size
+
+        is_first = i == 0
+        # If incremental mode (no explicit target_files) and history exists, this is NOT the initial file
+        if not target_files and control_file_size > 0:
+            is_first = False
+
+        should_skip = (
+            skip_initial_preprocessing if is_first else skip_rest_preprocessing
+        )
+
+        script_path = (
+            preprocess_file if is_first else (rest_preprocess_file or preprocess_file)
+        )
+
+        logger.info(
+            f"Processing file {fname} (Index {i}). Skip Preproc: {should_skip}. Script: {script_path}"
+        )
+
+        if should_skip:
+            # RAW Mode: splitting only
+            if not target_col:
+                raise ValueError(
+                    "target_col must be specified when skipping preprocessing."
+                )
+
+            # Check if target_col exists
+            if target_col not in df_curr.columns:
+                raise ValueError(
+                    f"Column '{target_col}' not found in {fname} (Columns: {list(df_curr.columns)})."
+                )
+
+            X_curr = df_curr.drop(columns=[target_col], errors="ignore")
+            y_curr = df_curr[target_col]
+        else:
+            # Script Mode
+            spec = importlib.util.spec_from_file_location(
+                f"custom_preproc_{i}", script_path
+            )
+            mod = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(mod)
+            if not hasattr(mod, "data_preprocessing"):
+                raise AttributeError(
+                    f"{script_path} must define data_preprocessing(df)->(X,y)"
+                )
+            X_curr, y_curr = mod.data_preprocessing(df_curr)
+
+            if isinstance(y_curr, pd.DataFrame):
+                y_curr = y_curr.iloc[:, 0]
+
+        # Align columns? (Optional safety step, but generally expected to match)
+        X_parts.append(X_curr)
+        y_parts.append(y_curr)
+        logger.info(f"File {fname} processed. X shape: {X_curr.shape}.")
+
+    if not X_parts:
+        logger.warning("No data resulted from processing files.")
+        return
+
+    # Concatenate all parts
+    X = pd.concat(X_parts, ignore_index=True)
+    y = pd.concat(y_parts, ignore_index=True)
+
+    logger.info(f"Total Combined Data: {X.shape[0]} rows, {X.shape[1]} columns.")
+
+    # Handle block_col logic
+    # Handle block_col logic
+    # In multi-file/flexible mode, we require block_col to be in the final X.
+    if block_col not in X.columns:
+        raise ValueError(
+            f"block_col='{block_col}' not found in processed data. "
+            "Ensure it is present in input files or created by preprocessing."
+        )
+    X[block_col] = X[block_col].astype(str)
+
+    # Determine last_processed_file for logging/training functions
+    last_processed_file = processed_files_meta[-1][0] if processed_files_meta else None
+
+    # --- Start Sequential IPIP Logic with Year-Based Splitting ---
+    # Sort blocks naturally
+    all_blocks = _sorted_blocks(X[block_col])
+    if len(all_blocks) < 2:
+        logger.warning(
+            "Sequential IPIP evaluation requires at least 2 blocks to start training/evaluation."
+        )
+        return
+
+    current_model = None
+    final_predictions_list = []  # To store {y_true, y_pred, block}
+    training_history = []  # To store p, b, and ensemble info per step
+
+    # Placeholder for `model_instance` from pipeline config
+    _model_instance = model_instance
+
+    # Identify Unique Years
+    year_col = ipip_config.get("year_col") if ipip_config else None
+    unique_years = []
+
+    if year_col and year_col in X.columns:
+        try:
+            # Extract unique years from the column
+            unique_years = sorted(
+                pd.to_datetime(X[year_col], errors="coerce", dayfirst=True)
+                .dt.year.dropna()
+                .unique()
+                .astype(int)
+                .astype(str)
+                .tolist()
+            )
+            logger.info(f"Identified Years from '{year_col}': {unique_years}")
+        except Exception as e:
+            logger.warning(f"Failed to extract years from {year_col}: {e}")
+            unique_years = []
+
+    if not unique_years:
+        # Fallback to block prefix logic or just unique blocks if no year concept
+        # If no explicit year_col, we might try to infer from block names or just treat as one big unrecognized year?
+        # Current logic tried to map every block.
+        # Let's keep a simplified fallback:
+        # If no year_col, we just process everything as one "Unknown" year or iterate blocks naturally?
+        # If split_years is True but no year_col found/configured, we rely on prefixes.
+
+        # Original logic fallback:
+        year_map = {}
+        for b in all_blocks:
+            year_map[b] = str(b).split("-")[0]
+        unique_years = sorted(list(set(year_map.values())))
+        logger.info(f"Identified Years from block prefixes: {unique_years}")
+
+    # Track processed blocks for retraining history
+    # Correction: 'processed_blocks_history' stores blocks we have trained on.
+    # For recurring blocks ("1", "2"), simply storing "1" is ambiguous if we mean "2022-1".
+    # BUT, the model is trained on DATA.
+    # The requirement is: "Subsequent Years: Using the model from the previous year".
+    # This means the MODEL object accumulates knowledge.
+    # 'processed_blocks_history' is used to selecting data for retraining: X[X[block_col].isin(processed_blocks_history)]
+    # IF block "1" is in history, it selects ALL block "1" data (from 2022, 2023...).
+    # FAST FIX: When selecting retraining data, we should probably select ALL data processed SO FAR (up to current year/block).
+    # OR, if the requirement is to use "sequential retraining",
+    # usually it means training on everything seen so far.
+    # So if we are in 2023, block 1, we want to retrain on (2022-all) + (2023-1).
+    # If we just filter by block_id "1", we get 2022-1 and 2023-1.
+    # We essentially need to accumulate the DATAFRAME indices or mask, not just block names, if block names are not unique.
+
+    # STRATEGY:
+    # Maintain a 'historical_indices' list or mask.
+    historical_mask = pd.Series(False, index=X.index)
+
+    features_to_drop_always = []
+    if year_col:
+        features_to_drop_always.append(year_col)
+
+    def _clean_for_train(df):
+        return df.drop(columns=features_to_drop_always, errors="ignore")
+
+    def _clean_for_predict(df):
+        cols = features_to_drop_always + [block_col]
+        return df.drop(columns=cols, errors="ignore")
+
+    for year_idx, year in enumerate(unique_years):
+        logger.info(f"=== Processing Year: {year} ===")
+
+        # 1. Filter X for this specific year
+        # We need to act on the specific subset of rows for this year.
+        if year_col:
+            # Re-extract year to be safe or use pre-calculated mask
+            # This is a bit expensive inside loop but safe
+            current_year_mask = pd.to_datetime(
+                X[year_col], errors="coerce", dayfirst=True
+            ).dt.year == int(year)
+            X_year = X[current_year_mask]
+        else:
+            # Fallback: Filter by blocks that map to this year (using prefix logic)
+            # Re-create map for this fallback case
+            current_year_blocks = [
+                b for b in all_blocks if str(b).startswith(str(year))
+            ]
+            X_year = X[X[block_col].isin(current_year_blocks)]
+
+        if X_year.empty:
+            logger.warning(f"No data found for year {year}. Skipping.")
+            continue
+
+        y_year = y.loc[X_year.index]
+
+        # Identify blocks present IN THIS YEAR'S data
+        # Sort naturally
+        year_blocks = _sorted_blocks(X_year[block_col])
+        logger.info(f"Blocks found in year {year}: {year_blocks}")
+
+        if not year_blocks:
+            continue
+
+        # Local results accumulator for this year
+        year_predictions_list = []
+
+        start_idx = 0
+
+        # --- PHASE 1: INITIAL TRAINING ---
+        if year_idx == 0:
+            if len(year_blocks) < 2:
+                logger.warning(
+                    f"Year {year} has fewer than 2 blocks. Cannot perform initial training."
+                )
+                continue
+
+            logger.info(
+                f"Sequential Run: Initial training on blocks 0 & 1 of year {year}."
+            )
+            initial_train_blocks = year_blocks[:2]
+
+            X_initial_train_data = X_year[X_year[block_col].isin(initial_train_blocks)]
+            y_initial_train_data = y.loc[X_initial_train_data.index]
+
+            if X_initial_train_data.empty:
+                logger.error("Initial training data is empty. Cannot proceed.")
+                return
+
+            # Update history mask
+            historical_mask.loc[X_initial_train_data.index] = True
+
+            # DROP ONLY EXTRA COLS (Keep block_col for default_train logic)
+            X_train_clean = _clean_for_train(X_initial_train_data)
+
+            current_model, X_test_dummy, y_test_dummy, train_results = default_train(
+                X=X_train_clean,
+                y=y_initial_train_data,
+                last_processed_file=last_processed_file,
+                model_instance=_model_instance,
+                random_state=random_state,
+                logger=logger,
+                output_dir=metrics_dir,
+                block_col=block_col,
+                ipip_config=ipip_config,
+            )
+
+            if train_results:
+                training_history.append(
+                    {
+                        "block": str(initial_train_blocks[-1]),
+                        "p": train_results.get("p"),
+                        "b": train_results.get("b"),
+                        "num_ensembles": train_results.get("num_ensembles"),
+                        "models_per_ensemble": train_results.get("models_per_ensemble"),
+                        "type": "initial_train",
+                    }
+                )
+
+            # processed_blocks_history.extend(initial_train_blocks) # No longer used
+
+            # --- EVALUATE INITIAL MODEL ---
+            eval_block_id_initial = year_blocks[1]
+            X_initial_eval = X_year[X_year[block_col] == eval_block_id_initial]
+            y_initial_eval = y.loc[X_initial_eval.index]
+
+            # DROP ALL EXTRA COLUMNS AND BLOCK COL FOR PREDICT
+            X_eval_clean = _clean_for_predict(X_initial_eval)
+
+            if current_model and not X_eval_clean.empty:
+                predictions = current_model.predict(X_eval_clean)
+                try:
+                    probas = current_model.predict_proba(X_eval_clean)
+                    if probas.shape[1] == 2:
+                        y_pred_proba = probas[:, 1]
+                    else:
+                        y_pred_proba = (
+                            probas[:, 1] if probas.shape[1] > 1 else probas[:, 0]
+                        )
+                except Exception:
+                    y_pred_proba = [None] * len(predictions)
+
+                for yt, yp, ypp in zip(y_initial_eval, predictions, y_pred_proba):
+                    pred_entry = {
+                        "y_true": yt,
+                        "y_pred": yp,
+                        "y_pred_proba": ypp,
+                        "block": eval_block_id_initial,
+                    }
+                    final_predictions_list.append(pred_entry)
+                    year_predictions_list.append(pred_entry)
+
+            start_idx = 1
+
+        else:
+            # --- PHASE 2: CONTINUITY ---
+            first_block_of_year = year_blocks[0]
+            logger.info(
+                f"Evaluating first block of year {year} ({first_block_of_year}) with previous year's model."
+            )
+
+            X_eval_step = X_year[X_year[block_col] == first_block_of_year]
+            y_eval_step = y.loc[X_eval_step.index]
+
+            X_eval_clean = _clean_for_predict(X_eval_step)
+
+            if current_model and not X_eval_clean.empty:
+                predictions = current_model.predict(X_eval_clean)
+                try:
+                    probas = current_model.predict_proba(X_eval_clean)
+                    if probas.shape[1] == 2:
+                        y_pred_proba = probas[:, 1]
+                    else:
+                        y_pred_proba = (
+                            probas[:, 1] if probas.shape[1] > 1 else probas[:, 0]
+                        )
+                except Exception:
+                    y_pred_proba = [None] * len(predictions)
+
+                for yt, yp, ypp in zip(y_eval_step, predictions, y_pred_proba):
+                    pred_entry = {
+                        "y_true": yt,
+                        "y_pred": yp,
+                        "y_pred_proba": ypp,
+                        "block": first_block_of_year,
+                    }
+                    final_predictions_list.append(pred_entry)
+                    year_predictions_list.append(pred_entry)
+
+            start_idx = 0
+
+        # --- PHASE 3: SEQUENTIAL LOOP FOR THE YEAR ---
+        for i in range(start_idx, len(year_blocks) - 1):
+            retrain_up_to_this_block = year_blocks[i]
+            eval_next_block = year_blocks[i + 1]
+
+            # Update history with the block we just finished (retrain_up_to_this_block)
+            # Actually, in the loop, we retrain on [history] + [current_block].
+            # Logic:
+            # i=0: retrain on (initial blocks). BUT we just entered loop.
+            # We want to Retrain on (History + retrain_up_to_this_block).
+            # Then Predict on (eval_next_block).
+
+            # Add retrain_up_to_this_block to history
+            current_block_data = X_year[X_year[block_col] == retrain_up_to_this_block]
+            historical_mask.loc[current_block_data.index] = True
+
+            logger.info(
+                f"Sequential Run: Retraining with all historical data up to year {year}, block '{retrain_up_to_this_block}'."
+            )
+
+            # Select ALL historical data
+            X_retrain_data = X[historical_mask]
+            y_retrain_data = y.loc[X_retrain_data.index]
+
+            if X_retrain_data.empty:
+                continue
+
+            # Oracle Data
+            X_eval_step = X_year[X_year[block_col] == eval_next_block]
+            y_eval_step = y.loc[X_eval_step.index]
+
+            # Clean X for retrain (KEEP block_col)
+            X_retrain_clean = _clean_for_train(X_retrain_data)
+            # Clean X next for pruning? default_retrain might use block_col there too?
+            # default_retrain: if X_next provided, it calls predict.
+            # predict usually needs NO block col.
+            # But wait, default_retrain L442: pruning_X = X_next.drop(columns=[block_col], errors="ignore")
+            # So default_retrain EXPECTS X_next to potentially have block_col and drops it.
+            # safe to pass with block_col or without?
+            # safest: pass with block_col (cleaned only of year), let default_retrain drop block_col if it wants.
+            X_next_clean = _clean_for_train(X_eval_step)
+
+            current_model, X_test_dummy, y_test_dummy, retrain_results = (
+                default_retrain(
+                    X=X_retrain_clean,
+                    y=y_retrain_data,
+                    last_processed_file=last_processed_file,
+                    model_path=current_model,
+                    random_state=random_state,
+                    logger=logger,
+                    output_dir=metrics_dir,
+                    block_col=block_col,
+                    ipip_config=ipip_config,
+                    model_instance=_model_instance,
+                    X_next=X_next_clean,
+                    y_next=y_eval_step,
+                )
+            )
+
+            if retrain_results:
+                training_history.append(
+                    {
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "year": str(year),
+                        "block": str(retrain_up_to_this_block),
+                        "p": retrain_results.get("p"),
+                        "b": retrain_results.get("b"),
+                        "num_ensembles": retrain_results.get("num_ensembles"),
+                        "replacement_percentage": retrain_results.get(
+                            "replacement_percentage"
+                        ),
+                        "type": "retrain",
+                    }
+                )
+
+            # Evaluate on Next Block
+            X_next_predict = _clean_for_predict(X_eval_step)
+
+            if current_model and not X_next_predict.empty:
+                predictions = current_model.predict(X_next_predict)
+                try:
+                    probas = current_model.predict_proba(X_next_predict)
+                    if probas.shape[1] == 2:
+                        y_pred_proba = probas[:, 1]
+                    else:
+                        y_pred_proba = (
+                            probas[:, 1] if probas.shape[1] > 1 else probas[:, 0]
+                        )
+                except Exception:
+                    y_pred_proba = [None] * len(predictions)
+
+                for yt, yp, ypp in zip(y_eval_step, predictions, y_pred_proba):
+                    pred_entry = {
+                        "y_true": yt,
+                        "y_pred": yp,
+                        "y_pred_proba": ypp,
+                        "block": eval_next_block,
+                    }
+                    final_predictions_list.append(pred_entry)
+                    year_predictions_list.append(pred_entry)
+
+        # --- PHASE 4: YEAR END FINALIZATION ---
+        last_block_of_year = year_blocks[-1]
+
+        # Add last block to history
+        last_block_data = X_year[X_year[block_col] == last_block_of_year]
+        historical_mask.loc[last_block_data.index] = True
+
+        logger.info(
+            f"End of Year {year}. Performing final model update on full year data."
+        )
+
+        X_full_year_history = X[historical_mask]
+        y_full_year_history = y.loc[X_full_year_history.index]
+
+        X_full_clean = _clean_for_train(X_full_year_history)
+
+        current_model, _, _, _ = default_retrain(
+            X=X_full_clean,
+            y=y_full_year_history,
+            last_processed_file=last_processed_file,
+            model_path=current_model,
+            random_state=random_state,
+            logger=logger,
+            output_dir=metrics_dir,
+            block_col=block_col,
+            ipip_config=ipip_config,
+            model_instance=_model_instance,
+            X_next=None,
+            y_next=None,
+        )
+
+        # --- SAVE YEAR RESULTS ---
+        if ipip_config and ipip_config.get("split_years"):
+            logger.info(f"Saving results for Year {year}.")
+            _save_eval_results(
+                year_predictions_list,  # Only this year's results
+                metrics_dir,
+                logger,
+                block_col,
+                current_model,
+                filename=f"eval_results_year_{year}.json",
+            )
+
+    # --- END OF YEAR LOOP ---
+
+    # Generate final global eval_results.json (Aggregated)
+    _save_eval_results(
+        final_predictions_list,
+        metrics_dir,
+        logger,
+        block_col,
+        current_model,
+        filename="eval_results.json",
+    )
+
+    # Save to eval_history (using helper)
     try:
         history_dir = metrics_dir / "eval_history"
         history_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         history_fname = f"eval_results_{ts}.json"
-        history_path = history_dir / history_fname
-        with open(history_path, "w") as f:
-            json.dump(results, f, indent=4)
-        logger.info(f"Historical evaluation results saved to {history_path}.")
+
+        _save_eval_results(
+            final_predictions_list,
+            history_dir,
+            logger,
+            block_col,
+            current_model,
+            filename=history_fname,
+        )
     except Exception as e:
         logger.warning(f"Could not save historical evaluation results: {e}")
 
-    # --- NEW: Save full predictions to CSV ---
-    try:
-        preds_path = metrics_dir / "predictions.csv"
-        full_predictions_df.to_csv(preds_path, index=False)
-        logger.info(f"Full predictions saved to {preds_path}.")
-    except Exception as e:
-        logger.warning(f"Could not save predictions.csv: {e}")
-
     # --- NEW: Save training history (p, b, ensembles) ---
     try:
-        # We need to have collected this during the loop.
-        # Since I am editing the end of the file, I need to make sure 'training_history' exists.
-        # I will inject the collection logic in a separate edit or assume I'll do it now.
-        # Actually, I should do it all in one go if possible, but the file is large.
-        # Let's just save what we have if it exists, but I haven't created the list yet.
-        # So I will split this into multiple edits. This edit adds the saving logic.
+        history_json_path = metrics_dir / "training_history.json"
+        # Load existing history if file exists to append?
+        # For simplicity and robustness during sequential runs with year loop, we are accumulating in `training_history`.
+        # If we restart the pipeline for a new file, we might overwrite.
+        # But `run_pipeline` is called per file.
+        # Actually, if we process multiple files sequentially (incremental), we usually want to append.
+        # Let's read, append, write.
 
-        if "training_history" in locals():
-            history_json_path = metrics_dir / "training_history.json"
-            with open(history_json_path, "w") as f:
-                json.dump(training_history, f, indent=4)
-            logger.info(f"Training history saved to {history_json_path}.")
+        current_history = []
+        if history_json_path.exists():
+            try:
+                with open(history_json_path, "r") as f:
+                    current_history = json.load(f)
+            except json.JSONDecodeError:
+                current_history = []
+
+        # Avoid duplication if possible (simple check by timestamp might not be enough if fast)
+        # Just append new entries
+        current_history.extend(training_history)
+
+        with open(history_json_path, "w") as f:
+            json.dump(current_history, f, indent=4)
+        logger.info(f"Training history saved to {history_json_path}.")
+
     except Exception as e:
         logger.warning(f"Could not save training_history.json: {e}")
 
     # Update control file to mark this file as processed
-    if last_processed_file and last_mtime:
-        _upsert_control_entry(
-            control_dir / "control_file.txt",
-            last_processed_file,
-            last_mtime,
-            logger,
-        )
+    # We iterate over all processed files
+    for fname, mtime in processed_files_meta:
+        if fname and mtime:
+            _upsert_control_entry(
+                control_dir / "control_file.txt",
+                fname,
+                mtime,
+                logger,
+            )
 
     # Persist the final model
     _persist_model(
@@ -688,3 +998,52 @@ def run_pipeline(
             logger.info(f"Model structure saved to {model_struct_path}")
         except Exception as e:
             logger.warning(f"Could not save model structure JSON: {e}")
+
+    # ========================================================================
+    # SAVE HISTORY
+    # ========================================================================
+    try:
+        # Construct history record
+        history_record = {
+            "timestamp": time.time(),
+            "readable_timestamp": time.ctime(),
+            "batch_id": last_processed_file
+            if "last_processed_file" in locals()
+            else "unknown",
+            "pipeline_type": "ipip",
+        }
+
+        # Load latest eval results
+        eval_res_file = metrics_dir / "eval_results.json"
+        if eval_res_file.exists():
+            try:
+                with open(eval_res_file, "r") as f:
+                    eval_data = json.load(f)
+                    if isinstance(eval_data, list) and eval_data:
+                        history_record["eval_metrics"] = eval_data[-1]
+                    elif isinstance(eval_data, dict):
+                        history_record["eval_metrics"] = eval_data
+            except:
+                pass
+
+        # Load latest training history
+        train_hist_file = metrics_dir / "training_history.json"
+        if train_hist_file.exists():
+            try:
+                with open(train_hist_file, "r") as f:
+                    t_data = json.load(f)
+                    # Maybe too big to save all? Just save last entry
+                    if isinstance(t_data, list) and t_data:
+                        history_record["last_training_step"] = t_data[-1]
+            except:
+                pass
+
+        HistoryManager.append_history_record(
+            str(metrics_dir / "history.json"),
+            history_record,
+            max_history=max_history_size,
+        )
+        logger.info(f"History updated (max_size={max_history_size})")
+
+    except Exception as h_e:
+        logger.error(f"Failed to save history: {h_e}")

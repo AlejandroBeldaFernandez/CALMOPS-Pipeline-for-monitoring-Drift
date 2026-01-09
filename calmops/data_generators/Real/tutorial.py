@@ -26,13 +26,13 @@ def run_tutorial():
     try:
         # Initialize Generator with original data and method
         # 'copula' corresponds to GaussianCopula in SDV
-        generator = RealGenerator(original_data=real_data, method="copula")
+        generator = RealGenerator(data=real_data, method="copula")
 
         # 3. Generate Synthetic Data
         print("\nGenerating 200 synthetic samples...")
-        # The synthesize method handles fitting internally if needed
+        # The generate method handles fitting internally if needed
         output_dir = "real_tutorial_output"
-        synthetic_data = generator.synthesize(
+        synthetic_data = generator.generate(
             n_samples=200, output_dir=output_dir, save_dataset=True
         )
 

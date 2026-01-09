@@ -59,27 +59,38 @@ Located in `calmops/data_generators/Synthetic/`, these generators are based on t
 -   **`SyntheticGenerator`**: The main generator that uses `river` generators to create data with different types of drift (gradual, abrupt, etc.).
 -   **`SyntheticBlockGenerator`**: A high-level abstraction for generating block-structured datasets, where each block can be generated with different parameters to simulate changes in the environment.
 
-## Usage
+## Usage (Unified API)
 
-To use any of the generators, import them and configure the desired parameters. For example, to use `SyntheticBlockGenerator`:
+All generators (`RealGenerator`, `SyntheticGenerator`, `ClinicGenerator`) now implement a unified `generate()` interface.
+
+### Example: Synthetic Generator
 
 ```python
-from calmops.data_generators.Synthetic import SyntheticBlockGenerator
+from calmops.data_generators.Synthetic import SyntheticGenerator
+from calmops.data_generators.configs import DateConfig
 
-block_generator = SyntheticBlockGenerator()
+from river.datasets import synth
 
-block_generator.generate_blocks_simple(
-    output_path="my_synthetic_data",
-    filename="dataset.csv",
-    n_blocks=3,
-    total_samples=3000,
-    methods="sea",
-    method_params=[
-        {"function": 0},
-        {"function": 1},
-        {"function": 2}
+# Initialize (Lightweight)
+gen = SyntheticGenerator(random_state=42)
+sea_stream = synth.SEA(variant=0)
+
+# Generate with Drift Injection
+df = gen.generate(
+    generator_instance=sea_stream,
+    n_samples=1000,
+    drift_injection_config=[
+        {"method": "inject_feature_drift", "params": {"feature_cols": ["col1"], "drift_magnitude": 0.5}}
     ],
-    date_start="2023-01-01",
-    date_step={"days": 7}
+    date_config=DateConfig(start_date="2024-01-01")
 )
+```
+
+### Example: Real Generator
+
+```python
+from calmops.data_generators.Real import RealGenerator
+
+gen = RealGenerator(data=original_df, method="cart")
+df_new = gen.generate(n_samples=500)
 ```

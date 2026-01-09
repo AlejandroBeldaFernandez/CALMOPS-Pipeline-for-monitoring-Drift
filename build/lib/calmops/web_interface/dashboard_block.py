@@ -12,271 +12,59 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-
 
 from calmops.utils import get_pipelines_root
-from utils import _load_any_dataset, dashboard_data_loader
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
-
-
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-
-tf.get_logger().setLevel("ERROR")
-# =========================
-# Anti-delta sanitizers
-# =========================
-_DELTA_KEY_RE = re.compile(r"(?:\bdelta\b|Δ|δ|∆)", flags=re.IGNORECASE)
-_DELTA_TOKEN_RE = re.compile(
-    r"(?:\bdelta\b\s*:?\s*|Δ\s*:?\s*|δ\s*:?\s*|∆\s*:?\s*)", flags=re.IGNORECASE
+from utils import _load_any_dataset, dashboard_data_loader, show_evolution_section
+from dashboard_common import (
+    _mtime,
+    _read_json_cached,
+    _read_text_cached,
+    _read_csv_cached,
+    _load_any_dataset_cached,
+    _sanitize_text,
+    _sanitize_df,
+    _sanitize_figure,
+    _safe_table,
+    _safe_table_static,
+    _safe_markdown,
+    _safe_write,
+    _safe_caption,
+    _safe_plot,
+    _safe_json_display,
+    _sorted_blocks,
+    _get_pipeline_base_dir,
+    _detect_block_col,
 )
 
 
-def _sanitize_text(val: Any) -> str:
-    try:
-        s = str(val)
-    except Exception:
-        return ""
-    s = _DELTA_TOKEN_RE.sub("", s)
-    s = re.sub(r"\s{2,}", " ", s).strip()
-    return s
+import os
+
+# Suppress TensorFlow logs before importing it
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+# import tensorflow as tf
+
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
+# tf.get_logger().setLevel("ERROR")
 
 
-def _contains_delta_token(name: str) -> bool:
-    try:
-        return bool(_DELTA_KEY_RE.search(str(name)))
-    except Exception:
-        return False
-
-
-def _drop_delta_columns(df: pd.DataFrame) -> pd.DataFrame:
-    drop = [c for c in df.columns if _contains_delta_token(c)]
-    if drop:
-        df = df.drop(columns=drop, errors="ignore")
-    return df
-
-
-def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    df = _drop_delta_columns(df)
-    df = df.rename(columns=lambda c: _sanitize_text(c))
-    try:
-        if isinstance(df.index, pd.MultiIndex):
-            df.index = df.index.set_names([_sanitize_text(n) for n in df.index.names])
-        else:
-            df.index = df.index.rename(_sanitize_text(df.index.name))
-    except Exception:
-        pass
-    for c in df.columns:
-        if pd.api.types.is_object_dtype(df[c]) or pd.api.types.is_string_dtype(df[c]):
-            try:
-                df[c] = df[c].astype(str).map(_sanitize_text)
-            except Exception:
-                pass
-    return df
-
-
-def _sanitize_figure(fig: go.Figure) -> go.Figure:
-    if fig is None:
-        return fig
-    try:
-        if fig.layout.title and fig.layout.title.text:
-            fig.layout.title.text = _sanitize_text(fig.layout.title.text)
-    except Exception:
-        pass
-    for ax in ["xaxis", "yaxis", "xaxis2", "yaxis2", "xaxis3", "yaxis3"]:
-        try:
-            axis = getattr(fig.layout, ax)
-            if axis and axis.title and axis.title.text:
-                axis.title.text = _sanitize_text(axis.title.text)
-        except Exception:
-            pass
-    try:
-        if (
-            fig.layout.legend
-            and fig.layout.legend.title
-            and fig.layout.legend.title.text
-        ):
-            fig.layout.legend.title.text = _sanitize_text(fig.layout.legend.title.text)
-    except Exception:
-        pass
-    try:
-        if (
-            hasattr(fig.layout, "coloraxis")
-            and fig.layout.coloraxis
-            and fig.layout.coloraxis.colorbar
-        ):
-            cb = fig.layout.coloraxis.colorbar
-            if cb.title and cb.title.text:
-                cb.title.text = _sanitize_text(cb.title.text)
-    except Exception:
-        pass
-    try:
-        if fig.layout.annotations:
-            for ann in fig.layout.annotations:
-                if hasattr(ann, "text") and ann.text:
-                    ann.text = _sanitize_text(ann.text)
-    except Exception:
-        pass
-    try:
-        for tr in fig.data:
-            if hasattr(tr, "name") and tr.name:
-                tr.name = _sanitize_text(tr.name)
-            if hasattr(tr, "text") and isinstance(tr.text, (list, tuple)):
-                tr.text = [_sanitize_text(t) for t in tr.text]
-            elif hasattr(tr, "text") and tr.text:
-                tr.text = _sanitize_text(tr.text)
-            if hasattr(tr, "hovertext") and isinstance(tr.hovertext, (list, tuple)):
-                tr.hovertext = [_sanitize_text(t) for t in tr.hovertext]
-            elif hasattr(tr, "hovertext") and tr.hovertext:
-                tr.hovertext = _sanitize_text(tr.hovertext)
-            if hasattr(tr, "hovertemplate") and tr.hovertemplate:
-                tr.hovertemplate = _sanitize_text(tr.hovertemplate)
-            try:
-                if (
-                    hasattr(tr, "marker")
-                    and hasattr(tr.marker, "colorbar")
-                    and tr.marker.colorbar
-                ):
-                    cbt = tr.marker.colorbar.title
-                    if cbt and cbt.text:
-                        cbt.text = _sanitize_text(cbt.text)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return fig
-
-
-def _safe_table(df: pd.DataFrame, *, use_container_width: bool = True):
-    st.dataframe(_sanitize_df(df), use_container_width=use_container_width)
-
-
-def _safe_table_static(df: pd.DataFrame):
-    st.table(_sanitize_df(df))
-
-
-def _safe_markdown(text: str):
-    st.markdown(_sanitize_text(text))
-
-
-def _safe_write(text: str):
-    st.write(_sanitize_text(text))
-
-
-def _safe_caption(text: str):
-    st.caption(_sanitize_text(text))
-
-
-def _safe_plot(fig: go.Figure, *, use_container_width: bool = True):
-    st.plotly_chart(_sanitize_figure(fig), use_container_width=use_container_width)
-
-
-def _safe_json_display(obj: Any):
-    def _json_sanitize(o: Any):
-        if isinstance(o, dict):
-            return {
-                _sanitize_text(k): _json_sanitize(v)
-                for k, v in o.items()
-                if not _contains_delta_token(k)
-            }
-        elif isinstance(o, list):
-            return [_json_sanitize(x) for x in o]
-        elif isinstance(o, str):
-            return _sanitize_text(o)
-        return o
-
-    st.json(_json_sanitize(obj))
+# Anti-delta sanitizers and safe rendering wrappers have been moved to dashboard_common.py
 
 
 project_root = get_pipelines_root()
 
 
-def _get_pipeline_base_dir(pipeline_name: str) -> Path:
-    return project_root / "pipelines" / pipeline_name
-
-
-# =========================
-# Performance helpers (cache & utils)
-# =========================
-def _mtime(path: str | Path) -> float:
-    try:
-        return Path(path).stat().st_mtime
-    except Exception:
-        return 0.0
-
-
-@st.cache_data(show_spinner=False)
-def _read_json_cached(path: str | Path, stamp: float) -> Optional[dict]:
-    try:
-        with open(Path(path), "r") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-@st.cache_data(show_spinner=False)
-def _read_text_cached(path: str | Path, stamp: float) -> str:
-    try:
-        with open(Path(path), "r", errors="ignore") as f:
-            return f.read()
-    except Exception:
-        return ""
-
-
-@st.cache_data(show_spinner=False)
-def _read_csv_cached(path: str | Path, stamp: float) -> pd.DataFrame:
-    return pd.read_csv(Path(path))
-
-
-@st.cache_data(show_spinner=False)
-def _load_any_dataset_cached(path: str | Path, stamp: float) -> pd.DataFrame:
-    return _load_any_dataset(Path(path))
+# Performance helpers moved to dashboard_common.py
 
 
 # =========================
 # Block helpers
 # =========================
-def _detect_block_col(
-    pipeline_name: str, df: pd.DataFrame, default: str = "block_id"
-) -> str | None:
-    cfg_path = _get_pipeline_base_dir(pipeline_name) / "config" / "config.json"
-    try:
-        if cfg_path.exists():
-            cfg = _read_json_cached(str(cfg_path), _mtime(cfg_path)) or {}
-            if cfg.get("block_col") and cfg["block_col"] in df.columns:
-                return cfg["block_col"]
-    except Exception:
-        pass
-    if default in df.columns:
-        return default
-    for c in df.columns:
-        if "block" in c.lower():
-            return c
-    return None
+# _detect_block_col moved to dashboard_common.py
 
 
-def _sorted_blocks(series: pd.Series):
-    vals = series.dropna().unique().tolist()
-    try:
-        nums = [float(v) for v in vals]
-        return [x for _, x in sorted(zip(nums, vals))]
-    except Exception:
-        pass
-    try:
-        dt = pd.to_datetime(vals, errors="raise")
-        return [x for _, x in sorted(zip(dt, vals))]
-    except Exception:
-        pass
-    return sorted(vals, key=lambda x: str(x))
+# _sorted_blocks moved to dashboard_common.py
 
 
 # =========================
@@ -285,6 +73,10 @@ def _sorted_blocks(series: pd.Series):
 def show_dataset_section(
     df: pd.DataFrame, last_file: str, pipeline_name: str, block_col: Optional[str]
 ):
+    """
+    Displays the Dataset tab for block-based pipelines.
+    Includes block distribution, preview, statistics, and missingness analysis.
+    """
     st.subheader("Dataset (block_wise)")
 
     if df.empty or not last_file:
@@ -473,6 +265,10 @@ def show_dataset_section(
 def show_evaluator_section(
     pipeline_name: str, split_within_blocks: bool, train_percentage: float
 ):
+    """
+    Displays evaluation metrics for block-based pipelines.
+    Handles 'Split Within Blocks' vs 'By Block' logic and visualizes per-block performance.
+    """
     _ = st.subheader("🧪 Evaluation Results (block_wise)")
 
     base_dir = _get_pipeline_base_dir(pipeline_name)
@@ -1983,9 +1779,7 @@ control_dir = _get_pipeline_base_dir(pipeline_name) / "control"
 df, last_file = dashboard_data_loader(data_dir, control_dir)
 block_col = _detect_block_col(pipeline_name, df)
 
-tabs = st.tabs(
-    ["Dataset", "Evaluator", "Drift", "Historical Performance", "Train/Retrain", "Logs"]
-)
+tabs = st.tabs(["Dataset", "Evaluator", "Drift", "Evolution", "Train/Retrain", "Logs"])
 
 # Auto-refresh on control_file change
 control_file = _get_pipeline_base_dir(pipeline_name) / "control" / "control_file.txt"
@@ -2008,7 +1802,7 @@ with tabs[2]:
     show_drift_section(pipeline_name, cfg)
 
 with tabs[3]:
-    show_historical_performance_section(pipeline_name)
+    show_evolution_section(pipeline_name)
 
 with tabs[4]:
     show_train_section(pipeline_name, split_within_blocks, train_percentage)

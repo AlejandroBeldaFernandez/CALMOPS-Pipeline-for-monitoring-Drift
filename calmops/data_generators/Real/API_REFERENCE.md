@@ -7,9 +7,9 @@ The `Real` generator module provides advanced tools for synthesizing data that m
 ### Class Initialization
 ```python
 class RealGenerator(
-    original_data: pd.DataFrame,
+    data: pd.DataFrame,
     method: str = "cart",
-    target_column: Optional[str] = None,
+    target_col: Optional[str] = None,
     block_column: Optional[str] = None,
     auto_report: bool = True,
     logger: Optional[logging.Logger] = None,
@@ -26,28 +26,26 @@ class RealGenerator(
   - `balance_target` (bool): If True, balances the target distribution.
   - `model_params` (dict, optional): Hyperparameters for the underlying model (e.g., `{'cart_iterations': 20}`).
 
-### `synthesize`
+### `generate`
 Main method to generate synthetic data.
 
 ```python
-def synthesize(
+def generate(
     self,
     n_samples: int,
-    output_dir: str,
+    output_dir: Optional[str] = None,
+    drift_injection_config: Optional[List[Dict]] = None,
+    date_config: Optional[DateConfig] = None,
     custom_distributions: Optional[Dict] = None,
-    date_start: Optional[str] = None,
-    date_every: int = 1,
-    date_step: Optional[Dict[str, int]] = None,
-    date_col: str = "timestamp",
     save_dataset: bool = False
-) -> Optional[pd.DataFrame]
+) -> pd.DataFrame
 ```
 
 - **Parameters:**
   - `n_samples` (int): Number of samples to generate.
-  - `custom_distributions` (dict): Custom distributions for conditional synthesis (e.g., `{'target': {'0': 0.8, '1': 0.2}}`).
-  - `date_start` (str): Start date for timestamp injection.
-  - `save_dataset` (bool): If True, saves the result to CSV.
+  - `drift_injection_config` (list): List of drift inject configurations.
+  - `date_config` (DateConfig): Configuration object for dates.
+  - `save_dataset` (bool): If True, saves the result to CSV in `output_dir`.
 
 ---
 

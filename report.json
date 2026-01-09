@@ -1,0 +1,147 @@
+{
+    "drift_history": [
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": 0,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "cart_drifted_feature_drift",
+            "timestamp": "2026-01-08T13:12:24.266213"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": 0,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "cart_drifted_feature_drift",
+            "timestamp": "2026-01-08T13:20:50.264710"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": 0,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "cart_drifted_feature_drift",
+            "timestamp": "2026-01-08T13:28:04.619660"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": 0,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "cart_drifted_feature_drift",
+            "timestamp": "2026-01-08T13:35:17.882588"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": 0,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "cart_drifted_feature_drift",
+            "timestamp": "2026-01-08T13:42:30.292818"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": 0,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "cart_drifted_feature_drift",
+            "timestamp": "2026-01-08T13:48:36.904477"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": 0,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "cart_drifted_feature_drift",
+            "timestamp": "2026-01-08T14:05:43.856378"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": 0,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "cart_drifted_feature_drift",
+            "timestamp": "2026-01-08T14:11:13.687653"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "SyntheticGenerator_Drifted_feature_drift",
+            "timestamp": "2026-01-09T10:23:12.887549"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "age"
+            ],
+            "drift_type": "add_value",
+            "drift_magnitude": 0.2,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "SyntheticGenerator_Drifted_feature_drift",
+            "timestamp": "2026-01-09T10:28:19.198080"
+        }
+    ],
+    "drift_config": {
+        "drift_method": "inject_feature_drift",
+        "feature_cols": [
+            "age"
+        ],
+        "drift_type": "add_value",
+        "drift_magnitude": 0.2,
+        "start_index": null,
+        "block_index": null,
+        "time_start": null,
+        "generator_name": "SyntheticGenerator_Drifted_feature_drift",
+        "timestamp": "2026-01-09T10:28:19.198080"
+    }
+}

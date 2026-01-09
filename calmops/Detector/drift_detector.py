@@ -25,10 +25,10 @@ from frouros.detectors.data_drift.batch.statistical_test import (
 # Optional: Suppress Tensorflow warnings if TF is installed
 try:
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-    import tensorflow as tf
+    # import tensorflow as tf
 
-    tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-    tf.get_logger().setLevel("ERROR")
+    # tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
+    # tf.get_logger().setLevel("ERROR")
 except ImportError:
     pass
 

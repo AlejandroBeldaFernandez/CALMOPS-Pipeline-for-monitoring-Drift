@@ -71,13 +71,49 @@ For a complete guide on how to use the generators, see the **[Data Generators Do
 -   **PM2 & Docker:** For production deployment.
 -   **Flask:** For the prediction server.
 
+## 📚 Two Ways to Use CalmOps
+
+CalmOps is designed to serve two different needs. It is important to understand which one applies to you:
+
+1.  **As a Pipeline Monitor (CLI):**
+    *   *Goal:* Monitor an AI model in production (drift, retraining, dashboard).
+    *   *Tool:* You primarily use the **Command Line Interface (CLI)** (`calmops/cli.py`).
+    *   *Workflow:* You launch a monitor, and it watches a folder. When new files arrive, it triggers the pipeline automatically.
+
+2.  **As a Data Generation Library (Python):**
+    *   *Goal:* Create synthetic datasets to test your own models or research drift.
+    *   *Tool:* You import the generators in your **Python scripts** (`from calmops.data_generators import ...`).
+    *   *Workflow:* You write a Python script (like the tutorials) to generate `.csv` files. You do *not* need the CLI for this.
+
+---
+
 ## Installation
 
-1.  Install the project dependencies using pip:
+### 1. Base Installation (Pipelines & Monitoring)
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+To run the core monitoring pipelines and dashboard:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Generator Dependencies (Optional)
+
+The  **Data Generators** (`Real`, `Synthetic`) require specific heavy libraries that are **not** included in the base requirements to keep the installation light.
+
+If you plan to use `RealGenerator` or `SyntheticGenerator`, you must install these extras manually:
+
+```bash
+# For SyntheticGenerator (Concept Drift streams)
+pip install river
+
+# For RealGenerator (Deep Learning synthesis: CTGAN, TVAE, Copula)
+pip install sdv tensorflow
+```
+
+> [!WARNING]
+> If you try to use `RealGenerator` without `sdv` installed, you will encounter an `ImportError`. One-shot installation for everything:
+> `pip install -r requirements.txt river sdv tensorflow`
 
 ## Usage
 
@@ -124,7 +160,10 @@ The CLI provides several commands to manage your pipelines:
 
 Once a pipeline is running, its Streamlit dashboard will be available at `http://localhost:8501` by default. The port can be configured when the pipeline is created or updated.
 
-## Tutorials
+## Tutorials & Concepts
+
+> [!TIP]
+> **New to MLOps?** Start by reading **[Basic Concepts (CONCEPTS.md)](CONCEPTS.md)** to understand Data Drift, Concept Drift, and why we use synthetic data.
 
 You can access and copy the available tutorials using the CLI:
 

@@ -31,12 +31,12 @@ from calmops.pipeline_block.pipeline_block import run_pipeline as run_pipeline_b
 from calmops.utils import get_project_root, get_pipelines_root
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
+# import tensorflow as tf
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
 
-tf.get_logger().setLevel("ERROR")
+# tf.get_logger().setLevel("ERROR")
 
 # =========================
 # Logging (unified format)
@@ -189,7 +189,13 @@ if __name__ == "__main__":
         blocks_eval=cfg.get("blocks_eval"),
         split_within_blocks=cfg.get("split_within_blocks"),
                 train_percentage=cfg.get("train_percentage"),
-                fallback_strategy=cfg.get("fallback_strategy")
+                fallback_strategy=cfg.get("fallback_strategy"),
+                dir_predictions=cfg.get("dir_predictions"),
+                target_files=cfg.get("target_files"),
+                rest_preprocess_file=cfg.get("rest_preprocess_file"),
+                skip_initial_preprocessing=cfg.get("skip_initial_preprocessing", False),
+                skip_rest_preprocessing=cfg.get("skip_rest_preprocessing", False),
+                target_col=cfg.get("target_col"),
             )
         '''
     with open(runner_path, "w") as f:
@@ -483,6 +489,12 @@ def start_monitor_block(
     ] = False,  # New parameter for splitting within blocks
     train_percentage: Optional[float] = 0.8,  # New parameter for train percentage
     fallback_strategy: str = "global",
+    # Flexible Preprocessing
+    target_files: Optional[list] = None,
+    rest_preprocess_file: Optional[str] = None,
+    skip_initial_preprocessing: bool = False,
+    skip_rest_preprocessing: bool = False,
+    target_col: Optional[str] = None,
 ):
     """
     BLOCK monitoring system (Watchdog):
@@ -528,6 +540,11 @@ def start_monitor_block(
         "train_percentage": train_percentage,  # Add to config
         "fallback_strategy": fallback_strategy,
         "dir_predictions": dir_predictions,
+        "target_files": target_files,
+        "rest_preprocess_file": rest_preprocess_file,
+        "skip_initial_preprocessing": skip_initial_preprocessing,
+        "skip_rest_preprocessing": skip_rest_preprocessing,
+        "target_col": target_col,
     }
     runner_cfg_path = _write_runner_config(
         pipeline_name, runner_cfg_obj, pipelines_root
@@ -693,6 +710,11 @@ def start_monitor_block(
                 split_within_blocks=split_within_blocks,  # Pass new parameter
                 train_percentage=train_percentage,  # Pass new parameter
                 dir_predictions=dir_predictions,
+                target_files=target_files,
+                rest_preprocess_file=rest_preprocess_file,
+                skip_initial_preprocessing=skip_initial_preprocessing,
+                skip_rest_preprocessing=skip_rest_preprocessing,
+                target_col=target_col,
             )
             log.info(f"Blocks pipeline completed for {file}")
         except Exception as e:

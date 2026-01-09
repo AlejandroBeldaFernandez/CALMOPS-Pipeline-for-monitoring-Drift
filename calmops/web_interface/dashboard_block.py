@@ -43,10 +43,10 @@ import os
 
 # Suppress TensorFlow logs before importing it
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
+# import tensorflow as tf
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-tf.get_logger().setLevel("ERROR")
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
+# tf.get_logger().setLevel("ERROR")
 
 
 # Anti-delta sanitizers and safe rendering wrappers have been moved to dashboard_common.py
@@ -77,186 +77,11 @@ def show_dataset_section(
     Displays the Dataset tab for block-based pipelines.
     Includes block distribution, preview, statistics, and missingness analysis.
     """
-    st.subheader("Dataset (block_wise)")
+    st.subheader("Dataset Inspector")
 
     if df.empty or not last_file:
         st.warning("⚠ No processed dataset found yet.")
         return
-
-    _safe_write(f"*Last processed dataset:* {_sanitize_text(last_file)}")
-
-    df_to_display = df
-
-    if block_col and block_col in df.columns:
-        _safe_markdown(f"🔢 Block column detected: **{_sanitize_text(block_col)}**")
-        blocks = _sorted_blocks(df[block_col])
-        counts = df[block_col].value_counts(dropna=False).reindex(blocks, fill_value=0)
-
-        _safe_markdown("### 🧱 Blocks overview")
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            _safe_table(
-                pd.DataFrame(
-                    {"block": [str(b) for b in counts.index], "rows": counts.values}
-                )
-            )
-        with c2:
-            fig = px.bar(
-                x=[_sanitize_text(str(b)) for b in counts.index],
-                y=counts.values,
-                labels={"x": "Block", "y": "Rows"},
-                title=_sanitize_text("Rows per block"),
-            )
-            _safe_plot(fig)
-
-        # Add a selectbox for block selection
-        selected_block = st.selectbox(
-            "Select a block to inspect",
-            options=["(All)"] + blocks,
-            index=0,
-            key="dataset_block_selector",
-        )
-
-        # Filter the dataframe based on the selection
-        if selected_block != "(All)":
-            df_to_display = df[df[block_col].astype(str) == str(selected_block)]
-        else:
-            df_to_display = df
-
-    else:
-        _safe_markdown("No block column detected. Showing global info.")
-        block_col = None
-        df_to_display = df
-
-    _safe_markdown("### 👀 Preview (head)")
-    _safe_table(df_to_display.head(10))
-
-    _safe_markdown("### 📝 Descriptive Statistics")
-    try:
-        _safe_table(df_to_display.describe())
-    except Exception as e:
-        st.warning(f"Could not generate descriptive statistics: {e}")
-
-    # Missingness quick view
-    _safe_markdown("### 🕳 Missingness (fraction by column)")
-    try:
-        nan_frac = df_to_display.isna().mean().sort_values(ascending=False)
-        if not nan_frac.empty:
-            fig_nan = px.bar(
-                x=nan_frac.index.map(_sanitize_text),
-                y=nan_frac.values,
-                labels={"x": "Column", "y": "NaN fraction"},
-                title=_sanitize_text("NaN fraction by column"),
-            )
-            _safe_plot(fig_nan)
-        else:
-            _safe_markdown("No missing values detected.")
-    except Exception as e:
-        _safe_markdown(_sanitize_text(f"Could not compute missingness: {e}"))
-
-    # Download preview CSV
-    try:
-        st.download_button(
-            "⬇ Download preview (CSV)",
-            data=df_to_display.to_csv(index=False).encode("utf-8"),
-            file_name="preview.csv",
-            mime="text/csv",
-        )
-    except Exception:
-        pass
-
-    _safe_markdown("### Dataset Info")
-    info_df = pd.DataFrame(
-        {
-            "Column": df_to_display.columns,
-            "Non-Null Count": df_to_display.notnull().sum().values,
-            "Unique Values": df_to_display.nunique(dropna=True).values,
-            "Dtype": df_to_display.dtypes.astype(str).values,
-        }
-    )
-    _safe_table(info_df)
-
-    # Categorical Variable Analysis
-    _safe_markdown("### Categorical Variable Analysis")
-    cat_cols = df_to_display.select_dtypes(include=["object", "category"]).columns
-    if len(cat_cols) > 0:
-        max_cols_cat = st.slider(
-            "Max. categorical columns to display",
-            1,
-            min(20, len(cat_cols)),
-            min(5, len(cat_cols)),
-            key="cat_slider_dataset",
-        )
-        show_cols_cat = list(cat_cols[:max_cols_cat])
-
-        for col in show_cols_cat:
-            _safe_markdown(f"#### `{col}`")
-
-            # Basic stats
-            num_unique = df_to_display[col].nunique()
-            mode_val = (
-                df_to_display[col].mode().iloc[0]
-                if not df_to_display[col].mode().empty
-                else "N/A"
-            )
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Unique Categories", num_unique)
-            with col2:
-                st.metric("Mode (Most Frequent)", str(mode_val))
-
-            # Proportions
-            proportions = df_to_display[col].value_counts(normalize=True)
-
-            # Display as pie chart if few categories, otherwise as bar chart
-            if num_unique <= 10:
-                fig = px.pie(
-                    proportions,
-                    values=proportions.values,
-                    names=proportions.index,
-                    title=f"Proportions for `{col}`",
-                )
-                _safe_plot(fig)
-            else:
-                st.write("**Category Proportions (Top 10)**")
-                _safe_table(proportions.head(10))
-    else:
-        st.info("No categorical columns to analyze.")
-
-    # Processed Files History
-    _safe_markdown("### 📂 Processed Files History")
-    control_dir = _get_pipeline_base_dir(pipeline_name) / "control"
-    control_file_path = control_dir / "control_file.txt"
-    if control_file_path.exists():
-        processed_files_data = []
-        with open(control_file_path, "r") as f:
-            for line in f:
-                parts = line.strip().split(",", 1)
-                if len(parts) == 2:
-                    fname, mtime = parts
-                    try:
-                        processed_files_data.append(
-                            {
-                                "File Name": fname,
-                                "Processed At": pd.to_datetime(float(mtime), unit="s"),
-                            }
-                        )
-                    except ValueError:
-                        processed_files_data.append(
-                            {"File Name": fname, "Processed At": "Invalid Timestamp"}
-                        )
-
-        if processed_files_data:
-            df_processed = pd.DataFrame(processed_files_data)
-            df_processed = df_processed.sort_values(
-                by="Processed At", ascending=True
-            ).reset_index(drop=True)
-            _safe_table(df_processed)
-        else:
-            _safe_markdown("No files recorded in control_file.txt yet.")
-    else:
-        _safe_markdown("control_file.txt not found. No processing history available.")
 
 
 # =========================
@@ -269,7 +94,7 @@ def show_evaluator_section(
     Displays evaluation metrics for block-based pipelines.
     Handles 'Split Within Blocks' vs 'By Block' logic and visualizes per-block performance.
     """
-    _ = st.subheader("🧪 Evaluation Results (block_wise)")
+    _ = st.subheader("Evaluation Results")
 
     base_dir = _get_pipeline_base_dir(pipeline_name)
     metrics_dir = base_dir / "metrics"

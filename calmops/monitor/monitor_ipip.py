@@ -30,12 +30,12 @@ from watchdog.events import FileSystemEventHandler
 from calmops.utils import get_project_root, get_pipelines_root
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
+# import tensorflow as tf
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
 
-tf.get_logger().setLevel("ERROR")
+# tf.get_logger().setLevel("ERROR")
 # IPIP pipeline
 from calmops.IPIP.pipeline_ipip import run_pipeline
 

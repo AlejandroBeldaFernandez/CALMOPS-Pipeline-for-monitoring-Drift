@@ -26,9 +26,8 @@ import pandas as pd
 # Load real data
 real_data = pd.read_csv("my_real_data.csv")
 
-# Initialize and fit
-generator = RealGenerator(model_name="GaussianCopula")
-generator.fit(real_data)
+# Initialize (auto-fits)
+generator = RealGenerator(original_data=real_data, method="cart")
 
 # Generate synthetic data
 synthetic_data = generator.generate(n_samples=1000)

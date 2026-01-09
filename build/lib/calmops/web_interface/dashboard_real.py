@@ -9,12 +9,12 @@ import pickle
 import time
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-import tensorflow as tf
+# import tensorflow as tf
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
 
-tf.get_logger().setLevel('ERROR')
+# tf.get_logger().setLevel('ERROR')
 
 # Add the project root to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

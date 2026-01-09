@@ -25,12 +25,12 @@ from .modules.default_train_retrain import default_train, default_retrain
 from .modules.evaluator import evaluate_model
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
+# import tensorflow as tf
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
 
-tf.get_logger().setLevel("ERROR")
+# tf.get_logger().setLevel("ERROR")
 
 # -------------------------------  Circuit Breaker  -------------------------------
 

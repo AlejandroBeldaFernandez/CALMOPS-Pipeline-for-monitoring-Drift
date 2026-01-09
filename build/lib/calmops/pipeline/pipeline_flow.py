@@ -13,7 +13,7 @@ Author: CalmOps Team
 
 import os
 
-from typing import Optional
+from typing import Optional, List
 import time
 import json
 import logging
@@ -25,6 +25,7 @@ from sklearn.model_selection import train_test_split
 
 from calmops.logger.logger import PipelineLogger
 from calmops.utils import get_pipelines_root
+from calmops.utils.HistoryManager import HistoryManager
 from calmops.Detector.drift_detector import DriftDetector
 from .modules.data_loader import data_loader
 from .modules.check_drift import check_drift
@@ -32,12 +33,12 @@ from .modules.evaluator import evaluate_model
 from .modules.default_train_retrain import default_train, default_retrain
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
+# import tensorflow as tf
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
 
-tf.get_logger().setLevel("ERROR")
+# tf.get_logger().setLevel("ERROR")
 # ===============================================================================
 # CIRCUIT BREAKER IMPLEMENTATION
 # ===============================================================================
@@ -307,6 +308,11 @@ def run_pipeline(
     custom_fallback_file: str = None,
     delimiter: str = ",",
     target_file: str = None,
+    target_files: List[str] | None = None,
+    rest_preprocess_file: str | None = None,
+    skip_initial_preprocessing: bool = False,
+    skip_rest_preprocessing: bool = False,
+    target_col: str | None = None,
     window_size: int = None,
     prediction_only: bool = False,
     # Circuit breaker configuration
@@ -315,6 +321,7 @@ def run_pipeline(
     dir_predictions: Optional[str] = None,
     encoding: str = "utf-8",
     file_type: str = "csv",
+    max_history_size: int = 5,
 ):
     """
     Execute the complete ML pipeline with champion/challenger promotion and circuit breaker protection.
@@ -385,6 +392,8 @@ def run_pipeline(
     # Ensure all required directories exist
     for directory in [output_dir, control_dir, logs_dir, metrics_dir, candidates_dir]:
         directory.mkdir(parents=True, exist_ok=True)
+
+    control_file = control_dir / "control_file.txt"
 
     model_path = output_dir / f"{pipeline_name}.pkl"
 
@@ -458,35 +467,135 @@ def run_pipeline(
     logger.info("Drift detector initialized")
 
     # Load new data using the data loader module
+    # Load new data using the data loader module
     logger.info(f"Loading data from directory: {data_dir}")
-    df, last_processed_file, last_mtime = data_loader(
-        logger,
-        data_dir,
-        control_dir,
-        delimiter=delimiter,
-        target_file=target_file,
-        encoding=encoding,
-        file_type=file_type,
-    )
 
-    # Check if new data is available for processing
-    if df.empty:
-        logger.info(
-            "No new data available for processing - pipeline execution complete"
+    # 1) Determine files to process
+    files_to_process = []
+
+    if target_files:
+        for f in target_files:
+            files_to_process.append((f, None, None))
+    elif target_file:
+        files_to_process.append((target_file, None, None))
+    else:
+        # Auto-discovery / Directory scan mode
+        df_found, fname_found, mtime_found = data_loader(
+            logger,
+            data_dir,
+            control_dir,
+            delimiter=delimiter,
+            target_file=None,
+            encoding=encoding,
+            file_type=file_type,
         )
+        if df_found.empty:
+            logger.info(
+                "No new data available for processing - pipeline execution complete"
+            )
+            return
+        files_to_process.append((fname_found, df_found, mtime_found))
+
+    # Lists to accumulate processed parts
+    X_parts = []
+    y_parts = []
+    processed_files_meta = []  # To update control file later if needed, though pipeline_flow usually processes one batch?
+    # Flow pipeline might assume one batch per run, but now we allow multiple.
+
+    for i, (fname, preloaded_df, preloaded_mtime) in enumerate(files_to_process):
+        # Load if needed
+        if preloaded_df is not None:
+            df_curr = preloaded_df
+            current_mtime = preloaded_mtime
+        else:
+            df_curr, _, current_mtime = data_loader(
+                logger,
+                data_dir,
+                control_dir,
+                delimiter=delimiter,
+                target_file=fname,
+                encoding=encoding,
+                file_type=file_type,
+            )
+
+        if df_curr.empty:
+            logger.warning(f"File {fname} is empty or could not be loaded. Skipping.")
+            continue
+
+        if fname and current_mtime:
+            processed_files_meta.append((fname, current_mtime))
+
+        # Check prior history for incremental runs
+        control_file_size = 0
+        if control_file.exists():
+            control_file_size = control_file.stat().st_size
+
+        is_first = i == 0
+        # If incremental mode (no explicit target_files) and history exists, this is NOT the initial file
+        if not target_files and control_file_size > 0:
+            is_first = False
+
+        should_skip = (
+            skip_initial_preprocessing if is_first else skip_rest_preprocessing
+        )
+
+        # Determine strict preprocessing script using flexible logic
+        # We need to load the correct function dynamically if it differs.
+        # Original code pre-loaded `preprocess_func`, but now it varies.
+
+        script_path = (
+            preprocess_file if is_first else (rest_preprocess_file or preprocess_file)
+        )
+
+        try:
+            if should_skip:
+                if not target_col:
+                    raise ValueError(
+                        f"target_col must be specified when skip_preprocessing=True (File: {fname})"
+                    )
+                if target_col not in df_curr.columns:
+                    raise ValueError(f"target_col '{target_col}' not found in {fname}")
+
+                X_curr = df_curr.drop(columns=[target_col], errors="ignore")
+                y_curr = df_curr[target_col]
+            else:
+                # Load function on demand if it's different or just reuse if we want optimization (but safety first)
+                # Note: existing `preprocess_func` was loaded from `preprocess_file`.
+                # If script_path == preprocess_file, we can reuse `preprocess_func`?
+                # Yes, but let's re-load to be safe/simple or use `load_custom_function`.
+
+                func_to_use = load_custom_function(script_path, "data_preprocessing")
+                X_curr, y_curr = func_to_use(df_curr)
+
+            if isinstance(y_curr, pd.DataFrame):
+                y_curr = y_curr.iloc[:, 0]
+
+            X_parts.append(X_curr)
+            y_parts.append(y_curr)
+            logger.info(f"File {fname} processed. X shape: {X_curr.shape}.")
+
+        except Exception as e:
+            logger.error(f"Preprocessing failed for {fname}: {e}")
+            raise
+
+    if not X_parts:
+        logger.warning("No data resulted from processing files.")
         return
 
-    # Apply preprocessing to prepare data for model operations
-    try:
-        X, y = preprocess_func(df)
-        logger.info(
-            f"Data preprocessing complete: {X.shape[0]} samples, {X.shape[1]} features. "
-            f"Source file: {last_processed_file}"
-        )
-        df = pd.concat([X, y], axis=1)
-    except Exception as e:
-        logger.error(f"Data preprocessing failed: {e}")
-        raise
+    # Concatenate all parts
+    X = pd.concat(X_parts, ignore_index=True)
+    y = pd.concat(y_parts, ignore_index=True)
+    df = pd.concat([X, y], axis=1)  # Reconstruct df for evaluator usage
+
+    # Determine last_processed_file for logging/naming
+    # Usually the last one in the sequence logic-wise
+    last_processed_file = processed_files_meta[-1][0] if processed_files_meta else None
+    last_mtime = processed_files_meta[-1][1] if processed_files_meta else None
+
+    logger.info(
+        f"Data preprocessing complete: {X.shape[0]} samples, {X.shape[1]} features. "
+        f"Primary Source file: {last_processed_file}"
+    )
 
     # ============================================================================
     # DRIFT DETECTION AND DECISION MAKING
@@ -829,5 +938,57 @@ def run_pipeline(
 
         # Re-raise to ensure calling code can handle the error appropriately
         raise
+
+    finally:
+        # ========================================================================
+        # SAVE HISTORY
+        # ========================================================================
+        try:
+            # Construct history record
+            history_record = {
+                "timestamp": time.time(),
+                "readable_timestamp": time.ctime(),
+                "batch_id": last_processed_file
+                if "last_processed_file" in locals()
+                else "unknown",
+                "decision": decision if "decision" in locals() else "unknown",
+                "approved": approved if "approved" in locals() else None,
+            }
+
+            # Load latest drift results if available
+            drift_res_file = metrics_dir / "drift_results.json"
+            if drift_res_file.exists():
+                try:
+                    with open(drift_res_file, "r") as f:
+                        drift_data = json.load(f)
+                        if isinstance(drift_data, list) and drift_data:
+                            history_record["drift_metrics"] = drift_data[-1]
+                        elif isinstance(drift_data, dict):
+                            history_record["drift_metrics"] = drift_data
+                except:
+                    pass
+
+            # Load latest eval results if available
+            eval_res_file = metrics_dir / "evaluation_results.json"
+            if eval_res_file.exists():
+                try:
+                    with open(eval_res_file, "r") as f:
+                        eval_data = json.load(f)
+                        if isinstance(eval_data, list) and eval_data:
+                            history_record["eval_metrics"] = eval_data[-1]
+                        elif isinstance(eval_data, dict):
+                            history_record["eval_metrics"] = eval_data
+                except:
+                    pass
+
+            HistoryManager.append_history_record(
+                str(metrics_dir / "history.json"),
+                history_record,
+                max_history=max_history_size,
+            )
+            logger.info(f"History updated (max_size={max_history_size})")
+
+        except Exception as h_e:
+            logger.error(f"Failed to save history: {h_e}")
 
     logger.info(f"Pipeline '{pipeline_name}' execution completed successfully")

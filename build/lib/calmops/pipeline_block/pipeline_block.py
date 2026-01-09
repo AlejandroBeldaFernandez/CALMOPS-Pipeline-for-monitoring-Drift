@@ -15,6 +15,7 @@ from pathlib import Path
 
 from calmops.logger.logger import PipelineLogger
 from calmops.utils import get_pipelines_root
+from calmops.utils.HistoryManager import HistoryManager
 
 
 # NOTE: these imports follow your folder structure indicated in the file itself
@@ -24,12 +25,12 @@ from .modules.default_train_retrain import default_train, default_retrain
 from .modules.evaluator import evaluate_model
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
+# import tensorflow as tf
 
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+# tf.compat.v1.logging.set_verbosity(# tf.compat.v1.logging.ERROR)
 
-tf.get_logger().setLevel("ERROR")
+# tf.get_logger().setLevel("ERROR")
 
 # -------------------------------  Circuit Breaker  -------------------------------
 
@@ -137,6 +138,11 @@ def run_pipeline(
     custom_fallback_file: str | None = None,
     delimiter: str = ",",
     target_file: str | None = None,
+    target_files: List[str] | None = None,
+    rest_preprocess_file: str | None = None,
+    skip_initial_preprocessing: bool = False,
+    skip_rest_preprocessing: bool = False,
+    target_col: str | None = None,
     window_size: int | None = None,
     breaker_max_failures: int = 3,
     breaker_backoff_minutes: int = 120,
@@ -150,6 +156,7 @@ def run_pipeline(
     dir_predictions: Optional[str] = None,
     encoding: str = "utf-8",
     file_type: str = "csv",
+    max_history_size: int = 5,
 ) -> None:
     """
     Orchestration for block_wise ONLY:
@@ -170,6 +177,8 @@ def run_pipeline(
     control_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    control_file = control_dir / "control_file.txt"
 
     model_path = output_dir / f"{pipeline_name}.pkl"
 
@@ -194,66 +203,134 @@ def run_pipeline(
             "Cannot define classification and regression thresholds simultaneously."
         )
 
-    # Preprocess
-    preprocess_func = _load_preprocess_func(preprocess_file)
+    # 1) Determine files to process
+    files_to_process = []
 
-    # 1) Full load (data_loader already manages control snapshots)
-    df_full, last_processed_file, mtime = data_loader(
-        logger,
-        data_dir,
-        control_dir,
-        delimiter=delimiter,
-        target_file=target_file,
-        block_col=block_col,
-        encoding=encoding,
-        file_type=file_type,
-    )
-    if df_full.empty:
-        logger.warning("No new data to process.")
+    if target_files:
+        for f in target_files:
+            files_to_process.append((f, None, None))
+    elif target_file:
+        files_to_process.append((target_file, None, None))
+    else:
+        # Auto-discovery / Directory scan mode
+        df_found, fname_found, mtime_found = data_loader(
+            logger,
+            data_dir,
+            control_dir,
+            delimiter=delimiter,
+            target_file=None,
+            block_col=block_col,
+            encoding=encoding,
+            file_type=file_type,
+        )
+        if df_found.empty:
+            logger.warning("No new data to process.")
+            return
+        files_to_process.append((fname_found, df_found, mtime_found))
+
+    # Lists to accumulate processed parts
+    X_parts = []
+    y_parts = []
+    processed_files_meta = []
+
+    for i, (fname, preloaded_df, preloaded_mtime) in enumerate(files_to_process):
+        # Load if needed
+        if preloaded_df is not None:
+            df_curr = preloaded_df
+            current_mtime = preloaded_mtime
+        else:
+            df_curr, _, current_mtime = data_loader(
+                logger,
+                data_dir,
+                control_dir,
+                delimiter=delimiter,
+                target_file=fname,
+                block_col=block_col,
+                encoding=encoding,
+                file_type=file_type,
+            )
+
+        if df_curr.empty:
+            logger.warning(f"File {fname} is empty or could not be loaded. Skipping.")
+            continue
+
+        if fname and current_mtime:
+            processed_files_meta.append((fname, current_mtime))
+
+        # Check prior history for incremental runs
+        control_file_size = 0
+        if control_file.exists():
+            control_file_size = control_file.stat().st_size
+
+        is_first = i == 0
+        # If incremental mode (no explicit target_files) and history exists, this is NOT the initial file
+        if not target_files and control_file_size > 0:
+            is_first = False
+
+        should_skip = (
+            skip_initial_preprocessing if is_first else skip_rest_preprocessing
+        )
+        script_path = (
+            preprocess_file if is_first else (rest_preprocess_file or preprocess_file)
+        )
+
+        if should_skip:
+            if not target_col:
+                raise ValueError(
+                    f"target_col must be specified when skip_preprocessing=True (File: {fname})"
+                )
+            if target_col not in df_curr.columns:
+                raise ValueError(f"target_col '{target_col}' not found in {fname}")
+
+            X_curr = df_curr.drop(columns=[target_col], errors="ignore")
+            y_curr = df_curr[target_col]
+        else:
+            # Load specific function
+            # Since pipeline_block uses `_load_preprocess_func`, let's reuse/adapt it
+            func_curr = _load_preprocess_func(script_path)
+
+            # Partial block_col binding if needed
+            sig = inspect.signature(func_curr)
+            if "block_cols" in sig.parameters:
+                func_curr = functools.partial(func_curr, block_cols=block_col)
+
+            X_curr, y_curr = func_curr(df_curr)
+
+            if not isinstance(X_curr, pd.DataFrame):
+                raise TypeError(
+                    f"Preprocess ({script_path}) must return X as DataFrame."
+                )
+            if isinstance(y_curr, pd.DataFrame):
+                if y_curr.shape[1] != 1:
+                    # Check if it's just index and one column or multiple?
+                    # Try to fix
+                    y_curr = y_curr.iloc[:, 0]
+                else:
+                    y_curr = y_curr.iloc[:, 0]
+
+        X_parts.append(X_curr)
+        y_parts.append(y_curr)
+        logger.info(f"File {fname} processed. X shape: {X_curr.shape}.")
+
+    if not X_parts:
+        logger.warning("No data resulted from processing files.")
         return
 
-    # 2) Preprocessing -> X, y (block_col must remain in X to identify eval blocks)
-    sig = inspect.signature(preprocess_func)
-    if "block_cols" in sig.parameters:
-        preprocess_func = functools.partial(preprocess_func, block_cols=block_col)
+    # Concatenate all parts
+    X = pd.concat(X_parts, ignore_index=True)
+    y = pd.concat(y_parts, ignore_index=True)
 
-    # Attempt to retrieve block_col from raw data
-    original_blocks_series = None
-    if block_col in df_full.columns:
-        original_blocks_series = df_full[block_col].astype(str)
-
-    X, y = preprocess_func(df_full)
-    if not isinstance(X, pd.DataFrame):
-        raise TypeError("Preprocess must return X as a pandas DataFrame.")
-    if not isinstance(y, (pd.Series, pd.DataFrame)):
-        raise TypeError(
-            "Preprocess must return y as a pandas Series or single-column DataFrame."
-        )
-    if isinstance(y, pd.DataFrame):
-        if y.shape[1] != 1:
-            raise ValueError("y must be a single target column.")
-        y = y.iloc[:, 0]
+    last_processed_file = processed_files_meta[-1][0] if processed_files_meta else None
+    mtime = processed_files_meta[-1][1] if processed_files_meta else None
 
     # Handle block_col logic
-    if original_blocks_series is not None:
-        # Case A: block_col was in raw data -> restore/align it
-        try:
-            blocks_series = original_blocks_series.loc[X.index]
-        except Exception:
-            common = X.index.intersection(original_blocks_series.index)
-            X = X.loc[common]
-            y = y.loc[common]
-            blocks_series = original_blocks_series.loc[common]
-        X = X.copy()
-        X[block_col] = blocks_series
-    else:
-        # Case B: block_col was NOT in raw data -> must be in X (created by prepro)
-        if block_col not in X.columns:
-            raise ValueError(
-                f"block_col='{block_col}' not found in raw data AND not created by preprocessing."
-            )
-        # Ensure it's string/categorical
-        X[block_col] = X[block_col].astype(str)
+    # In multi-file/flexible mode, we require block_col to be in the final X.
+    if block_col not in X.columns:
+        raise ValueError(
+            f"block_col='{block_col}' not found in processed data. "
+            "Ensure it is present in input files or created by preprocessing."
+        )
+    X[block_col] = X[block_col].astype(str)
 
     if (block_col is None) or (block_col not in X.columns):
         raise ValueError("block_col must exist in X to operate in block_wise mode.")
@@ -627,3 +704,55 @@ def run_pipeline(
     except Exception as e:
         logger.error(f"[CRITICAL] Error in run_pipeline: {e}")
         raise
+
+    finally:
+        # ========================================================================
+        # SAVE HISTORY
+        # ========================================================================
+        try:
+            # Construct history record
+            history_record = {
+                "timestamp": time.time(),
+                "readable_timestamp": time.ctime(),
+                "batch_id": last_processed_file
+                if "last_processed_file" in locals()
+                else "unknown",
+                "decision": decision if "decision" in locals() else "unknown",
+                "approved": approved if "approved" in locals() else None,
+            }
+
+            # Load latest drift results if available
+            drift_res_file = metrics_dir / "drift_results.json"
+            if drift_res_file.exists():
+                try:
+                    with open(drift_res_file, "r") as f:
+                        drift_data = json.load(f)
+                        if isinstance(drift_data, list) and drift_data:
+                            history_record["drift_metrics"] = drift_data[-1]
+                        elif isinstance(drift_data, dict):
+                            history_record["drift_metrics"] = drift_data
+                except:
+                    pass
+
+            # Load latest eval results if available
+            eval_res_file = metrics_dir / "evaluation_results.json"
+            if eval_res_file.exists():
+                try:
+                    with open(eval_res_file, "r") as f:
+                        eval_data = json.load(f)
+                        if isinstance(eval_data, list) and eval_data:
+                            history_record["eval_metrics"] = eval_data[-1]
+                        elif isinstance(eval_data, dict):
+                            history_record["eval_metrics"] = eval_data
+                except:
+                    pass
+
+            HistoryManager.append_history_record(
+                str(metrics_dir / "history.json"),
+                history_record,
+                max_history=max_history_size,
+            )
+            logger.info(f"History updated (max_size={max_history_size})")
+
+        except Exception as h_e:
+            logger.error(f"Failed to save history: {h_e}")

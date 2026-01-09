@@ -378,11 +378,67 @@ def default_retrain(
 
     logger.info(f"Retraining: new ensembles on block '{new_ensembles_train_block}'")
 
-    # We call default_train on a subset of the data to generate the new ensembles
-    # MODIFIED: Pass ONLY the current block to ensure we train on t, not t-1
+    # Define Data for New Ensembles Training
+    X_train_candidates = X[X[block_col] == new_ensembles_train_block]
+
+    # Check if X_next/y_next are provided (Transductive Pruning)
+    X_next = kwargs.get("X_next")
+    y_next = kwargs.get("y_next")
+
+    X_for_training = X_train_candidates
+    X_for_pruning = None
+    y_for_pruning = None
+
+    if X_next is not None and y_next is not None:
+        logger.info("[PRUNING] Using NEXT block (Transductive).")
+        pruning_X = X_next.drop(columns=[block_col], errors="ignore")
+        pruning_y = y_next
+    else:
+        logger.info(
+            "[PRUNING] X_next not provided. Splitting CURRENT block to avoid bias."
+        )
+        # Split current block into Train (for new ensembles) and Prune (for selection)
+        # We assume 20% for pruning holdout
+
+        # We need y aligned with X_train_candidates
+        y_train_candidates = y.loc[X_train_candidates.index]
+
+        # Check sufficient size
+        if len(X_train_candidates) > 10:
+            try:
+                X_tr, X_pr, y_tr, y_pr = train_test_split(
+                    X_train_candidates,
+                    y_train_candidates,
+                    test_size=0.2,
+                    random_state=random_state,
+                    stratify=y_train_candidates,
+                )
+                X_for_training = X_tr
+                pruning_X = X_pr.drop(columns=[block_col], errors="ignore")
+                pruning_y = y_pr
+            except Exception as e:
+                logger.warning(
+                    f"Could not split for unbiased pruning: {e}. Using full block (BIASED)."
+                )
+                pruning_X = X_train_candidates.drop(
+                    columns=[block_col], errors="ignore"
+                )
+                pruning_y = y_train_candidates
+        else:
+            logger.warning("Block too small for split. Using full block (BIASED).")
+            pruning_X = X_train_candidates.drop(columns=[block_col], errors="ignore")
+            pruning_y = y_train_candidates
+
+    logger.info(
+        f"Retraining: new ensembles on split of block '{new_ensembles_train_block}' (Size: {len(X_for_training)})"
+    )
+
+    # We call default_train on the training subset
     new_model, _, _, new_model_train_results = default_train(
-        X=X[X[block_col].isin([new_ensembles_train_block])],
-        y=y,
+        X=X_for_training,
+        y=y,  # default_train expects full y or aligned? It filters by X index usually.
+        # Check default_train: "y_chunk = y.loc[X_chunk.index]"
+        # So passing full y is fine, as long as X is subset.
         last_processed_file=last_processed_file,
         model_instance=model_instance,
         random_state=random_state,
@@ -391,6 +447,19 @@ def default_retrain(
         block_col=block_col,
         ipip_config=ipip_config,
     )
+
+    # Fallback to ensure pruning_X is set if logic above failed silently (paranoid check)
+    if "pruning_X" not in locals():
+        if X_next is not None and y_next is not None:
+            pruning_X = X_next.drop(columns=[block_col], errors="ignore")
+            pruning_y = y_next
+        else:
+            # Should have been handled by split logic, but safe fallback to biased full block
+            logger.warning("Unexpected Pruning fallback triggered (BIASED).")
+            pruning_X = X[X[block_col] == new_ensembles_train_block].drop(
+                columns=[block_col]
+            )
+            pruning_y = y[X[block_col] == new_ensembles_train_block]
 
     # --- Combine and Prune ---
     # We need to recalculate p for pruning based on the NEW training block's minority class size
@@ -445,22 +514,6 @@ def default_retrain(
     # Add new ensembles to the old ones
     combined_model = IpipModel(ensembles=prev_model.ensembles_ + new_model.ensembles_)
     logger.info(f"Combined model has {len(combined_model.ensembles_)} ensembles.")
-
-    # Pruning Step
-    # Check if X_next/y_next are provided (Transductive Pruning)
-    X_next = kwargs.get("X_next")
-    y_next = kwargs.get("y_next")
-
-    if X_next is not None and y_next is not None:
-        pruning_X = X_next.drop(columns=[block_col], errors="ignore")
-        pruning_y = y_next
-    else:
-        logger.info("Using CURRENT block for pruning (Standard behavior).")
-        # Use the latest block as the hold-out set for pruning
-        pruning_X = X[X[block_col] == new_ensembles_train_block].drop(
-            columns=[block_col]
-        )
-        pruning_y = y[X[block_col] == new_ensembles_train_block]
 
     # Find the best 'p' ensembles from the combined list
     best_indices = best_models(combined_model, "BA", pruning_X, pruning_y, p, logger)

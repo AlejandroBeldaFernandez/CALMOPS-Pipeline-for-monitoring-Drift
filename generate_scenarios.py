@@ -355,9 +355,9 @@ def generate_real_benchmark():
     for method in methods:
         print(f"Generating Synthetic Data using {method.upper()}...")
         try:
-            gen = RealGenerator(original_data=real_df, method=method, auto_report=False)
+            gen = RealGenerator(data=real_df, method=method, auto_report=False)
             # Generate same amount as original
-            syn_df = gen.synthesize(
+            syn_df = gen.generate(
                 n_samples=len(real_df), output_dir=output_dir, save_dataset=False
             )
             synthetic_datasets[method] = syn_df

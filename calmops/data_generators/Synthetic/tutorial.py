@@ -1,64 +1,80 @@
 import pandas as pd
-from calmops.data_generators.Synthetic.SyntheticBlockGenerator import (
-    SyntheticBlockGenerator,
-)
-from calmops.data_generators.Synthetic.SyntheticGenerator import SyntheticGenerator
 import os
+from calmops.data_generators.Synthetic.SyntheticGenerator import SyntheticGenerator
+from river.datasets import synth
+from calmops.data_generators.configs import DateConfig
 
 
 def run_tutorial():
-    print("=== SyntheticGenerator Tutorial ===")
-
-    # 1. Simple Stream Generation
-    print("\nGenerating simple SEA stream...")
-    # Initialize the wrapper
-    generator = SyntheticGenerator(random_state=42)
-
-    # Create the River generator instance
-    from river.datasets import synth
-
-    sea_gen = synth.SEA(seed=42)
-
-    # Generate 100 samples
-    stream_data = generator.generate(
-        generator_instance=sea_gen,
-        n_samples=100,
-        filename="simple_sea.csv",
-        output_path="tutorial_output",
-        generate_report=False,
-    )
-
-    # 2. Block Generation with Drift
-    print("\nGenerating blocks with concept drift...")
-    block_gen = SyntheticBlockGenerator()
-
+    print("=== SyntheticGenerator Tutorial (Unified API) ===")
     output_dir = "synthetic_tutorial_output"
-    os.makedirs(output_dir, exist_ok=True)
 
-    # Define a scenario:
-    # Block 1: SEA concept 1
-    # Block 2: SEA concept 2 (Abrupt Drift)
-    # Block 3: SEA concept 1 (Recurrent Drift)
+    # factory methods for reproducibility
+    def get_sea_1():
+        return synth.SEA(seed=42, variant=0)
 
-    block_gen.generate_blocks_simple(
-        output_path=output_dir,
-        filename="drift_scenario.csv",
-        n_blocks=3,
-        total_samples=3000,  # 1000 per block
-        methods="sea",
-        method_params=[{"function": 1}, {"function": 2}, {"function": 1}],
-        date_start="2024-01-01",
-        date_step={"days": 1},
-        generate_report=False,
+    def get_sea_2():
+        return synth.SEA(seed=42, variant=1)
+
+    gen = SyntheticGenerator(random_state=42)
+
+    # 1. Simple Generation (No Drift)
+    print("\n1. Generating Simple Stream...")
+    df_simple = gen.generate(
+        generator_instance=get_sea_1(),
+        n_samples=500,
+        output_dir=output_dir,
+        save_dataset=True,  # Will save to output_dir/synthetic_data.csv (default name)
+    )
+    print("Simple shape:", df_simple.shape)
+
+    # 2. Concept Drift (Abrupt)
+    # Using Unified API kwargs for concept drift
+    print("\n2. Generating Concept Drift (Abrupt SEA 0 -> SEA 1)...")
+
+    df_concept = gen.generate(
+        generator_instance=get_sea_1(),
+        n_samples=1000,
+        output_dir=output_dir,
+        save_dataset=False,  # We'll save manually to avoid overwrite or specific name
+        # Concept Drift Kwargs
+        drift_type="abrupt",
+        generator_instance_drift=get_sea_2(),
+        drift_point=500,
     )
 
-    print(f"\nBlock data saved to {output_dir}/drift_scenario.csv")
+    # Save manually with specific name
+    os.makedirs(output_dir, exist_ok=True)
+    df_concept.to_csv(os.path.join(output_dir, "concept_drift.csv"), index=False)
+    print("Concept Drift shape:", df_concept.shape)
 
-    # Load and verify
-    df = pd.read_csv(os.path.join(output_dir, "drift_scenario.csv"))
-    print("Combined Data Shape:", df.shape)
-    print("Columns:", df.columns.tolist())
-    print("Block counts:\n", df["block"].value_counts())
+    # 3. Feature Drift Injection (Using Config)
+    # Injecting noise into column 'col_0' starting at index 500
+    print("\n3. Injecting Feature Drift...")
+
+    drift_config = [
+        {
+            "method": "inject_feature_drift",
+            "params": {
+                "feature_cols": ["col_0"],
+                "drift_type": "gaussian_noise",
+                "drift_magnitude": 2.0,
+                "start_index": 500,
+            },
+        }
+    ]
+
+    df_feature = gen.generate(
+        generator_instance=get_sea_1(),
+        n_samples=1000,
+        drift_injection_config=drift_config,
+        date_config=DateConfig(start_date="2025-01-01"),
+        output_dir=output_dir,
+    )
+    df_feature.to_csv(os.path.join(output_dir, "feature_drift.csv"), index=False)
+    print("Feature Drift shape:", df_feature.shape)
+
+    print(f"\nAll data saved to {output_dir}/")
 
 
 if __name__ == "__main__":

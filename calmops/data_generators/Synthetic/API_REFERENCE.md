@@ -18,25 +18,21 @@ Main method to generate a synthetic dataset from a River generator.
 def generate(
     self,
     generator_instance,
-    output_path: Optional[str],
-    filename: str,
     n_samples: int,
+    output_dir: Optional[str] = None,
+    drift_injection_config: Optional[List[Dict]] = None,
+    date_config: Optional[DateConfig] = None,
     drift_type: str = "none",
-    position_of_drift: int = None,
+    generator_instance_drift: Optional[object] = None,
+    drift_point: int = None,
+    transition_width: int = None,
     target_col: str = "target",
-    block_column: Optional[str] = None,
     balance: bool = False,
-    inconsistency: float = 0.0,
-    drift_options: Optional[Dict] = None,
-    date_start: Optional[str] = None,
-    date_every: int = 1,
-    date_step: Optional[Dict[str, int]] = None,
-    date_col: str = "timestamp",
-    drift_generator: Optional[object] = None,
     save_dataset: bool = True,
     generate_report: bool = True,
-    metadata_generator_instance: Optional[object] = None
-) -> Union[pd.DataFrame, str]
+    metadata_generator_instance: Optional[object] = None,
+    **kwargs
+) -> pd.DataFrame
 ```
 
 - **Parameters:**
