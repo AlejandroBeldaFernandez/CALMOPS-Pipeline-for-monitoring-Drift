@@ -4,14 +4,13 @@ from __future__ import annotations
 import os
 import json
 import time
-from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 
 import numpy as np
 import pandas as pd
 
-from sklearn.base import clone, is_classifier, is_regressor
-from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.base import clone, is_classifier
+from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import (
     accuracy_score, f1_score, balanced_accuracy_score,
     r2_score, mean_squared_error, mean_absolute_error

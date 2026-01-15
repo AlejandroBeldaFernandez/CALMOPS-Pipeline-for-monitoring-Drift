@@ -3,12 +3,8 @@ import json
 from pathlib import Path
 import pandas as pd
 from scipy.io import arff
-import pandas as pd
-from scipy.io import arff
 import streamlit as st
 import plotly.express as px
-import plotly.graph_objects as go
-import numpy as np
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 # import tensorflow as tf
@@ -282,12 +278,13 @@ def show_evolution_section(pipeline_name: str):
 
         # Plot Approval Status
         if "approved" in df_plot.columns:
-            st.markdown("### ✅ Approval Status")
-            # Convert boolean to int for plotting or use color
+            # Convert boolean/None to string label
             df_plot["approval_status"] = df_plot["approved"].apply(
-                lambda x: "Approved" if x else "Rejected"
+                lambda x: "Approved"
+                if x is True
+                else ("Rejected" if x is False else "N/A")
             )
-            color_map = {"Approved": "green", "Rejected": "red"}
+            color_map = {"Approved": "green", "Rejected": "red", "N/A": "gray"}
 
             fig_app = px.scatter(
                 df_plot,
@@ -299,6 +296,47 @@ def show_evolution_section(pipeline_name: str):
                 title="Model Approval History",
             )
             st.plotly_chart(fig_app, use_container_width=True)
+
+        # --- NEW: Pipeline Decision Timeline ---
+        if (
+            "decision" in df_plot.columns
+        ):  # Check original df_hist (df) or df_plot? df_plot doesn't have it yet.
+            # history_data has 'decision'. Let's ensure it's in df_plot
+            pass
+
+        # Re-extraction from df_hist to be sure we have 'decision'
+        if "decision" in df_hist.columns:
+            # We can plot decision directly from df_hist since it aligns with datetime
+            # Filter out NaNs
+            df_dec = df_hist[df_hist["decision"].notna()].copy()
+            if not df_dec.empty:
+                st.markdown("### 🚦 Pipeline Decision Timeline")
+
+                # Map decisions to colors
+                # common decisions: train, retrain, predict, no-op
+                decision_colors = {
+                    "train": "blue",
+                    "retrain": "orange",
+                    "predict": "purple",
+                    "no-op": "gray",
+                    "unknown": "black",
+                }
+
+                fig_dec = px.scatter(
+                    df_dec,
+                    x="datetime",
+                    y="decision",
+                    color="decision",
+                    color_discrete_map=decision_colors,
+                    hover_data=["batch_id"],
+                    title="Pipeline Decisions Over Time",
+                    size_max=15,
+                )
+                # Make markers bigger
+                fig_dec.update_traces(
+                    marker=dict(size=12, line=dict(width=2, color="DarkSlateGrey"))
+                )
+                st.plotly_chart(fig_dec, use_container_width=True)
 
     else:
         st.info("Could not extract plotting data from history.")

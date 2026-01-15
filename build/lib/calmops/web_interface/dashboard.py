@@ -9,27 +9,23 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import streamlit as st
 import pandas as pd
-import json
 import re
+import argparse
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
 from typing import Optional, Tuple, Dict, List
-from sklearn.metrics import roc_curve, precision_recall_curve, auc, confusion_matrix
+from sklearn.metrics import confusion_matrix
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from calmops.utils import get_pipelines_root
 from pathlib import Path
-from utils import _load_any_dataset, load_log, dashboard_data_loader, update_record
-from dashboard_common import (
-    _mtime,
-    _read_json_cached,
-    _read_csv_cached,
-    _load_any_dataset_cached,
-    _sample_series,
-    _ecdf_quantile_curve,
-    _paired_hist,
+from utils import (
+    load_log,
+    dashboard_data_loader,
+    show_evolution_section,
 )
+from dashboard_common import _mtime, _read_json_cached
 
 # =========================
 # Streamlit Configuration & Performance Optimization
@@ -1400,7 +1396,6 @@ def parse_logs_to_df(log_text: str) -> pd.DataFrame:
 
 
 def show_logs_section(pipeline_name):
-    import os
 
     st.subheader("Pipeline Logs")
     logs_path = project_root / "pipelines" / pipeline_name / "logs" / "pipeline.log"
@@ -1496,7 +1491,15 @@ if "schedule" in monitor_type and schedule_info:
 
 # Tabs
 tabs = st.tabs(
-    ["Dataset", "Evaluator", "Drift", "Historical Performance", "Train/Retrain", "Logs"]
+    [
+        "Dataset",
+        "Evaluator",
+        "Drift",
+        "Historical Performance",
+        "Evolution",
+        "Train/Retrain",
+        "Logs",
+    ]
 )
 
 # =========================
@@ -1533,7 +1536,10 @@ with tabs[3]:
     show_historical_performance_section(pipeline_name)
 
 with tabs[4]:
-    show_train_section(pipeline_name)
+    show_evolution_section(pipeline_name)
 
 with tabs[5]:
+    show_train_section(pipeline_name)
+
+with tabs[6]:
     show_logs_section(pipeline_name)

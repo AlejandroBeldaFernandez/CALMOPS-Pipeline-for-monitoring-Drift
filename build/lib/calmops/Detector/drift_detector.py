@@ -2,25 +2,9 @@ import numpy as np
 import pandas as pd
 import os
 import logging
-from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    f1_score,
-    mean_squared_error,
-    r2_score,
-    mean_absolute_error,
-)
-from pandas.api.types import is_numeric_dtype
-
-# Frouros imports (drift detection)
-from frouros.detectors.data_drift import MMD  # batch MMD
-from frouros.detectors.data_drift.batch.distance_based import PSI as PSI_Detector
-from frouros.detectors.data_drift.batch.statistical_test import (
-    KSTest,
-    MannWhitneyUTest,
-    ChiSquareTest,
-    CVMTest,
-)
+# Frouros imports (drift detection) - Lazy loaded
+# from frouros.detectors.data_drift.batch.distance_based import PSI as PSI_Detector
+# from frouros.detectors.data_drift.batch.statistical_test import ...
 
 # Optional: Suppress Tensorflow warnings if TF is installed
 try:
@@ -61,6 +45,7 @@ class DriftDetector:
         self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05
     ):
         """Column-wise KS; drift if p < alpha."""
+        from frouros.detectors.data_drift.batch.statistical_test import KSTest
         drift_detected, results = False, {}
         det = KSTest()
         for col in X_ref.columns:
@@ -93,6 +78,7 @@ class DriftDetector:
         self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05
     ):
         """Column-wise Mann–Whitney; drift if p < alpha."""
+        from frouros.detectors.data_drift.batch.statistical_test import MannWhitneyUTest
         drift_detected, results = False, {}
         det = MannWhitneyUTest()
         for col in X_ref.columns:
@@ -129,6 +115,7 @@ class DriftDetector:
         num_bins: int = 10,
     ):
         """Column-wise PSI; drift if PSI > psi_threshold."""
+        from frouros.detectors.data_drift.batch.distance_based import PSI as PSI_Detector
         drift_detected, results = False, {}
         det = PSI_Detector(num_bins=num_bins)
         for col in X_ref.columns:
@@ -160,6 +147,7 @@ class DriftDetector:
         self, X_ref: pd.DataFrame, X_new: pd.DataFrame, alpha: float = 0.05
     ):
         """Column-wise Chi-squared test; drift if p < alpha. For categorical features."""
+        from frouros.detectors.data_drift.batch.statistical_test import ChiSquareTest
         drift_detected, results = False, {}
         det = ChiSquareTest()
         for col in X_ref.columns:
@@ -316,7 +304,9 @@ class DriftDetector:
         self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9
     ):
         """Performance degradation test using balanced accuracy."""
+        """Performance degradation test using balanced accuracy."""
         try:
+            from sklearn.metrics import balanced_accuracy_score
             predictions = model.predict(X)
             new_acc = balanced_accuracy_score(y, predictions)
             return new_acc < threshold, {
@@ -330,7 +320,9 @@ class DriftDetector:
         self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9
     ):
         """Performance degradation test using accuracy."""
+        """Performance degradation test using accuracy."""
         try:
+            from sklearn.metrics import accuracy_score
             predictions = model.predict(X)
             new_acc = accuracy_score(y, predictions)
             return new_acc < threshold, {"accuracy": new_acc, "threshold": threshold}
@@ -341,6 +333,8 @@ class DriftDetector:
         self, X: pd.DataFrame, y: pd.Series, model, threshold=0.9
     ):
         """Performance degradation test using F1 score."""
+        """Performance degradation test using F1 score."""
+        from sklearn.metrics import f1_score
         y_pred = model.predict(X)
         f1 = f1_score(y, y_pred, average="binary")  # Or 'macro' for multi-class
         return f1 < threshold, {"F1": f1, "threshold": threshold}
@@ -349,6 +343,8 @@ class DriftDetector:
         self, X: pd.DataFrame, y: pd.Series, model, threshold=1.2
     ):
         """Performance degradation test using RMSE (Root Mean Squared Error)."""
+        """Performance degradation test using RMSE (Root Mean Squared Error)."""
+        from sklearn.metrics import mean_squared_error
         y_pred = model.predict(X)
         rmse = mean_squared_error(y, y_pred, squared=False)
         return rmse > threshold, {"RMSE": rmse, "threshold": threshold}
@@ -357,6 +353,8 @@ class DriftDetector:
         self, X: pd.DataFrame, y: pd.Series, model, threshold=0.5
     ):
         """Performance degradation test using R2 score."""
+        """Performance degradation test using R2 score."""
+        from sklearn.metrics import r2_score
         r2 = r2_score(y, model.predict(X))
         return r2 < threshold, {"R2": r2, "threshold": threshold}
 
@@ -372,6 +370,8 @@ class DriftDetector:
         self, X: pd.DataFrame, y: pd.Series, model, threshold=0.4
     ):
         """Performance degradation test using MSE (Mean Squared Error)."""
+        """Performance degradation test using MSE (Mean Squared Error)."""
+        from sklearn.metrics import mean_squared_error
         y_pred = model.predict(X)
         mse = mean_squared_error(y, y_pred)
         return mse > threshold, {"MSE": mse, "threshold": threshold}
@@ -419,6 +419,7 @@ class DriftDetector:
         decay_ratio: float = 0.30,
     ):
         """Drift if accuracy(current) dropped >= decay_ratio vs previous."""
+        from sklearn.metrics import accuracy_score
         y_prev = model_prev.predict(X)
         y_curr = model_curr.predict(X)
         acc_prev = accuracy_score(y, y_prev)
@@ -443,6 +444,7 @@ class DriftDetector:
         decay_ratio: float = 0.30,
     ):
         """Drift if balanced_accuracy(current) dropped >= decay_ratio vs previous."""
+        from sklearn.metrics import balanced_accuracy_score
         y_prev = model_prev.predict(X)
         y_curr = model_curr.predict(X)
         b_prev = balanced_accuracy_score(y, y_prev)
@@ -468,6 +470,7 @@ class DriftDetector:
         average: str = "macro",
     ):
         """Drift if F1(current) dropped >= decay_ratio vs previous. Use average='macro' (multi-class) or 'binary'."""
+        from sklearn.metrics import f1_score
         y_prev = model_prev.predict(X)
         y_curr = model_curr.predict(X)
         f_prev = f1_score(y, y_prev, average=average)
@@ -492,6 +495,8 @@ class DriftDetector:
         decay_ratio: float = 0.30,
     ):
         """Drift if R2(current) dropped >= decay_ratio vs previous."""
+        """Drift if R2(current) dropped >= decay_ratio vs previous."""
+        from sklearn.metrics import r2_score
         r_prev = r2_score(y, model_prev.predict(X))
         r_curr = r2_score(y, model_curr.predict(X))
         drift, rel = self._safe_rel_drop(
@@ -514,6 +519,8 @@ class DriftDetector:
         decay_ratio: float = 0.30,
     ):
         """Drift if RMSE(current) increased >= decay_ratio vs previous."""
+        """Drift if RMSE(current) increased >= decay_ratio vs previous."""
+        from sklearn.metrics import mean_squared_error
         rmse_prev = mean_squared_error(y, model_prev.predict(X), squared=False)
         rmse_curr = mean_squared_error(y, model_curr.predict(X), squared=False)
         drift, rel = self._safe_rel_drop(
@@ -560,6 +567,8 @@ class DriftDetector:
         decay_ratio: float = 0.30,
     ):
         """Drift if MSE(current) increased >= decay_ratio vs previous."""
+        """Drift if MSE(current) increased >= decay_ratio vs previous."""
+        from sklearn.metrics import mean_squared_error
         mse_prev = mean_squared_error(y, model_prev.predict(X))
         mse_curr = mean_squared_error(y, model_curr.predict(X))
         drift, rel = self._safe_rel_drop(

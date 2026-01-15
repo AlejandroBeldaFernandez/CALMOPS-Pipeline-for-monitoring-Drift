@@ -1,0 +1,403 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-9.0.1, pluggy-1.6.0 -- /home/alex/calm/bin/python
+cachedir: .pytest_cache
+rootdir: /home/alex/calmops
+configfile: pyproject.toml
+plugins: Faker-38.2.0, dash-3.2.0
+collecting ... collected 8 items
+
+tests/test_data_generators_comprehensive.py::test_real_generator_basic PASSED [ 12%]
+tests/test_data_generators_comprehensive.py::test_synthetic_generator_basic FAILED [ 25%]
+tests/test_data_generators_comprehensive.py::test_clinic_generator_basic FAILED [ 37%]
+tests/test_data_generators_comprehensive.py::test_clinic_generator_longitudinal FAILED [ 50%]
+tests/test_data_generators_comprehensive.py::test_drift_injector_comprehensive FAILED [ 62%]
+tests/test_data_generators_comprehensive.py::test_real_block_generator_comprehensive FAILED [ 75%]
+tests/test_data_generators_comprehensive.py::test_clinic_generator_block_comprehensive FAILED [ 87%]
+tests/test_data_generators_comprehensive.py::test_dynamics_injector_basic PASSED [100%]
+
+=================================== FAILURES ===================================
+________________________ test_synthetic_generator_basic ________________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_synthetic_generator_basic(output_dir):
+        """Test standard SyntheticGenerator with River."""
+        gen = SyntheticGenerator()
+        try:
+            from river.datasets import synth
+    
+            stream = synth.Agrawal(classification_function=0, seed=42)
+    
+            # SyntheticGenerator.generate returns the DataFrame, not path
+            df = gen.generate(
+                generator_instance=stream,
+                n_samples=50,
+                filename="syn_test.csv",
+                output_path=output_dir,
+                generate_report=False,
+            )
+            assert isinstance(df, pd.DataFrame)
+            assert len(df) == 50
+>           assert os.path.exists(os.path.join(output_dir, "syn_test.csv"))
+E           AssertionError: assert False
+E            +  where False = <function exists at 0x7fc3acc1a050>('test_output_comprehensive/syn_test.csv')
+E            +    where <function exists at 0x7fc3acc1a050> = <module 'posixpath' from '/usr/lib/python3.10/posixpath.py'>.exists
+E            +      where <module 'posixpath' from '/usr/lib/python3.10/posixpath.py'> = os.path
+E            +    and   'test_output_comprehensive/syn_test.csv' = <function join at 0x7fc3acc1a8c0>('test_output_comprehensive', 'syn_test.csv')
+E            +      where <function join at 0x7fc3acc1a8c0> = <module 'posixpath' from '/usr/lib/python3.10/posixpath.py'>.join
+E            +        where <module 'posixpath' from '/usr/lib/python3.10/posixpath.py'> = os.path
+
+tests/test_data_generators_comprehensive.py:69: AssertionError
+_________________________ test_clinic_generator_basic __________________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_clinic_generator_basic(output_dir):
+        """Test ClinicGenerator demographics and data creation."""
+        gen = ClinicGenerator(seed=42)
+    
+        # 1. Demographics
+        demo_df, raw_demo = gen.generate_demographic_data(n_samples=20)
+        assert len(demo_df) == 20
+        # Patient_ID is in index
+        assert "Patient_ID" in demo_df.index.names or "Patient_ID" in demo_df.columns
+    
+        # 2. Genes
+>       genes_df = gen.generate_gene_data(
+            n_genes=5,
+            demographic_df=demo_df,
+            demographic_id_col="Patient_ID",
+            raw_demographic_data=raw_demo,
+            n_samples=20,
+            gene_type="continuous",  # Added required arg
+        )
+
+tests/test_data_generators_comprehensive.py:88: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <calmops.data_generators.Clinic.Clinic.ClinicGenerator object at 0x7fc239f0dfc0>
+n_genes = 5, gene_type = 'continuous'
+demographic_df =               Age     Sex Disease_Subgroup    Group
+Patient_ID                                         
+PAT_62256_0   ...isease  Disease
+PAT_97897_18   72    Male          Control  Control
+PAT_33419_19   56    Male          Disease  Disease
+demographic_id_col = 'Patient_ID'
+raw_demographic_data =               Age  Sex_Binario  Binary_Group
+Patient_ID                                  
+PAT_62256_0    66           ...55            0             1
+PAT_97897_18   72            1             0
+PAT_33419_19   56            1             1
+gene_correlations = None, demographic_gene_correlations = None
+disease_effects_config = None, subgroup_col = None
+gene_mean_log_center = 4.382026634673881, gene_mean_loc_center = 7.0
+control_disease_ratio = 0.5, custom_gene_parameters = None, n_samples = 20
+random_state = 42, drift_injection_config = None, dynamics_config = None
+
+    def generate_gene_data(
+        self,
+        n_genes: int,
+        gene_type: str,  # "RNA-Seq" or "Microarray"
+        demographic_df: pd.DataFrame = None,
+        demographic_id_col: str = None,
+        raw_demographic_data: pd.DataFrame = None,
+        gene_correlations: np.ndarray = None,
+        demographic_gene_correlations: np.ndarray = None,
+        disease_effects_config: dict = None,  # New parameter
+        subgroup_col: str = None,  # New parameter for subgroup-based effects
+        gene_mean_log_center: float = np.log(80),  # For RNA-Seq
+        gene_mean_loc_center: float = 7.0,  # For Microarray
+        control_disease_ratio: float = 0.5,
+        custom_gene_parameters: dict = None,
+        n_samples: int = 100,
+        random_state: int = 42,  # Added for completeness/drift
+        drift_injection_config: Optional[List[Dict]] = None,
+        dynamics_config: Optional[Dict] = None,
+    ):
+        """
+        Generates synthetic gene expression data.
+        Supports heterogeneous disease effects via a structured `disease_effects_config`.
+        """
+        if gene_type.lower() not in ["rna-seq", "microarray"]:
+>           raise ValueError("gene_type must be 'RNA-Seq' or 'Microarray'.")
+E           ValueError: gene_type must be 'RNA-Seq' or 'Microarray'.
+
+calmops/data_generators/Clinic/Clinic.py:661: ValueError
+______________________ test_clinic_generator_longitudinal ______________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_clinic_generator_longitudinal(output_dir):
+        """Test longitudinal data generation (simulating time steps)."""
+        gen = ClinicGenerator(seed=42)
+        # Initial state (T0)
+        demo_df, raw_demo = gen.generate_demographic_data(n_samples=10)
+>       genes_t0 = gen.generate_gene_data(
+            n_genes=3,
+            demographic_df=demo_df,
+            raw_demographic_data=raw_demo,
+            n_samples=10,
+            gene_type="continuous",  # Added required arg
+        )
+
+tests/test_data_generators_comprehensive.py:105: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <calmops.data_generators.Clinic.Clinic.ClinicGenerator object at 0x7fc23a0c3f40>
+n_genes = 3, gene_type = 'continuous'
+demographic_df =              Age     Sex Disease_Subgroup    Group
+Patient_ID                                        
+PAT_33483_0   66... Control  Control
+PAT_29457_8   53    Male          Control  Control
+PAT_76557_9   65  Female          Disease  Disease
+demographic_id_col = None
+raw_demographic_data =              Age  Sex_Binario  Binary_Group
+Patient_ID                                 
+PAT_33483_0   66            0 ...  57            1             0
+PAT_29457_8   53            1             0
+PAT_76557_9   65            0             1
+gene_correlations = None, demographic_gene_correlations = None
+disease_effects_config = None, subgroup_col = None
+gene_mean_log_center = 4.382026634673881, gene_mean_loc_center = 7.0
+control_disease_ratio = 0.5, custom_gene_parameters = None, n_samples = 10
+random_state = 42, drift_injection_config = None, dynamics_config = None
+
+    def generate_gene_data(
+        self,
+        n_genes: int,
+        gene_type: str,  # "RNA-Seq" or "Microarray"
+        demographic_df: pd.DataFrame = None,
+        demographic_id_col: str = None,
+        raw_demographic_data: pd.DataFrame = None,
+        gene_correlations: np.ndarray = None,
+        demographic_gene_correlations: np.ndarray = None,
+        disease_effects_config: dict = None,  # New parameter
+        subgroup_col: str = None,  # New parameter for subgroup-based effects
+        gene_mean_log_center: float = np.log(80),  # For RNA-Seq
+        gene_mean_loc_center: float = 7.0,  # For Microarray
+        control_disease_ratio: float = 0.5,
+        custom_gene_parameters: dict = None,
+        n_samples: int = 100,
+        random_state: int = 42,  # Added for completeness/drift
+        drift_injection_config: Optional[List[Dict]] = None,
+        dynamics_config: Optional[Dict] = None,
+    ):
+        """
+        Generates synthetic gene expression data.
+        Supports heterogeneous disease effects via a structured `disease_effects_config`.
+        """
+        if gene_type.lower() not in ["rna-seq", "microarray"]:
+>           raise ValueError("gene_type must be 'RNA-Seq' or 'Microarray'.")
+E           ValueError: gene_type must be 'RNA-Seq' or 'Microarray'.
+
+calmops/data_generators/Clinic/Clinic.py:661: ValueError
+______________________ test_drift_injector_comprehensive _______________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_drift_injector_comprehensive(output_dir):
+        """Test various drift injection methods in stateless DriftInjector."""
+        import calmops.data_generators.DriftInjection.DriftInjector as DI_Module
+    
+>       print(f"DriftInjector file: {DI_Module.__file__}")
+E       AttributeError: type object 'DriftInjector' has no attribute '__file__'. Did you mean: '__le__'?
+
+tests/test_data_generators_comprehensive.py:128: AttributeError
+___________________ test_real_block_generator_comprehensive ____________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_real_block_generator_comprehensive(output_dir):
+        """Test RealBlockGenerator with drift schedule."""
+        data = pd.DataFrame(
+            {"Val": np.random.randn(100), "Date": pd.date_range("2023-01-01", periods=100)}
+        )
+        data["Block"] = np.where(data.index < 50, "B1", "B2")
+    
+        gen = RealBlockGenerator(auto_report=False)
+    
+        drift_schedule = [
+            {
+                "method": "inject_feature_drift",
+                "params": {
+                    "feature_cols": ["Val"],
+                    "drift_type": "scale",
+                    "drift_magnitude": 2.0,
+                    "blocks": ["B2"],
+                },
+            }
+        ]
+    
+        final_df = gen.generate(
+            data=data,
+            output_dir=output_dir,
+            method="cart",
+            block_column="Block",
+            drift_config=drift_schedule,
+            date_col="Date",
+        )
+    
+        assert len(final_df) == 100
+        assert "B1" in final_df["Block"].values
+        assert "B2" in final_df["Block"].values
+    
+        b1_std = final_df[final_df["Block"] == "B1"]["Val"].std()
+        b2_std = final_df[final_df["Block"] == "B2"]["Val"].std()
+    
+        # Relaxed assertion: B2 std should be significantly larger than B1 std
+>       assert b2_std > b1_std * 1.2
+E       assert 0.9763440851860546 > (0.9661571703973427 * 1.2)
+
+tests/test_data_generators_comprehensive.py:218: AssertionError
+----------------------------- Captured stderr call -----------------------------
+2026-01-13 15:57:55,327 - RealGenerator - INFO - RealGenerator.py:938 - Starting generation of 50 samples using method 'cart'...
+2026-01-13 15:57:55,328 - RealGenerator - INFO - RealGenerator.py:408 - Starting CART (FCS-style) synthesis...
+2026-01-13 15:57:55,356 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 1/10
+2026-01-13 15:57:55,380 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 2/10
+2026-01-13 15:57:55,417 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 3/10
+2026-01-13 15:57:55,596 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 4/10
+2026-01-13 15:57:55,775 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 5/10
+2026-01-13 15:57:55,865 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 6/10
+2026-01-13 15:57:55,971 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 7/10
+2026-01-13 15:57:56,106 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 8/10
+2026-01-13 15:57:56,252 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 9/10
+2026-01-13 15:57:56,387 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 10/10
+2026-01-13 15:57:56,543 - RealGenerator - INFO - RealGenerator.py:1038 - Successfully synthesized 50 samples.
+2026-01-13 15:57:56,592 - RealGenerator - INFO - RealGenerator.py:938 - Starting generation of 50 samples using method 'cart'...
+2026-01-13 15:57:56,594 - RealGenerator - INFO - RealGenerator.py:408 - Starting CART (FCS-style) synthesis...
+2026-01-13 15:57:56,609 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 1/10
+2026-01-13 15:57:56,715 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 2/10
+2026-01-13 15:57:56,852 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 3/10
+2026-01-13 15:57:57,017 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 4/10
+2026-01-13 15:57:57,164 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 5/10
+2026-01-13 15:57:57,179 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 6/10
+2026-01-13 15:57:57,194 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 7/10
+2026-01-13 15:57:57,277 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 8/10
+2026-01-13 15:57:57,393 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 9/10
+2026-01-13 15:57:57,469 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 10/10
+2026-01-13 15:57:57,544 - RealGenerator - INFO - RealGenerator.py:1038 - Successfully synthesized 50 samples.
+------------------------------ Captured log call -------------------------------
+INFO     RealBlockGenerator:RealBlockGenerator.py:65 RealBlockGenerator initialized.
+INFO     RealBlockGenerator:RealBlockGenerator.py:95 Using existing column 'Block' for blocks.
+INFO     RealBlockGenerator:RealBlockGenerator.py:241 RealBlockGenerator processing 2 blocks
+INFO     RealBlockGenerator:RealBlockGenerator.py:242 Blocks are defined by column: 'Block'
+INFO     RealBlockGenerator:RealBlockGenerator.py:149 Generating 50 samples for block B1 using method 'cart'
+INFO     RealGenerator:RealGenerator.py:938 Starting generation of 50 samples using method 'cart'...
+INFO     RealGenerator:RealGenerator.py:408 Starting CART (FCS-style) synthesis...
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 1/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 2/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 3/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 4/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 5/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 6/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 7/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 8/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 9/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 10/10
+INFO     RealGenerator:RealGenerator.py:1038 Successfully synthesized 50 samples.
+INFO     RealBlockGenerator:RealBlockGenerator.py:286 Generated block B1: 50 samples
+INFO     RealBlockGenerator:RealBlockGenerator.py:149 Generating 50 samples for block B2 using method 'cart'
+INFO     RealGenerator:RealGenerator.py:938 Starting generation of 50 samples using method 'cart'...
+INFO     RealGenerator:RealGenerator.py:408 Starting CART (FCS-style) synthesis...
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 1/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 2/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 3/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 4/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 5/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 6/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 7/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 8/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 9/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 10/10
+INFO     RealGenerator:RealGenerator.py:1038 Successfully synthesized 50 samples.
+INFO     RealBlockGenerator:RealBlockGenerator.py:286 Generated block B2: 50 samples
+INFO     RealBlockGenerator:RealBlockGenerator.py:295 Applying drift schedule to the complete dataset.
+INFO     RealBlockGenerator:RealBlockGenerator.py:312 Drift schedule applied successfully.
+INFO     RealBlockGenerator:RealBlockGenerator.py:335 Complete synthetic dataset saved to: test_output_comprehensive/complete_block_dataset_cart.csv
+INFO     RealBlockGenerator:RealBlockGenerator.py:337 Complete synthetic dataset generated: (100, 3)
+INFO     RealBlockGenerator:RealBlockGenerator.py:340 Final block distribution: {'B1': 50, 'B2': 50}
+__________________ test_clinic_generator_block_comprehensive ___________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_clinic_generator_block_comprehensive(output_dir):
+        """Test ClinicGeneratorBlock with drift and dynamics."""
+        cohort_gen = ClinicGeneratorBlock()
+        clinic_instance = ClinicGenerator(seed=123)
+    
+        # Dynamics config
+        dynamics_conf = {"evolve_features": {"feature_cols": ["Age"], "rate": 0.05}}
+    
+        # Drift config
+        drift_conf = [
+            {
+                "method": "inject_new_value",  # Stateless check
+                "params": {
+                    "cols": ["Group"],
+                    "new_value": "NewGroup",
+                    "prob": 0.5,
+                    "blocks": [
+                        2
+                    ],  # Target 2nd block (labels are 1-based integers usually in helper)
+                },
+            }
+        ]
+    
+>       path = cohort_gen.generate(
+            output_dir=output_dir,
+            filename="clinic_block_test.csv",
+            n_blocks=2,
+            total_samples=40,
+            n_samples_block=20,  # 20 per block
+            generators=clinic_instance,
+            date_start="2023-01-01",
+            dynamics_config=dynamics_conf,
+            drift_config=drift_conf,
+            target_col="Diagnosis",
+            generate_report=False,
+        )
+
+tests/test_data_generators_comprehensive.py:244: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+calmops/data_generators/Clinic/ClinicGeneratorBlock.py:92: in generate
+    df = pd.concat(all_data, ignore_index=True)
+../calm/lib/python3.10/site-packages/pandas/core/reshape/concat.py:382: in concat
+    op = _Concatenator(
+../calm/lib/python3.10/site-packages/pandas/core/reshape/concat.py:448: in __init__
+    ndims = self._get_ndims(objs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <pandas.core.reshape.concat._Concatenator object at 0x7fc3abf62b90>
+objs = [{'block': 1, 'demographics':               Age     Sex Disease_Subgroup    Group
+Patient_ID                          ...38.828076
+PAT_86853_19  10.682803   9.906706   63.818701  ...  13.260808  5.188754  33.435128
+
+[20 rows x 50 columns]}]
+
+    def _get_ndims(self, objs: list[Series | DataFrame]) -> set[int]:
+        # figure out what our result ndim is going to be
+        ndims = set()
+        for obj in objs:
+            if not isinstance(obj, (ABCSeries, ABCDataFrame)):
+                msg = (
+                    f"cannot concatenate object of type '{type(obj)}'; "
+                    "only Series and DataFrame objs are valid"
+                )
+>               raise TypeError(msg)
+E               TypeError: cannot concatenate object of type '<class 'dict'>'; only Series and DataFrame objs are valid
+
+../calm/lib/python3.10/site-packages/pandas/core/reshape/concat.py:489: TypeError
+=============================== warnings summary ===============================
+tests/test_data_generators_comprehensive.py::test_real_block_generator_comprehensive
+  /home/alex/calmops/calmops/data_generators/DriftInjection/DriftInjector.py:1649: UserWarning: Failed to apply drift 'inject_feature_drift': DriftInjector._generate_reports() got an unexpected keyword argument 'output_dir'
+    warnings.warn(f"Failed to apply drift '{method_name}': {e}")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_data_generators_comprehensive.py::test_synthetic_generator_basic
+FAILED tests/test_data_generators_comprehensive.py::test_clinic_generator_basic
+FAILED tests/test_data_generators_comprehensive.py::test_clinic_generator_longitudinal
+FAILED tests/test_data_generators_comprehensive.py::test_drift_injector_comprehensive
+FAILED tests/test_data_generators_comprehensive.py::test_real_block_generator_comprehensive
+FAILED tests/test_data_generators_comprehensive.py::test_clinic_generator_block_comprehensive
+============== 6 failed, 2 passed, 1 warning in 124.37s (0:02:04) ==============

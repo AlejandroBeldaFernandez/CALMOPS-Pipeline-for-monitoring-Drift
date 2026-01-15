@@ -39,70 +39,30 @@ class RealBlockGenerator(RealGenerator):
 
     def __init__(
         self,
-        data: pd.DataFrame,
-        method: str = "cart",
-        target_col: Optional[str] = None,
-        block_column: Optional[str] = None,
-        chunk_size: Optional[int] = None,
-        chunk_by_timestamp: Optional[str] = None,
         auto_report: bool = True,
         random_state: int = 42,
         verbose: bool = True,
-        model_params: Optional[Dict[str, Any]] = None,
     ):
         """
         Initializes the RealBlockGenerator.
 
         Args:
-            data (pd.DataFrame): The full, original dataset.
-            method (str): The synthesis method to use for each block (e.g., 'cart', 'ctgan').
-            target_col (Optional[str]): Name of the target variable column.
-            block_column (Optional[str]): Name of an existing column that defines the blocks.
-            chunk_size (Optional[int]): If provided, creates blocks of this fixed size.
-            chunk_by_timestamp (Optional[str]): If provided, creates blocks based on changes in this timestamp column.
             auto_report (bool): Whether to automatically generate a comprehensive report after processing all blocks.
             random_state (int): Random seed for reproducibility.
             verbose (bool): Enables verbose logging.
-            model_params (Optional[Dict[str, Any]]): Dictionary of hyperparameters for the synthesis model.
         """
-        # Create a copy to avoid modifying the original dataframe in place
-        data = data.copy()
-
         # Call parent constructor
         super().__init__(
-            data=data,
-            method=method,
-            target_col=target_col,
             auto_report=auto_report,
             random_state=random_state,
-            model_params=model_params,
         )
 
-        self.model_params = model_params  # Store for block-level generators
         self.logger = logging.getLogger(self.__class__.__name__)
         if verbose:
             self.logger.setLevel(logging.INFO)
 
-        # Create chunks dynamically if specified
-        self.block_column = self._create_chunks(
-            block_column=block_column,
-            chunk_size=chunk_size,
-            chunk_by_timestamp=chunk_by_timestamp,
-        )
-
-        # Robust ordering in case of mixed types
-        self.blocks = sorted(self.data[self.block_column].unique(), key=str)
-        self.n_blocks = len(self.blocks)
-
         self.reporter = RealReporter()
-
-        self.logger.info("RealBlockGenerator initialized with %d blocks", self.n_blocks)
-        self.logger.info("Blocks are defined by column: '%s'", self.block_column)
-        self.logger.info("Blocks: %s", self.blocks)
-        self.logger.info(
-            "Block sizes: %s",
-            self.data[self.block_column].value_counts().sort_index().to_dict(),
-        )
+        self.logger.info("RealBlockGenerator initialized.")
 
     # --------------------------------------------------------------------------- #
     #                             INTERNAL HELPERS                                #
@@ -110,6 +70,7 @@ class RealBlockGenerator(RealGenerator):
 
     def _create_chunks(
         self,
+        data: pd.DataFrame,
         block_column: Optional[str],
         chunk_size: Optional[int],
         chunk_by_timestamp: Optional[str],
@@ -132,7 +93,7 @@ class RealBlockGenerator(RealGenerator):
 
         if block_column:
             self.logger.info("Using existing column '%s' for blocks.", block_column)
-            if block_column not in self.data.columns:
+            if block_column not in data.columns:
                 raise ValueError(f"Block column '{block_column}' not found in dataset")
             return block_column
 
@@ -142,16 +103,14 @@ class RealBlockGenerator(RealGenerator):
                 "Creating chunks based on changes in timestamp column '%s'.",
                 chunk_by_timestamp,
             )
-            if chunk_by_timestamp not in self.data.columns:
+            if chunk_by_timestamp not in data.columns:
                 raise ValueError(
                     f"Timestamp column '{chunk_by_timestamp}' not found for chunking."
                 )
 
             # Increment chunk ID every time the timestamp value changes
-            self.data[new_chunk_col_name] = (
-                self.data[chunk_by_timestamp]
-                .ne(self.data[chunk_by_timestamp].shift())
-                .cumsum()
+            data[new_chunk_col_name] = (
+                data[chunk_by_timestamp].ne(data[chunk_by_timestamp].shift()).cumsum()
             )
 
         elif chunk_size:
@@ -160,22 +119,26 @@ class RealBlockGenerator(RealGenerator):
                 raise ValueError("'chunk_size' must be a positive integer.")
 
             # Create chunks of fixed size
-            self.data[new_chunk_col_name] = np.arange(len(self.data)) // chunk_size
+            data[new_chunk_col_name] = np.arange(len(data)) // chunk_size
 
         return new_chunk_col_name
 
     def _generate_block_data(
         self,
+        block_data: pd.DataFrame,
         block_id: Any,
         output_dir: str,
+        method: str,
+        target_col: Optional[str],
+        block_column: str,
+        model_params: Optional[Dict],
         n_samples: Optional[int] = None,
         custom_distributions: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """
         Generates synthetic data for a specific block by creating a temporary RealGenerator instance for that block.
         """
-        block_data = self.data[self.data[self.block_column] == block_id].copy()
-        block_data_no_block = block_data.drop(columns=[self.block_column])
+        block_data_no_block = block_data.drop(columns=[block_column])
 
         if len(block_data) == 0:
             raise ValueError(f"No data found for block: {block_id}")
@@ -187,21 +150,21 @@ class RealBlockGenerator(RealGenerator):
             "Generating %d samples for block %s using method '%s'",
             n_samples,
             str(block_id),
-            self.method,
+            method,
         )
 
         # Create a new RealGenerator instance for this specific block
         block_generator = RealGenerator(
-            data=block_data_no_block,
-            method=self.method,
-            target_col=self.target_col,
             auto_report=False,  # Reporting is done at the end for the whole dataset
             random_state=self.random_state,
-            model_params=self.model_params,  # Pass down model params
         )
 
         # Synthesize data for the block
         synthetic_block = block_generator.generate(
+            data=block_data_no_block,
+            method=method,
+            target_col=target_col,
+            model_params=model_params,
             n_samples=n_samples,
             output_dir=output_dir,
             custom_distributions=custom_distributions,
@@ -211,7 +174,7 @@ class RealBlockGenerator(RealGenerator):
             raise RuntimeError(f"Synthesis failed for block {block_id}")
 
         # Re-attach block column
-        synthetic_block[self.block_column] = block_id
+        synthetic_block[block_column] = block_id
 
         return synthetic_block
 
@@ -221,51 +184,94 @@ class RealBlockGenerator(RealGenerator):
 
     def generate(
         self,
+        data: pd.DataFrame,
         output_dir: str,
+        method: str = "cart",
+        target_col: Optional[str] = None,
+        block_column: Optional[str] = None,
+        chunk_size: Optional[int] = None,
+        chunk_by_timestamp: Optional[str] = None,
         n_samples_block: Optional[Union[int, Dict[Any, int]]] = None,
         drift_config: Optional[List[Dict[str, Any]]] = None,
         custom_distributions: Optional[Dict] = None,
         date_start: Optional[str] = None,
         date_step: Optional[Dict[str, int]] = None,
         date_col: str = "timestamp",
+        model_params: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
         """
         Generates a complete synthetic dataset by processing each block and applying a drift schedule.
 
         Args:
+            data (pd.DataFrame): The full, original dataset.
             output_dir (str): Directory to save the report and any intermediate artifacts.
-            samples_per_block (Optional[Union[int, Dict[Any, int]]]): Uniform number of samples for all blocks or a dictionary mapping each block_id to a specific number of samples.
-            drift_schedule (Optional[List[Dict[str, Any]]]): A list of drift configurations to be applied sequentially to the entire dataset using DriftInjector.
+            method (str): The synthesis method to use for each block (e.g., 'cart', 'ctgan').
+            target_col (Optional[str]): Name of the target variable column.
+            block_column (Optional[str]): Name of an existing column that defines the blocks.
+            chunk_size (Optional[int]): If provided, creates blocks of this fixed size.
+            chunk_by_timestamp (Optional[str]): If provided, creates blocks based on changes in this timestamp column.
+            n_samples_block (Optional[Union[int, Dict[Any, int]]]): Uniform number of samples for all blocks or a dictionary mapping each block_id to a specific number of samples.
+            drift_config (Optional[List[Dict[str, Any]]]): A list of drift configurations to be applied sequentially to the entire dataset using DriftInjector.
             custom_distributions (Optional[Dict]): A dictionary to specify custom distributions for columns during synthesis.
             date_start (Optional[str]): Start date for block-aligned date injection.
             date_step (Optional[Dict[str, int]]): The time step for date injection (e.g., {'days': 1}).
             date_col (str): The name of the date column to be injected.
+            model_params (Optional[Dict[str, Any]]): Dictionary of hyperparameters for the synthesis model.
 
         Returns:
             pd.DataFrame: The complete synthetic dataset with all blocks and applied drift.
         """
-        from data_generators.DriftInjection.DriftInjector import DriftInjector
+        from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
+
+        # Work on a copy
+        data = data.copy()
+
+        # Determine/Create blocks
+        block_col_name = self._create_chunks(
+            data,
+            block_column=block_column,
+            chunk_size=chunk_size,
+            chunk_by_timestamp=chunk_by_timestamp,
+        )
+
+        # Robust ordering in case of mixed types
+        blocks = sorted(data[block_col_name].unique(), key=str)
+        n_blocks = len(blocks)
+
+        self.logger.info("RealBlockGenerator processing %d blocks", n_blocks)
+        self.logger.info("Blocks are defined by column: '%s'", block_col_name)
 
         synthetic_blocks: List[pd.DataFrame] = []
         start_ts = pd.to_datetime(date_start) if date_start else None
         step_offset = pd.DateOffset(**(date_step or {"days": 1})) if start_ts else None
 
-        for i, block_id in enumerate(self.blocks):
+        samples_per_block = (
+            n_samples_block  # Alias for internal logic clarity if needed
+        )
+
+        for i, block_id in enumerate(blocks):
             # Determine samples for this block
+            block_subset = data[data[block_col_name] == block_id]
+
             if samples_per_block is None:
-                n_samples = len(self.data[self.data[self.block_column] == block_id])
+                n_samples = len(block_subset)
             elif isinstance(samples_per_block, int):
                 n_samples = samples_per_block
             else:
                 n_samples = samples_per_block.get(
                     block_id,
-                    len(self.data[self.data[self.block_column] == block_id]),
+                    len(block_subset),
                 )
 
             # Generate block without drift
             synthetic_block = self._generate_block_data(
+                block_data=block_subset,
                 block_id=block_id,
                 output_dir=output_dir,
+                method=method,
+                target_col=target_col,
+                block_column=block_col_name,
+                model_params=model_params,
                 n_samples=n_samples,
                 custom_distributions=custom_distributions,
             )
@@ -285,34 +291,47 @@ class RealBlockGenerator(RealGenerator):
         complete_dataset = pd.concat(synthetic_blocks, ignore_index=True)
 
         # Apply drift to the complete dataset based on the schedule
-        if drift_schedule:
+        if drift_config:
             self.logger.info("Applying drift schedule to the complete dataset.")
 
             drift_injector = DriftInjector(
-                original_df=self.data,
                 output_dir=output_dir,
-                generator_name=f"RealBlockGenerator_{self.method}",
-                target_column=self.target_col,
-                block_column=self.block_column,
-                time_col=date_col,
+                generator_name=f"RealBlockGenerator_{method}",
                 random_state=self.random_state,
             )
 
+            # We pass global context (like time_col, block_column) to the orchestrator,
+            # which should propagate them to individual drift methods if not specified there.
             complete_dataset = drift_injector.inject_multiple_types_of_drift(
-                df=complete_dataset, schedule=drift_schedule
+                df=complete_dataset,
+                schedule=drift_config,
+                time_col=date_col,
+                block_column=block_col_name,
+                target_column=target_col,
             )
             self.logger.info("Drift schedule applied successfully.")
         else:
             # Generate a report for the final dataset (no drift)
             self._generate_block_report(
-                complete_dataset, output_dir=output_dir, time_col=date_col
+                data,
+                complete_dataset,
+                output_dir=output_dir,
+                time_col=date_col,
+                block_col=block_col_name,
+                target_col=target_col,
+                method=method,
             )
 
         # Always save the final dataset
         final_dataset_path = os.path.join(
-            output_dir, f"complete_block_dataset_{self.method}.csv"
+            output_dir, f"complete_block_dataset_{method}.csv"
         )
-        self.save_block_dataset(complete_dataset, output_path=final_dataset_path)
+        self.save_block_dataset(
+            complete_dataset,
+            output_path=final_dataset_path,
+            block_column=block_col_name,
+            method=method,
+        )
         self.logger.info("Complete synthetic dataset saved to: %s", final_dataset_path)
 
         self.logger.info(
@@ -320,23 +339,20 @@ class RealBlockGenerator(RealGenerator):
         )
         self.logger.info(
             "Final block distribution: %s",
-            complete_dataset[self.block_column].value_counts().sort_index().to_dict(),
+            complete_dataset[block_col_name].value_counts().sort_index().to_dict(),
         )
-
-        # Always save the final dataset
-        final_dataset_path = os.path.join(
-            output_dir, f"complete_block_dataset_{self.method}.csv"
-        )
-        self.save_block_dataset(complete_dataset, output_path=final_dataset_path)
-        self.logger.info("Complete synthetic dataset saved to: %s", final_dataset_path)
 
         return complete_dataset
 
     def _generate_block_report(
         self,
+        real_data: pd.DataFrame,
         synthetic_dataset: pd.DataFrame,
         output_dir: str,
         time_col: Optional[str] = None,
+        block_col: Optional[str] = None,
+        target_col: Optional[str] = None,
+        method: str = "unknown",
     ):
         """Generates a comprehensive report for the full block-based dataset at the dataset level."""
         if not self.auto_report:
@@ -345,12 +361,12 @@ class RealBlockGenerator(RealGenerator):
             os.makedirs(output_dir, exist_ok=True)
 
             self.reporter.generate_comprehensive_report(
-                real_df=self.data,
+                real_df=real_data,
                 synthetic_df=synthetic_dataset,
-                generator_name=f"RealBlockGenerator_{self.method}",
+                generator_name=f"RealBlockGenerator_{method}",
                 output_dir=output_dir,
-                target_column=self.target_col,
-                block_column=self.block_column,
+                target_column=target_col,
+                block_column=block_col,
                 time_col=time_col,
             )
             self.logger.info(
@@ -360,15 +376,20 @@ class RealBlockGenerator(RealGenerator):
             self.logger.error("Failed to generate block report: %s", e, exc_info=True)
 
     def analyze_block_statistics(
-        self, synthetic_dataset: pd.DataFrame
+        self,
+        original_data: pd.DataFrame,
+        synthetic_dataset: pd.DataFrame,
+        block_column: str,
+        target_col: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Analyzes and returns statistics for each block in the synthetic dataset compared to the original."""
         block_stats: Dict[Any, Any] = {}
+        blocks = original_data[block_column].unique()
 
-        for block_id in self.blocks:
-            original_block = self.data[self.data[self.block_column] == block_id]
+        for block_id in blocks:
+            original_block = original_data[original_data[block_column] == block_id]
             synthetic_block = synthetic_dataset[
-                synthetic_dataset[self.block_column] == block_id
+                synthetic_dataset[block_column] == block_id
             ]
 
             stats = {
@@ -379,17 +400,17 @@ class RealBlockGenerator(RealGenerator):
             }
 
             # Target distribution if available
-            if self.target_col and self.target_col in original_block.columns:
+            if target_col and target_col in original_block.columns:
                 stats["original_target_dist"] = (
-                    original_block[self.target_col].value_counts().to_dict()
+                    original_block[target_col].value_counts().to_dict()
                 )
                 stats["synthetic_target_dist"] = (
-                    synthetic_block[self.target_col].value_counts().to_dict()
+                    synthetic_block[target_col].value_counts().to_dict()
                 )
 
             # Numeric stats
             numeric_cols = original_block.select_dtypes(include=[np.number]).columns
-            numeric_cols = [c for c in numeric_cols if c != self.block_column]
+            numeric_cols = [c for c in numeric_cols if c != block_column]
             if numeric_cols:
                 stats["original_numeric_means"] = (
                     original_block[numeric_cols].mean().to_dict()
@@ -408,29 +429,32 @@ class RealBlockGenerator(RealGenerator):
 
         return block_stats
 
-    def get_block_info(self) -> Dict[str, Any]:
+    def get_block_info(
+        self, data: pd.DataFrame, block_column: str, target_col: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Returns detailed information about the blocks in the original dataset."""
         block_info: Dict[Any, Any] = {}
+        blocks = data[block_column].unique()
 
-        for block_id in self.blocks:
-            block_data = self.data[self.data[self.block_column] == block_id]
+        for block_id in blocks:
+            block_data = data[data[block_column] == block_id]
             info = {
                 "size": len(block_data),
-                "percentage": (len(block_data) / len(self.data) * 100.0)
-                if len(self.data)
+                "percentage": (len(block_data) / len(data) * 100.0)
+                if len(data)
                 else 0.0,
                 "target_distribution": None,
                 "feature_means": None,
                 "missing_values": int(block_data.isnull().sum().sum()),
             }
 
-            if self.target_col and self.target_col in block_data.columns:
+            if target_col and target_col in block_data.columns:
                 info["target_distribution"] = (
-                    block_data[self.target_col].value_counts().to_dict()
+                    block_data[target_col].value_counts().to_dict()
                 )
 
             numeric_cols = block_data.select_dtypes(include=[np.number]).columns
-            numeric_cols = [c for c in numeric_cols if c != self.block_column]
+            numeric_cols = [c for c in numeric_cols if c != block_column]
             if numeric_cols:
                 info["feature_means"] = block_data[numeric_cols].mean().to_dict()
 
@@ -442,6 +466,8 @@ class RealBlockGenerator(RealGenerator):
         self,
         synthetic_dataset: pd.DataFrame,
         output_path: str,
+        block_column: str,
+        method: str,
         format: str = "csv",
         separate_blocks: bool = False,
     ) -> Union[str, List[str]]:
@@ -451,6 +477,8 @@ class RealBlockGenerator(RealGenerator):
         Args:
             synthetic_dataset (pd.DataFrame): The complete synthetic dataset.
             output_path (str): The output path (file or directory).
+            block_column (str): The name of the column defining blocks.
+            method (str): Synthesis method name for file naming.
             format (str): The output format ('csv', 'parquet', 'excel').
             separate_blocks (bool): If True, saves each block as a separate file.
 
@@ -458,6 +486,9 @@ class RealBlockGenerator(RealGenerator):
             Union[str, List[str]]: Path(s) to the saved file(s).
         """
         output = Path(output_path)
+
+        # Get blocks from the dataset itself
+        blocks = synthetic_dataset[block_column].unique()
 
         if separate_blocks:
             # Prepare dir/name/ext
@@ -467,15 +498,15 @@ class RealBlockGenerator(RealGenerator):
                 ext = output.suffix
             else:
                 out_dir = output
-                base = f"synthetic_block_{self.method}"
+                base = f"synthetic_block_{method}"
                 ext = f".{format}"
 
             out_dir.mkdir(parents=True, exist_ok=True)
             saved: List[str] = []
 
-            for block_id in self.blocks:
+            for block_id in blocks:
                 block_data = synthetic_dataset[
-                    synthetic_dataset[self.block_column] == block_id
+                    synthetic_dataset[block_column] == block_id
                 ]
                 block_path = out_dir / f"{base}_block_{block_id}{ext}"
 

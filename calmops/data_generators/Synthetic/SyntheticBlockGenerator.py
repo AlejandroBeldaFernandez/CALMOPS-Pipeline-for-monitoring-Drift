@@ -5,7 +5,7 @@ from .SyntheticReporter import SyntheticReporter
 from .GeneratorFactory import GeneratorFactory, GeneratorType, GeneratorConfig
 from .SyntheticGenerator import SyntheticGenerator
 from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
-from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
+from calmops.data_generators.Dynamics.ScenarioInjector import ScenarioInjector
 from typing import List, Dict, Optional, Any
 
 
@@ -249,10 +249,12 @@ class SyntheticBlockGenerator:
             # The class doesn't have a logger instantiated. It uses tf.get_logger and setLevel.
             # I'll use warnings or just proceed. SyntheticGenerator has a logger.
             # I will instantiate DynamicsInjector
-            injector = DynamicsInjector()
+            injector = ScenarioInjector()
             if "evolve_features" in dynamics_config:
                 evolve_args = dynamics_config["evolve_features"]
-                df = injector.evolve_features(df, time_col=date_col, **evolve_args)
+                df = injector.evolve_features(
+                    df, time_col=date_col, evolution_config=evolve_args
+                )
             if "construct_target" in dynamics_config:
                 target_args = dynamics_config["construct_target"]
                 df = injector.construct_target(df, **target_args)

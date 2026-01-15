@@ -1,0 +1,475 @@
+{
+    "drift_history": [
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T09:36:57.046935"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T09:37:58.541930"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T09:39:04.858896"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T09:53:31.877807"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T09:54:15.232063"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T09:55:12.842625"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T09:59:26.241590"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T10:00:07.232848"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T10:00:35.923369"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T10:08:38.309564"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T10:09:12.604747"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T10:09:39.175268"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T10:17:48.488053"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T10:18:30.976768"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T10:19:36.011057"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T10:25:11.847229"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T10:26:15.980735"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T10:26:37.675452"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T10:27:49.427485"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T10:28:19.289132"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T10:28:37.239802"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T10:45:01.428350"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T10:46:06.009805"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T10:46:47.104783"
+        },
+        {
+            "drift_method": "inject_new_value",
+            "cols": [
+                "Group"
+            ],
+            "new_value": "NewGroup",
+            "prob": 0.5,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "ClinicGeneratorBlock_Drifted_new_value",
+            "timestamp": "2026-01-14T10:47:59.175347"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T11:08:31.367074"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T11:09:21.227344"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T11:09:58.088434"
+        },
+        {
+            "drift_method": "inject_new_value",
+            "cols": [
+                "Group"
+            ],
+            "new_value": "NewGroup",
+            "prob": 0.5,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "ClinicGeneratorBlock_Drifted_new_value",
+            "timestamp": "2026-01-14T11:10:18.158369"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T11:51:17.817194"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T11:53:07.368404"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T11:56:40.993032"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-14T15:58:08.203036"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-14T15:59:19.372530"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-14T15:59:54.790354"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Feature"
+            ],
+            "drift_type": "shift",
+            "drift_magnitude": 2.0,
+            "start_index": 50,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "test_feature_drift",
+            "timestamp": "2026-01-15T08:46:35.169407"
+        },
+        {
+            "drift_method": "inject_concept_drift_gradual",
+            "target_col": "Target",
+            "magnitude": 0.9,
+            "profile": "sigmoid",
+            "center": 50,
+            "width": 20,
+            "generator_name": "test_concept_gradual",
+            "timestamp": "2026-01-15T08:47:46.066522"
+        },
+        {
+            "drift_method": "inject_feature_drift",
+            "feature_cols": [
+                "Val"
+            ],
+            "drift_type": "scale",
+            "drift_magnitude": 2.0,
+            "start_index": null,
+            "block_index": null,
+            "time_start": null,
+            "generator_name": "RealBlockGenerator_cart_feature_drift",
+            "timestamp": "2026-01-15T08:48:37.161212"
+        }
+    ],
+    "drift_config": {
+        "drift_method": "inject_feature_drift",
+        "feature_cols": [
+            "Val"
+        ],
+        "drift_type": "scale",
+        "drift_magnitude": 2.0,
+        "start_index": null,
+        "block_index": null,
+        "time_start": null,
+        "generator_name": "RealBlockGenerator_cart_feature_drift",
+        "timestamp": "2026-01-15T08:48:37.161212"
+    }
+}

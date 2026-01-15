@@ -1,38 +1,31 @@
 import os
-import json
 import re
 import argparse
-from pathlib import Path
-from typing import Optional, Any, Dict, List
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-import joblib
+
 
 # Import shared utilities
 from calmops.utils import get_pipelines_root
 from utils import (
-    _load_any_dataset,
     dashboard_data_loader,
-    show_evolution_section,
+    show_evolution_section,  # We reuse the generic one but wrap it
 )
 from dashboard_common import (
     _mtime,
     _read_json_cached,
     _read_text_cached,
-    _read_csv_cached,
     _load_joblib_cached,
-    _load_any_dataset_cached,
-    _sanitize_text,
     _safe_table,
     _safe_table_static,
     _safe_plot,
     _safe_json_display,
     _sorted_blocks,
-    _get_pipeline_base_dir,
     _detect_block_col,
 )
 
@@ -309,40 +302,7 @@ def show_train_section(pipeline_name: str):
     with st.expander("Raw JSON Output"):
         _safe_json_display(results)
 
-    # NEW: Training History Visualization
-    history_path = metrics_dir / "training_history.json"
-    if history_path.exists():
-        st.markdown("### Training History (Parameter Evolution)")
-        history_data = _read_json_cached(str(history_path), _mtime(str(history_path)))
-        if history_data:
-            df_hist = pd.DataFrame(history_data)
-
-            # Plot p and b over blocks
-            if "block" in df_hist.columns and "p" in df_hist.columns:
-                fig_params = px.line(
-                    df_hist,
-                    x="block",
-                    y=["p", "b"],
-                    title="Evolution of Parameters p and b",
-                    markers=True,
-                )
-                _safe_plot(fig_params)
-
-            # Plot ensemble sizes
-            if "num_ensembles" in df_hist.columns:
-                fig_ensembles = px.line(
-                    df_hist,
-                    x="block",
-                    y="num_ensembles",
-                    title="Evolution of Number of Ensembles",
-                    markers=True,
-                )
-                _safe_plot(fig_ensembles)
-
-            with st.expander("Raw Training History"):
-                _safe_table(df_hist)
-    else:
-        st.info("No `training_history.json` found.")
+    # Note: Training history plot moved to 'Evolution' tab for better organization
 
 
 # =========================
@@ -353,7 +313,7 @@ def show_evaluator_section(pipeline_name: str):
     Displays evaluation metrics for the current model.
     Reads from `eval_results.json` and shows metrics, thresholds, and predictions.
     """
-    st.subheader("Model Evaluation")
+    st.subheader("Evaluation Results")
     project_root = get_pipelines_root()
     metrics_dir = project_root / "pipelines" / pipeline_name / "metrics"
     eval_path = metrics_dir / "eval_results.json"
@@ -487,20 +447,74 @@ def show_historical_performance_section(pipeline_name: str):
         st.warning("Could not load any historical performance data.")
         return
 
-    df_history = pd.DataFrame(all_data).sort_values("timestamp")
+    df_history = pd.DataFrame(all_data)
 
-    metric_cols = [c for c in df_history.columns if c not in ["timestamp", "block"]]
+    # Merge with Training History (for IPIP parameters)
+    metrics_dir = project_root / "pipelines" / pipeline_name / "metrics"
+    train_hist_path = metrics_dir / "training_history.json"
+
+    if train_hist_path.exists():
+        try:
+            train_hist_data = _read_json_cached(
+                str(train_hist_path), _mtime(str(train_hist_path))
+            )
+            if train_hist_data:
+                df_train_hist = pd.DataFrame(train_hist_data)
+                # Ensure we have a join key, usually 'block'
+                if "block" in df_train_hist.columns and not df_history.empty:
+                    # Filter useful cols
+                    train_cols = [
+                        c
+                        for c in df_train_hist.columns
+                        if c
+                        in [
+                            "block",
+                            "p",
+                            "b",
+                            "num_ensembles",
+                            "replacement_percentage",
+                        ]
+                    ]
+                    df_train_subset = df_train_hist[train_cols].copy()
+                    df_train_subset["block"] = df_train_subset["block"].astype(str)
+
+                    df_history = pd.merge(
+                        df_history, df_train_subset, on="block", how="left"
+                    )
+        except Exception as e:
+            st.warning(f"Could not load training parameters from history: {e}")
+
+    # Plot metrics
+    # Exclude non-numeric or non-relevant columns
+    exclude_cols = ["timestamp", "block", "error_y", "datetime"]
+    metric_cols = [c for c in df_history.columns if c not in exclude_cols]
+
     if not metric_cols:
         st.info("No metrics found in historical data.")
         return
 
-    metric_to_plot = st.selectbox("Select Metric", options=metric_cols)
+    # Default to balanced_accuracy if available, else first metric
+    default_ix = (
+        metric_cols.index("balanced_accuracy")
+        if "balanced_accuracy" in metric_cols
+        else 0
+    )
+
+    metric_to_plot = st.selectbox(
+        "Select Metric or Parameter to Plot", options=metric_cols, index=default_ix
+    )
 
     # Calculate 95% CI if metric is accuracy-like and support is available
-    if "support" in df_history.columns and metric_to_plot in [
+    # ONLY for actual performance metrics, not parameters like 'p' or 'b'
+    is_performance_metric = metric_to_plot in [
         "accuracy",
         "balanced_accuracy",
-    ]:
+        "f1",
+        "precision",
+        "recall",
+    ]
+
+    if is_performance_metric and "support" in df_history.columns:
         # Standard Error = sqrt(p * (1-p) / n)
         # 95% CI = 1.96 * SE
         df_history["error_y"] = 1.96 * np.sqrt(
@@ -574,7 +588,7 @@ def show_historical_performance_section(pipeline_name: str):
 
     fig.update_layout(
         title=f"Historical {metric_to_plot} by Block (with 95% CI)"
-        if "error_y" in df_history.columns
+        if (is_performance_metric and "error_y" in df_history.columns)
         else f"Historical {metric_to_plot} by Block",
         xaxis_title="Timestamp",
         yaxis_title=metric_to_plot,
@@ -654,6 +668,86 @@ def show_ipip_section(pipeline_name: str):
         _safe_plot(fig)
     else:
         st.info("No ensemble information available.")
+
+
+# =========================
+# Custom Evolution Section
+# =========================
+def show_ipip_evolution_section(pipeline_name: str):
+    """
+    Displays the enhanced 'Evolution' tab for IPIP results.
+    1. Shows general lifecycle decisions and approval history (generic).
+    2. Shows IPIP internal parameter evolution (p, b, ensembles, replacement %).
+    """
+    # 1. Generic History (Approval, Decision Timeline, Eval Metrics)
+    show_evolution_section(pipeline_name)
+
+    st.markdown("---")
+    st.subheader("⚙️ IPIP Parameter Evolution")
+
+    project_root = get_pipelines_root()
+    metrics_dir = project_root / "pipelines" / pipeline_name / "metrics"
+    history_path = metrics_dir / "training_history.json"
+
+    if history_path.exists():
+        history_data = _read_json_cached(str(history_path), _mtime(str(history_path)))
+        if history_data:
+            df_hist = pd.DataFrame(history_data)
+
+            # Ensure we have block information or index to plot against
+            # Usually we use 'block' column if it exists, or just index
+            x_axis = "block" if "block" in df_hist.columns else None
+
+            # --- Plot 1: p and b ---
+            if "p" in df_hist.columns and "b" in df_hist.columns:
+                fig_params = px.line(
+                    df_hist,
+                    x=x_axis,
+                    y=["p", "b"],
+                    title="Evolution of Adaptation Parameters (p & b)",
+                    markers=True,
+                    labels={"value": "Parameter Value", "variable": "Parameter"},
+                )
+                _safe_plot(fig_params)
+
+            # --- Plot 2: Ensembles ---
+            if "num_ensembles" in df_hist.columns:
+                fig_ensembles = px.line(
+                    df_hist,
+                    x=x_axis,
+                    y="num_ensembles",
+                    title="Evolution of Model Complexity (Number of Ensembles)",
+                    markers=True,
+                    labels={"num_ensembles": "Ensembles count"},
+                )
+                _safe_plot(fig_ensembles)
+
+            # --- Plot 3: Replacement Percentage ---
+            if "replacement_percentage" in df_hist.columns:
+                # Fill N/A with 0 for initial train
+                df_hist["replacement_percentage"] = df_hist[
+                    "replacement_percentage"
+                ].fillna(0)
+
+                fig_repl = px.bar(
+                    df_hist,
+                    x=x_axis,
+                    y="replacement_percentage",
+                    title="Replacement Percentage per Block (Model Renewal Rate)",
+                    labels={"replacement_percentage": "Replacement %"},
+                    color="replacement_percentage",
+                    color_continuous_scale="Viridis",
+                )
+                _safe_plot(fig_repl)
+
+            with st.expander("Raw Parameter Data"):
+                _safe_table(df_hist)
+        else:
+            st.info("Training history file is empty.")
+    else:
+        st.info(
+            "No `training_history.json` found. Run the pipeline to generate history."
+        )
 
 
 # =========================
@@ -794,6 +888,7 @@ tab_names = [
     "Dataset",
     "Train/Retrain",
     "Evaluator",
+    "Historical Performance",  # Explicitly separate from Evolution
     "Evolution",
     "IPIP Model",
     "Logs",
@@ -802,13 +897,22 @@ tabs = st.tabs(tab_names)
 
 with tabs[0]:
     show_dataset_section(df, last_file, pipeline_name, block_col)
+
 with tabs[1]:
     show_train_section(pipeline_name)
+
 with tabs[2]:
     show_evaluator_section(pipeline_name)
+
 with tabs[3]:
-    show_evolution_section(pipeline_name)
+    show_historical_performance_section(pipeline_name)
+
 with tabs[4]:
-    show_ipip_section(pipeline_name)
+    # Use the new IPIP specific evolution section
+    show_ipip_evolution_section(pipeline_name)
+
 with tabs[5]:
+    show_ipip_section(pipeline_name)
+
+with tabs[6]:
     show_logs_section(pipeline_name)

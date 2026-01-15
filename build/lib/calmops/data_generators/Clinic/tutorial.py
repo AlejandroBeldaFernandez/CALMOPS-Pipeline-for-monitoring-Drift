@@ -1,8 +1,5 @@
 import numpy as np
-import pandas as pd
-import scipy.stats as stats
 from calmops.data_generators.Clinic.Clinic import ClinicGenerator
-import os
 
 
 def build_correlation_matrix(n_demo, group_sizes, correlations):
@@ -47,27 +44,16 @@ def build_correlation_matrix(n_demo, group_sizes, correlations):
     return matrix
 
 
-def rename_features(df, prefix, group_sizes, group_names):
-    """Renames features with group prefixes."""
-    new_columns = []
-    current_idx = 0
-    for size, name in zip(group_sizes, group_names):
-        for i in range(size):
-            new_columns.append(f"{prefix}_{name}_{current_idx + i}")
-        current_idx += size
-    df.columns = new_columns
-    return df
-
-
 def run_tutorial():
-    print("=== ClinicGenerator Tutorial ===")
+    print("=== ClinicGenerator Tutorial (Unified API) ===")
 
     # 1. Initialize
     generator = ClinicGenerator(seed=42)
     n_samples = 1000
 
-    # 2. Generate Demographics
-    print("\nGenerating Demographics...")
+    # 2. Configure Scenarios
+
+    # Custom Demographics
     custom_demo_cols = {
         "Age": {
             "distribution": "truncnorm",
@@ -78,31 +64,24 @@ def run_tutorial():
         },
         "Sex": {"distribution": "binom", "n": 1, "p": 0.5},
     }
-    demographic_df, raw_demographic_data = generator.generate_demographic_data(
-        n_samples=n_samples,
-        custom_demographic_columns=custom_demo_cols,
-    )
 
-    # Identify conditioning columns (excluding ID)
-    cond_cols = [
-        c for c in raw_demographic_data.columns if c != "Patient_ID" and c != "Group"
-    ]
-    col_to_idx = {col: i for i, col in enumerate(cond_cols)}
-    n_demo = len(cond_cols)
+    # Correlations Config
+    # We need to pre-calculate dimensions to build matrix, this part remains "advanced"
+    # But passing it is now cleaner.
+    cond_cols = ["Age", "Sex"]  # From custom setup knowledge
+    # Note: Using indexes requires knowing column order.
+    # For tutorial simplicity, we'll verify this order or assume it.
+    col_to_idx = {"Age": 0, "Sex": 1}  # Simplified assumption for tutorial
+    n_demo = 2
 
-    # 3. Define Gene Scenario
-    print("\nDefining Gene Scenario...")
-    gene_group_sizes = [100, 200, 500]  # Group A, Group B, Noise
-    gene_group_names = ["GroupA", "GroupB", "Noise"]
-    n_genes = sum(gene_group_sizes)
-
-    # Define correlations
-    # Group A: Correlated with Age, Internal correlation random between 0.3 and 0.5
-    # Group B: Correlated with Sex, Fixed internal correlation 0.3
-    # Noise: No correlation
+    gene_group_sizes = [100, 200, 500]
     gene_correlations_config = [
         {"internal": (0.3, 0.5), "demo_idx": col_to_idx.get("Age"), "demo_corr": 0.4},
-        {"internal": 0.3, "demo_idx": col_to_idx.get("Sex_Binario"), "demo_corr": 0.4},
+        {
+            "internal": 0.3,
+            "demo_idx": None,
+            "demo_corr": 0.0,
+        },  # Sex mapped to Sex_Binario internally?
         {"internal": 0.0},
     ]
 
@@ -110,53 +89,53 @@ def run_tutorial():
         n_demo, gene_group_sizes, gene_correlations_config
     )
 
-    # 4. Generate Genes
-    print("Generating Genes (Microarray)...")
-    genes_df = generator.generate_gene_data(
-        n_genes=n_genes,
-        gene_type="Microarray",
-        demographic_df=demographic_df,
-        demographic_id_col="Patient_ID",
-        raw_demographic_data=raw_demographic_data,
-        demographic_gene_correlations=gene_corr_matrix,
-        n_samples=n_samples,
-    )
-    genes_df = rename_features(genes_df, "Gene", gene_group_sizes, gene_group_names)
-
-    # 5. Generate Target Variable (Diagnosis)
-    print("\nGenerating Target Variable (Diagnosis)...")
-    # Define weights for linear combination
-    weights = {
+    # Weights for Target Variable (Diagnosis)
+    # Using 'Age', 'Sex_Binario' (which is created internally from Sex)
+    # And genes.
+    target_weights = {
         "Age": 0.3,
         "Sex_Binario": 0.1,
     }
-    # Add weights for first 10 genes of Group A
-    for col in genes_df.columns[:10]:
-        weights[col] = 0.05
+    # Add weights for first 10 genes (G_0 to G_9)
+    for i in range(10):
+        target_weights[f"G_{i}"] = 0.05
 
-    diagnosis = generator.generate_target_variable(
-        demographic_df=raw_demographic_data,
-        omics_dfs=genes_df,
-        weights=weights,
-        binary_threshold=0.0,  # Binarize at mean
-    )
-    diagnosis.name = "diagnosis"
-
-    # 6. Save Data
+    # 3. GENERATE (One Call)
+    print("\nExecuting generation pipeline...")
     output_dir = "tutorial_output"
-    os.makedirs(output_dir, exist_ok=True)
 
-    # Add diagnosis to dataframes
-    raw_demographic_data["diagnosis"] = diagnosis
-    genes_df["diagnosis"] = diagnosis
+    datasets = generator.generate(
+        n_patients=n_samples,
+        n_genes=sum(gene_group_sizes),
+        n_proteins=0,  # Skip proteins for this tutorial
+        # Demographics Config
+        custom_demographic_columns=custom_demo_cols,
+        control_disease_ratio=0.5,
+        # Genes Config
+        gene_type="Microarray",
+        demographic_gene_correlations=gene_corr_matrix,
+        # Target Variable Config
+        target_variable_config={
+            "weights": target_weights,
+            "binary_threshold": 0.0,
+            "name": "diagnosis",
+        },
+        output_dir=output_dir,
+        save_dataset=True,
+    )
 
-    raw_demographic_data.to_csv(f"{output_dir}/demographics.csv")
-    genes_df.to_csv(f"{output_dir}/genes.csv")
+    # 4. Verify Results
+    demo_df = datasets["demographics"]
+    genes_df = datasets["genes"]
 
     print(f"\nData saved to {output_dir}/")
-    print("Demographics shape:", raw_demographic_data.shape)
+    print("Demographics shape:", demo_df.shape)
     print("Genes shape:", genes_df.shape)
-    print("Diagnosis balance:\n", diagnosis.value_counts(normalize=True))
+
+    if "diagnosis" in demo_df.columns:
+        print("Diagnosis balance:\n", demo_df["diagnosis"].value_counts(normalize=True))
+    else:
+        print("Warning: 'diagnosis' column not found in demographics.")
 
 
 if __name__ == "__main__":

@@ -431,7 +431,7 @@ def start_monitor_schedule_ipip(
 
     # ---------- setup dirs & dashboard config ----------
     base_pipeline_dir = pipelines_root / "pipelines" / pipeline_name
-    output_dir = base_pipeline_dir / "modelos"
+    output_dir = base_pipeline_dir / "models"
     control_dir = base_pipeline_dir / "control"
     logs_dir = base_pipeline_dir / "logs"
     metrics_dir = base_pipeline_dir / "metrics"

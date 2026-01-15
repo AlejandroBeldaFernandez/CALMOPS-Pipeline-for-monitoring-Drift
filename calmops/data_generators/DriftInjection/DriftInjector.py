@@ -17,7 +17,7 @@ Key Features:
 
 import pandas as pd
 import numpy as np
-from typing import List, Optional, Dict, Sequence, Tuple, Any
+from typing import List, Optional, Dict, Sequence, Tuple, Any, Union
 import warnings
 import os
 
@@ -25,8 +25,6 @@ import os
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-# from data_generators.Real.RealReporter import RealReporter
 
 
 class DriftInjector:
@@ -39,45 +37,48 @@ class DriftInjector:
     # -------------------------
     def __init__(
         self,
-        original_df: pd.DataFrame,
-        output_dir: str,
-        generator_name: str,
-        target_column: Optional[str] = None,
-        block_column: Optional[str] = None,
-        time_col: Optional[str] = None,
+        output_dir: str = "drift_output",
+        generator_name: str = "DriftInjector",
         random_state: Optional[int] = None,
+        time_col: Optional[str] = None,
+        block_column: Optional[str] = None,
+        target_column: Optional[str] = None,
+        original_df: Optional[pd.DataFrame] = None,
     ):
         """
         Initializes the DriftInjector.
 
         Args:
-            original_df (pd.DataFrame): The original, clean DataFrame.
-            output_dir (str): Directory to save reports and drifted datasets.
-            generator_name (str): A name for the generator, used in output file names.
-            target_column (Optional[str]): The name of the target variable column.
-            block_column (Optional[str]): The name of the column defining data blocks or chunks.
-            time_col (Optional[str]): The name of the timestamp column.
+            output_dir (str): Default directory to save reports and drifted datasets.
+            generator_name (str): Default name for the generator, used in output file names.
             random_state (Optional[int]): Seed for the random number generator for reproducibility.
         """
         self.rng = np.random.default_rng(random_state)
-
-        self.original_df = original_df
         self.output_dir = output_dir
         self.generator_name = generator_name
-        self.target_column = target_column
-        self.block_column = block_column
+        self.random_state = random_state
         self.time_col = time_col
+        self.block_column = block_column
+        self.target_column = target_column
+
         from calmops.data_generators.Real.RealReporter import RealReporter
 
         self.reporter = RealReporter()
-        os.makedirs(self.output_dir, exist_ok=True)  # Ensure output_dir exists
+
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
 
     def _frac(self, x: float) -> float:
         """Clips a float to the [0.0, 1.0] range."""
         return float(np.clip(x, 0.0, 1.0))
 
     def _generate_reports(
-        self, original_df, drifted_df, drift_config, time_col: Optional[str] = None
+        self,
+        original_df,
+        drifted_df,
+        drift_config,
+        time_col: Optional[str] = None,
+        resample_rule: Optional[Union[str, int]] = None,
     ):
         """Helper to generate the standard report."""
         # Generate the primary report in the main output directory
@@ -87,6 +88,7 @@ class DriftInjector:
             output_dir=self.output_dir,
             drift_config=drift_config,
             time_col=time_col,
+            resample_rule=resample_rule,
         )
 
     def _ensure_psd_matrix(self, matrix: np.ndarray) -> np.ndarray:
@@ -118,14 +120,19 @@ class DriftInjector:
         time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
         specific_times: Optional[Sequence[str]] = None,
         time_step: Optional[Any] = None,
+        **kwargs,
     ) -> pd.Index:
         """
         Selects rows for drift injection based on a hierarchy of criteria.
         """
+        # Fallback to instance attributes if not provided
+        block_column = block_column or self.block_column
+        time_col = time_col or self.time_col
+
         if time_start or time_end or time_ranges or specific_times:
             return self._select_rows_by_time(
                 df,
-                time_col=time_col or self.time_col,
+                time_col=time_col,
                 time_start=time_start,
                 time_end=time_end,
                 time_ranges=time_ranges,
@@ -135,173 +142,14 @@ class DriftInjector:
         if blocks is not None or block_start is not None:
             return self._select_rows_by_blocks(
                 df,
-                block_column=block_column or self.block_column,
+                block_column=block_column,
                 blocks=blocks,
                 block_start=block_start,
                 n_blocks=n_blocks,
                 block_step=block_step,
             )
         if block_index is not None:
-            used_block_column = block_column or self.block_column
-            if used_block_column not in df.columns:
-                raise ValueError(f"Block column '{used_block_column}' not found")
-            return df.index[df[used_block_column] == block_index]
-        if start_index is not None or end_index is not None:
-            return self._select_rows_by_index(df, start_index, end_index, index_step)
-
-        return df.index
-
-    def _select_rows_by_index(
-        self,
-        df: pd.DataFrame,
-        start: Optional[int] = None,
-        end: Optional[int] = None,
-        step: Optional[int] = None,
-    ) -> pd.Index:
-        """
-        Selects rows by index range and step.
-        """
-        start = start if start is not None else 0
-        end = end if end is not None else len(df)
-        step = step if step is not None else 1
-        return df.iloc[start:end:step].index
-
-    # -------------------------
-    # Advanced time selection
-    # -------------------------
-
-
-import pandas as pd
-import numpy as np
-from typing import List, Optional, Dict, Sequence, Tuple, Any
-import warnings
-import os
-
-# Suppress common warnings for cleaner output
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-# from data_generators.Real.RealReporter import RealReporter
-
-
-class DriftInjector:
-    """
-    A class to inject various types of drift into a pandas DataFrame.
-    """
-
-    # -------------------------
-    # Init & utils
-    # -------------------------
-    def __init__(
-        self,
-        original_df: pd.DataFrame,
-        output_dir: str,
-        generator_name: str,
-        target_column: Optional[str] = None,
-        block_column: Optional[str] = None,
-        time_col: Optional[str] = None,
-        random_state: Optional[int] = None,
-    ):
-        """
-        Initializes the DriftInjector.
-
-        Args:
-            original_df (pd.DataFrame): The original, clean DataFrame.
-            output_dir (str): Directory to save reports and drifted datasets.
-            generator_name (str): A name for the generator, used in output file names.
-            target_column (Optional[str]): The name of the target variable column.
-            block_column (Optional[str]): The name of the column defining data blocks or chunks.
-            time_col (Optional[str]): The name of the timestamp column.
-            random_state (Optional[int]): Seed for the random number generator for reproducibility.
-        """
-        self.rng = np.random.default_rng(random_state)
-
-        self.original_df = original_df
-        self.output_dir = output_dir
-        self.generator_name = generator_name
-        self.target_column = target_column
-        self.block_column = block_column
-        self.time_col = time_col
-        from calmops.data_generators.Real.RealReporter import RealReporter
-
-        self.time_col = time_col
-        from calmops.data_generators.Real.RealReporter import RealReporter
-
-        self.reporter = RealReporter()
-        os.makedirs(self.output_dir, exist_ok=True)  # Ensure output_dir exists
-
-    def _frac(self, x: float) -> float:
-        """Clips a float to the [0.0, 1.0] range."""
-        return float(np.clip(x, 0.0, 1.0))
-
-    def _generate_reports(
-        self, original_df, drifted_df, drift_config, time_col: Optional[str] = None
-    ):
-        """Helper to generate the standard report."""
-        # Generate the primary report in the main output directory
-        self.reporter.update_report_after_drift(
-            original_df=original_df,
-            drifted_df=drifted_df,
-            output_dir=self.output_dir,
-            drift_config=drift_config,
-            time_col=time_col,
-        )
-
-    def _ensure_psd_matrix(self, matrix: np.ndarray) -> np.ndarray:
-        """Ensures a matrix is positive semi-definite (PSD) by adjusting its eigenvalues."""
-        eigenvalues, eigenvectors = np.linalg.eigh(matrix)
-        eigenvalues[eigenvalues < 1e-6] = 1e-6  # Clamp small eigenvalues
-        psd_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
-        # Renormalize to have 1s on the diagonal
-        d = np.sqrt(np.diag(psd_matrix))
-        d_inv = np.where(d > 1e-9, 1.0 / d, 0)
-        psd_matrix = np.diag(d_inv) @ psd_matrix @ np.diag(d_inv)
-        return psd_matrix
-
-    def _get_target_rows(
-        self,
-        df: pd.DataFrame,
-        start_index: Optional[int] = None,
-        end_index: Optional[int] = None,
-        index_step: Optional[int] = None,
-        block_index: Optional[int] = None,
-        block_column: Optional[str] = None,
-        blocks: Optional[Sequence] = None,
-        block_start: Optional[object] = None,
-        n_blocks: Optional[int] = None,
-        block_step: Optional[int] = None,
-        time_col: Optional[str] = None,
-        time_start: Optional[str] = None,
-        time_end: Optional[str] = None,
-        time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
-        specific_times: Optional[Sequence[str]] = None,
-        time_step: Optional[Any] = None,
-    ) -> pd.Index:
-        """
-        Selects rows for drift injection based on a hierarchy of criteria.
-        """
-        if time_start or time_end or time_ranges or specific_times:
-            return self._select_rows_by_time(
-                df,
-                time_col=time_col or self.time_col,
-                time_start=time_start,
-                time_end=time_end,
-                time_ranges=time_ranges,
-                specific_times=specific_times,
-                time_step=time_step,
-            )
-        if blocks is not None or block_start is not None:
-            return self._select_rows_by_blocks(
-                df,
-                block_column=block_column or self.block_column,
-                blocks=blocks,
-                block_start=block_start,
-                n_blocks=n_blocks,
-                block_step=block_step,
-            )
-        if block_index is not None:
-            used_block_column = block_column or self.block_column
+            used_block_column = block_column
             if used_block_column not in df.columns:
                 raise ValueError(f"Block column '{used_block_column}' not found")
             return df.index[df[used_block_column] == block_index]
@@ -642,11 +490,15 @@ class DriftInjector:
         start_index: Optional[int] = None,
         block_index: Optional[int] = None,
         block_column: Optional[str] = None,
+        time_col: Optional[str] = None,
         time_start: Optional[str] = None,
         time_end: Optional[str] = None,
         time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
         specific_times: Optional[Sequence[str]] = None,
         auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+        **kwargs,
     ) -> pd.DataFrame:
         """
         Applies drift at once based on various selection criteria.
@@ -655,7 +507,10 @@ class DriftInjector:
             df, feature_cols, drift_type, drift_magnitude, drift_value, drift_values: Core drift parameters.
             start_index, block_index, block_column: Index and block-based selection.
             time_start, time_end, time_ranges, specific_times: Time-based selection.
+            time_col: The timestamp column used for time selection.
             auto_report: Whether to generate a report.
+            output_dir: Directory for reports (overrides init default).
+            generator_name: Name for reports (overrides init default).
         """
         self._validate_feature_op(drift_type, drift_magnitude)
         df_drift = df.copy()
@@ -664,10 +519,12 @@ class DriftInjector:
             start_index=start_index,
             block_index=block_index,
             block_column=block_column,
+            time_col=time_col,
             time_start=time_start,
             time_end=time_end,
             time_ranges=time_ranges,
             specific_times=specific_times,
+            **kwargs,
         )
 
         w = np.ones(len(rows), dtype=float)
@@ -706,6 +563,9 @@ class DriftInjector:
                 df_drift.loc[rows, col] = s2
 
         if auto_report:
+            gen_name = generator_name or self.generator_name
+            out_dir = output_dir or self.output_dir
+
             drift_config = {
                 "drift_method": "inject_feature_drift",
                 "feature_cols": feature_cols,
@@ -714,13 +574,20 @@ class DriftInjector:
                 "start_index": start_index,
                 "block_index": block_index,
                 "time_start": time_start,
-                "generator_name": f"{self.generator_name}_feature_drift",
+                "generator_name": f"{gen_name}_feature_drift",
             }
-            df_drift.to_csv(
-                os.path.join(self.output_dir, f"{drift_config['generator_name']}.csv"),
-                index=False,
-            )
-            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
+            if out_dir:
+                df_drift.to_csv(
+                    os.path.join(out_dir, f"{drift_config['generator_name']}.csv"),
+                    index=False,
+                )
+                self._generate_reports(
+                    df,
+                    df_drift,
+                    drift_config,
+                    time_col=time_col,
+                    resample_rule=kwargs.get("resample_rule"),
+                )
         return df_drift
 
     # -------------------------
@@ -740,6 +607,7 @@ class DriftInjector:
         blocks: Optional[Sequence] = None,
         block_start: Optional[object] = None,
         n_blocks: Optional[int] = None,
+        time_col: Optional[str] = None,
         time_start: Optional[str] = None,
         time_end: Optional[str] = None,
         time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
@@ -751,6 +619,9 @@ class DriftInjector:
         direction: str = "up",
         inconsistency: float = 0.0,
         auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+        resample_rule: Optional[Union[str, int]] = None,
     ) -> pd.DataFrame:
         """
         Injects gradual drift on selected rows using a transition window.
@@ -812,58 +683,32 @@ class DriftInjector:
                 df_drift.loc[rows, col] = s2
 
         if auto_report:
-            # Reporting logic remains here
-            pass
+            gen_name = generator_name or self.generator_name
+            out_dir = output_dir or self.output_dir
+            drift_config = {
+                "drift_method": "inject_feature_drift_gradual",
+                "feature_cols": feature_cols,
+                "drift_type": drift_type,
+                "drift_magnitude": drift_magnitude,
+                "profile": profile,
+                "center": center,
+                "width": width,
+                "inconsistency": inconsistency,
+                "generator_name": f"{gen_name}_feature_gradual",
+            }
+            if out_dir:
+                df_drift.to_csv(
+                    os.path.join(out_dir, f"{drift_config['generator_name']}.csv"),
+                    index=False,
+                )
+                self._generate_reports(
+                    df,
+                    df_drift,
+                    drift_config,
+                    time_col=time_col,
+                    resample_rule=resample_rule,
+                )
         return df_drift
-
-    def inject_feature_drift_abrupt(
-        self,
-        df: pd.DataFrame,
-        feature_cols: List[str],
-        drift_type: str,
-        drift_magnitude: float,
-        start_index: Optional[int] = None,
-        block_index: Optional[int] = None,
-        block_column: Optional[str] = None,
-        blocks: Optional[Sequence] = None,
-        block_start: Optional[object] = None,
-        n_blocks: Optional[int] = None,
-        time_start: Optional[str] = None,
-        time_end: Optional[str] = None,
-        time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
-        specific_times: Optional[Sequence[str]] = None,
-        change_index: Optional[int] = None,
-        width: int = 3,
-        direction: str = "up",
-        auto_report: bool = True,
-        **kwargs,
-    ) -> pd.DataFrame:
-        """
-        Injects abrupt drift, implemented as a very narrow and steep sigmoid transition.
-        """
-        return self.inject_feature_drift_gradual(
-            df=df,
-            feature_cols=feature_cols,
-            drift_type=drift_type,
-            drift_magnitude=drift_magnitude,
-            start_index=start_index,
-            block_index=block_index,
-            block_column=block_column,
-            blocks=blocks,
-            block_start=block_start,
-            n_blocks=n_blocks,
-            time_start=time_start,
-            time_end=time_end,
-            time_ranges=time_ranges,
-            specific_times=specific_times,
-            center=change_index,
-            width=max(1, int(width)),
-            profile="sigmoid",
-            speed_k=5.0,
-            direction=direction,
-            auto_report=auto_report,
-            **kwargs,
-        )
 
     def inject_feature_drift_incremental(
         self,
@@ -1253,6 +1098,233 @@ class DriftInjector:
     # -------------------------
     # Target distribution drift
     # -------------------------
+    def inject_outliers_global(
+        self,
+        df: pd.DataFrame,
+        cols: List[str],
+        outlier_prob: float = 0.05,
+        factor: float = 3.0,
+        start_index: Optional[int] = None,
+        block_index: Optional[int] = None,
+        block_column: Optional[str] = None,
+        time_col: Optional[str] = None,
+        time_start: Optional[str] = None,
+        time_end: Optional[str] = None,
+        time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
+        specific_times: Optional[Sequence[str]] = None,
+        auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Injects global outliers by scaling values by a factor.
+        """
+        df_drift = df.copy()
+        rows = self._get_target_rows(
+            df,
+            start_index=start_index,
+            block_index=block_index,
+            block_column=block_column,
+            time_start=time_start,
+            time_end=time_end,
+            time_ranges=time_ranges,
+            specific_times=specific_times,
+            time_col=time_col,
+        )
+
+        for col in cols:
+            if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+                # Randomly select rows to outlier
+                mask = self.rng.random(len(rows)) < outlier_prob
+                outlier_rows = rows[mask]
+
+                # Apply factor (random sign)
+                signs = self.rng.choice([-1, 1], size=len(outlier_rows))
+                df_drift.loc[outlier_rows, col] += (
+                    factor * df_drift.loc[outlier_rows, col].std() * signs
+                )
+            else:
+                warnings.warn(f"Global outliers failed for column {col}.")
+
+        if auto_report:
+            gen_name = generator_name or self.generator_name
+            out_dir = output_dir or self.output_dir
+            drift_config = {
+                "drift_method": "inject_outliers_global",
+                "cols": cols,
+                "outlier_prob": outlier_prob,
+                "factor": factor,
+                "start_index": start_index,
+                "block_index": block_index,
+                "time_start": time_start,
+                "generator_name": f"{gen_name}_global_outliers",
+            }
+            if out_dir:
+                df_drift.to_csv(
+                    os.path.join(out_dir, f"{drift_config['generator_name']}.csv"),
+                    index=False,
+                )
+
+        return df_drift
+
+    # -------------------------
+    def inject_new_value(
+        self,
+        df: pd.DataFrame,
+        cols: List[str],
+        new_value: Any,  # Or a distribution function
+        prob: float = 1.0,
+        start_index: Optional[int] = None,
+        block_index: Optional[int] = None,
+        block_column: Optional[str] = None,
+        time_col: Optional[str] = None,
+        time_start: Optional[str] = None,
+        time_end: Optional[str] = None,
+        time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
+        specific_times: Optional[Sequence[str]] = None,
+        auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Injects a completely new value into a column (Categorical shift).
+        """
+        df_drift = df.copy()
+        rows = self._get_target_rows(
+            df,
+            start_index=start_index,
+            block_index=block_index,
+            block_column=block_column,
+            time_start=time_start,
+            time_end=time_end,
+            time_ranges=time_ranges,
+            specific_times=specific_times,
+            time_col=time_col,
+            **kwargs,
+        )
+
+        for col in cols:
+            if col in df.columns:
+                mask = self.rng.random(len(rows)) < prob
+                rows_mod = rows[mask]
+                df_drift.loc[rows_mod, col] = new_value
+            else:
+                warnings.warn(f"New value injection failed: {col} not found")
+
+        if auto_report:
+            gen_name = generator_name or self.generator_name
+            out_dir = output_dir or self.output_dir
+            drift_config = {
+                "drift_method": "inject_new_value",
+                "cols": cols,
+                "new_value": str(new_value),
+                "prob": prob,
+                "start_index": start_index,
+                "block_index": block_index,
+                "time_start": time_start,
+                "generator_name": f"{gen_name}_new_value",
+            }
+            if out_dir:
+                df_drift.to_csv(
+                    os.path.join(out_dir, f"{drift_config['generator_name']}.csv"),
+                    index=False,
+                )
+                self._generate_reports(df, df_drift, drift_config, time_col=time_col)
+        return df_drift
+
+    def inject_data_quality_issues(
+        self,
+        df: pd.DataFrame,
+        issues: List[Dict],
+        block_column: Optional[str] = None,
+        time_col: Optional[str] = None,
+        auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Orchestrates multiple data quality issues (drifts).
+        """
+        df_drift = df.copy()
+
+        for issue in issues:
+            method_name = issue.get("method")
+            params = issue.get("params", {})
+
+            # Inject df and context if not present
+            if "df" not in params:
+                params["df"] = df_drift
+            if "time_col" not in params:
+                params["time_col"] = time_col
+            if "block_column" not in params and block_column:
+                params["block_column"] = block_column
+            if "auto_report" not in params:
+                params["auto_report"] = (
+                    False  # Don't report individual steps if orchestrating?
+                )
+                # Or maybe set to False and report at the end?
+
+            if hasattr(self, method_name):
+                method = getattr(self, method_name)
+                try:
+                    df_drift = method(**params)
+                except Exception as e:
+                    print(f"Failed to apply {method_name}: {e}")
+            else:
+                print(f"Method {method_name} not found")
+
+        if auto_report:
+            gen_name = generator_name or self.generator_name
+            out_dir = output_dir or self.output_dir
+            drift_config = {
+                "drift_method": "inject_data_quality_issues",
+                "issues": issues,
+                "generator_name": f"{gen_name}_data_quality",
+            }
+            if out_dir:
+                df_drift.to_csv(
+                    os.path.join(out_dir, f"{drift_config['generator_name']}.csv"),
+                    index=False,
+                )
+                self._generate_reports(df, df_drift, drift_config, time_col=time_col)
+        return df_drift
+
+    # -------------------------
+    def inject_nulls(
+        self,
+        df: pd.DataFrame,
+        cols: List[str],
+        prob: float = 0.1,
+        start_index: Optional[int] = None,
+        block_index: Optional[int] = None,
+        block_column: Optional[str] = None,
+        time_col: Optional[str] = None,
+        time_start: Optional[str] = None,
+        time_end: Optional[str] = None,
+        time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
+        specific_times: Optional[Sequence[str]] = None,
+        auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Injects Nulls/NaNs completely at random (MCAR).
+        """
+        return self.inject_missing_values_drift(
+            df=df,
+            feature_cols=cols,
+            missing_fraction=prob,
+            start_index=start_index,
+            block_index=block_index,
+            block_column=block_column,
+            time_start=time_start,
+            time_end=time_end,
+            time_ranges=time_ranges,
+            specific_times=specific_times,
+        )
+
+    # -------------------------
     def inject_label_shift(
         self,
         df: pd.DataFrame,
@@ -1282,6 +1354,314 @@ class DriftInjector:
             specific_times=specific_times,
         )
         # ... rest of the logic
+        return df_drift
+
+    # -------------------------
+    # Target distribution drift
+    # -------------------------
+    def inject_concept_drift(
+        self,
+        df: pd.DataFrame,
+        concept_drift_type: str = "label_flip",
+        concept_drift_magnitude: float = 0.2,
+        start_index: Optional[int] = None,
+        block_index: Optional[int] = None,
+        block_column: Optional[str] = None,
+        target_column: Optional[str] = None,
+        time_col: Optional[str] = None,
+        time_start: Optional[str] = None,
+        time_end: Optional[str] = None,
+        time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
+        specific_times: Optional[Sequence[str]] = None,
+        auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Injects concept drift locally on selected rows.
+        """
+        if not target_column:
+            raise ValueError("target_column must be provided for concept drift.")
+
+        if target_column not in df.columns:
+            raise ValueError(f"Target column '{target_column}' not found")
+
+        rows = self._get_target_rows(
+            df,
+            start_index=start_index,
+            block_index=block_index,
+            block_column=block_column,
+            time_col=time_col,
+            time_start=time_start,
+            time_end=time_end,
+            time_ranges=time_ranges,
+            specific_times=specific_times,
+        )
+
+        df_drift = df.copy()
+
+        # Logic for drift types
+        if concept_drift_type == "label_flip":
+            # Flip a fraction of labels
+            rows_to_flip = self.rng.choice(
+                rows, size=int(len(rows) * concept_drift_magnitude), replace=False
+            )
+
+            # Assuming binary or categorical. If binary 0/1, just 1-x.
+            # If categorical, pick another random category.
+            unique_labels = df[target_column].unique()
+            if len(unique_labels) == 2 and {0, 1}.issubset(
+                unique_labels
+            ):  # Binary numeric
+                df_drift.loc[rows_to_flip, target_column] = (
+                    1 - df_drift.loc[rows_to_flip, target_column]
+                )
+            else:
+                # General categorical flip
+                for r in rows_to_flip:
+                    current_val = df_drift.at[r, target_column]
+                    possible_vals = [v for v in unique_labels if v != current_val]
+                    if possible_vals:
+                        df_drift.at[r, target_column] = self.rng.choice(possible_vals)
+
+        if auto_report:
+            gen_name = generator_name or self.generator_name
+            out_dir = output_dir or self.output_dir
+
+            drift_config = {
+                "drift_method": "inject_concept_drift",
+                "concept_drift_type": concept_drift_type,
+                "magnitude": concept_drift_magnitude,
+                "start_index": start_index,
+                "block_index": block_index,
+                "time_start": time_start,
+                "generator_name": f"{gen_name}_concept_drift",
+            }
+
+            if out_dir:
+                df_drift.to_csv(
+                    os.path.join(out_dir, f"{drift_config['generator_name']}.csv"),
+                    index=False,
+                )
+                self._generate_reports(df, df_drift, drift_config, time_col=time_col)
+
+        return df_drift
+
+    # -------------------------
+    # Orchestration / Legacy Support
+    # -------------------------
+    def inject_multiple_types_of_drift(
+        self,
+        df: pd.DataFrame,
+        schedule: List[Dict[str, Any]],
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+        time_col: Optional[str] = None,
+        block_column: Optional[str] = None,
+        target_column: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Applies a sequence of drift injections defined in a schedule.
+
+        Args:
+            df (pd.DataFrame): The dataframe to apply drift to.
+            schedule (List[Dict[str, Any]]): A list of drift configurations.
+                Each config must have a 'method' key (e.g., 'inject_feature_drift')
+                and a 'params' dict.
+            output_dir (Optional[str]): Override output directory.
+            generator_name (Optional[str]): Override generator name.
+
+            # Global Context Overrides (optional)
+            time_col (Optional[str]): Timestamp column name.
+            block_column (Optional[str]): Block column name.
+            target_column (Optional[str]): Target column name.
+
+        Returns:
+            pd.DataFrame: The drifted dataframe.
+        """
+        current_df = df.copy()
+
+        for i, config in enumerate(schedule):
+            method_name = config.get("method")
+            params = config.get("params", {}).copy()
+
+            if not method_name or not hasattr(self, method_name):
+                warnings.warn(
+                    f"Unknown drift method '{method_name}' in schedule at index {i}. Skipping."
+                )
+                continue
+
+            # Inject global overrides if not present in params
+            if output_dir and "output_dir" not in params:
+                params["output_dir"] = output_dir
+            if generator_name and "generator_name" not in params:
+                params["generator_name"] = f"{generator_name}_step_{i}"
+
+            # Inject column context if not present
+            if time_col and "time_col" not in params:
+                params["time_col"] = time_col
+            if block_column and "block_column" not in params:
+                params["block_column"] = block_column
+            if target_column and "target_column" not in params:
+                # Some methods call use 'target_col' instead of 'target_column', handle both
+                if "target_col" not in params:
+                    params["target_col"] = target_column
+                if "target_column" not in params:
+                    params["target_column"] = target_column
+
+            # Pass 'df' as the first argument (or keyword arg)
+            # Most methods signature: method(df, ...)
+            try:
+                drift_method = getattr(self, method_name)
+                # We pass current_df as the first argument 'df'
+                # If params contains 'df', we remove it to avoid double argument
+                if "df" in params:
+                    del params["df"]
+
+                current_df = drift_method(current_df, **params)
+            except Exception as e:
+                warnings.warn(f"Failed to apply drift '{method_name}': {e}")
+
+        return current_df
+
+    def inject_feature_drift_abrupt(
+        self,
+        df: pd.DataFrame,
+        feature_cols: List[str],
+        drift_type: str = "gaussian_noise",
+        drift_magnitude: float = 0.2,
+        change_index: int = 0,
+        direction: str = "up",  # direction is unused in simple shift but kept for API compat
+        time_col: Optional[str] = None,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Alias/Wrapper for injecting abrupt drift (step change) using inject_feature_drift.
+        This corresponds to drifting all rows starting from `change_index`.
+        """
+        # "Abrupt" drift typically means a permanent change from a point onwards.
+        # We can simulate this by setting start_index=change_index in inject_feature_drift.
+        return self.inject_feature_drift(
+            df=df,
+            feature_cols=feature_cols,
+            drift_type=drift_type,
+            drift_magnitude=drift_magnitude,
+            start_index=change_index,
+            time_col=time_col,
+            output_dir=output_dir,
+            generator_name=generator_name,
+        )
+
+    # -------------------------
+    # Binary Probabilistic Drift
+    # -------------------------
+    def inject_binary_probabilistic_drift(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        probability: float = 0.4,
+        noise_range: Tuple[float, float] = (0.1, 0.7),
+        threshold: float = 0.5,
+        start_index: Optional[int] = None,
+        block_index: Optional[int] = None,
+        block_column: Optional[str] = None,
+        time_col: Optional[str] = None,
+        time_start: Optional[str] = None,
+        time_end: Optional[str] = None,
+        time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
+        specific_times: Optional[Sequence[str]] = None,
+        center: Optional[int] = None,
+        width: Optional[int] = None,
+        profile: str = "sigmoid",
+        speed_k: float = 1.0,
+        direction: str = "up",
+        auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Injects probabilistic drift into a binary/boolean variable.
+        """
+        if target_col not in df.columns:
+            raise ValueError(f"Target column '{target_col}' not found")
+
+        rows = self._get_target_rows(
+            df,
+            start_index=start_index,
+            block_index=block_index,
+            block_column=block_column,
+            time_start=time_start,
+            time_end=time_end,
+            time_ranges=time_ranges,
+            specific_times=specific_times,
+            time_col=time_col,
+        )
+
+        df_drift = df.copy()
+
+        # Simple probabilistic flip based on 'probability'
+        # Or more complex logic if 'center/width' provided for gradual drift
+        # For now, let's stick to the simpler version or use the gradual parameters if provided.
+
+        # If gradual parameters are provided, calculate probabilities
+        if center is not None and width is not None:
+            # Sort rows for gradual progression
+            rows = sorted(rows)
+            if not rows:
+                return df_drift
+
+            probs = self._calculate_drift_probabilities(
+                rows=rows,
+                center=center,
+                width=width,
+                profile=profile,
+                speed_k=speed_k,
+                direction=direction,
+                index_min=rows[0],
+                index_max=rows[-1],
+            )
+            # Adjust probabilities: base prob * gradual factor?
+            # Or replace base prob? Let's say probs is the probability of flip.
+            # But the user also provided 'probability'.
+            # Let's assume 'probability' is the max probability of flip.
+            probs = probs * probability
+        else:
+            probs = np.full(len(rows), probability)
+
+        for i, idx in enumerate(rows):
+            p = probs[i]
+            if self.rng.random() < p:
+                # Add noise if float, or flip if binary
+                curr_val = df_drift.at[idx, target_col]
+                # Assuming binary 0/1 for simplification as per original intent
+                if pd.api.types.is_numeric_dtype(df[target_col]) and set(
+                    df[target_col].unique()
+                ).issubset({0, 1}):
+                    df_drift.at[idx, target_col] = 1 - curr_val
+                else:
+                    # If float (probabilistic output), add noise?
+                    # The method name suggests binary drift.
+                    pass
+
+        if auto_report:
+            gen_name = generator_name or self.generator_name
+            out_dir = output_dir or self.output_dir
+            drift_config = {
+                "drift_method": "inject_binary_probabilistic_drift",
+                "target_col": target_col,
+                "probability": probability,
+                "start_index": start_index,
+                "block_index": block_index,
+                "time_start": time_start,
+                "generator_name": f"{gen_name}_binary_probabilistic_drift",
+            }
+            if out_dir:
+                df_drift.to_csv(
+                    os.path.join(out_dir, f"{drift_config['generator_name']}.csv"),
+                    index=False,
+                )
+                self._generate_reports(df, df_drift, drift_config, time_col=time_col)
         return df_drift
 
     # -------------------------
@@ -1404,19 +1784,19 @@ class DriftInjector:
     # -------------------------
     # Binary Probabilistic Drift
     # -------------------------
-    def inject_binary_probabilistic_drift(
+    def inject_concept_drift_gradual(
         self,
         df: pd.DataFrame,
-        target_col: str,
-        probability: float = 0.4,
-        noise_range: Tuple[float, float] = (0.1, 0.7),
-        threshold: float = 0.5,
+        concept_drift_type: str = "label_flip",
+        concept_drift_magnitude: float = 0.2,
         start_index: Optional[int] = None,
         block_index: Optional[int] = None,
         block_column: Optional[str] = None,
         blocks: Optional[Sequence] = None,
         block_start: Optional[object] = None,
         n_blocks: Optional[int] = None,
+        target_col: Optional[str] = None,
+        time_col: Optional[str] = None,
         time_start: Optional[str] = None,
         time_end: Optional[str] = None,
         time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
@@ -1426,7 +1806,10 @@ class DriftInjector:
         profile: str = "sigmoid",
         speed_k: float = 1.0,
         direction: str = "up",
+        inconsistency: float = 0.0,
         auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Injects probabilistic drift into a binary/boolean variable.
@@ -1487,10 +1870,15 @@ class DriftInjector:
         current_vals = df_drift.loc[rows, target_col].astype(float).values
 
         # Decide which rows are modified based on probability * w
-        # random_draw < w * probability
-        modification_mask = self.rng.random(n) < (w * probability)
+        # random_draw < w * concept_drift_magnitude
+        modification_mask = self.rng.random(n) < (w * concept_drift_magnitude)
 
         if np.any(modification_mask):
+            # For label flipping/binary drift, we simulate it via noise + threshold
+            # Default defaults for label flipping equivalent
+            noise_range = (-1.0, 1.0)
+            threshold = 0.5
+
             # Generate noise for all, but only use it where modification_mask is True
             noise = self.rng.uniform(noise_range[0], noise_range[1], size=n)
 
@@ -1498,10 +1886,6 @@ class DriftInjector:
             signs = self.rng.choice([-1, 1], size=n)
 
             # Apply modifications
-            # We only change values where modification_mask is True
-            # New_val = Old_val + (Sign * Noise)
-            # But efficiently: we keep old_val where mask is False
-
             deltas = signs * noise
             # Zero out deltas where we shouldn't modify
             deltas[~modification_mask] = 0.0
@@ -1514,22 +1898,22 @@ class DriftInjector:
             df_drift.loc[rows, target_col] = final_vals
 
         if auto_report:
+            gen_name = generator_name or self.generator_name
+            out_dir = output_dir or self.output_dir
             drift_config = {
-                "drift_method": "inject_binary_probabilistic_drift",
+                "drift_method": "inject_concept_drift_gradual",
                 "target_col": target_col,
-                "probability": probability,
-                "noise_range": noise_range,
-                "threshold": threshold,
+                "magnitude": concept_drift_magnitude,
                 "profile": profile,
                 "center": center,
                 "width": width,
-                "generator_name": f"{self.generator_name}_binary_drift",
+                "generator_name": f"{gen_name}_concept_gradual",
             }
-            # We can't generate the full standard report easily if it expects feature cols list
-            # but we can try generic logging or adaptation if needed.
-            # For now, let's skip complex reporting to avoid breaking existing report logic
-            # if it's strictly expecting 'feature_cols' or 'target_col' for label drift.
-            # Assuming we just update the report with what we have.
-            self._generate_reports(df, df_drift, drift_config, time_col=self.time_col)
+            if out_dir:
+                df_drift.to_csv(
+                    os.path.join(out_dir, f"{drift_config['generator_name']}.csv"),
+                    index=False,
+                )
+                self._generate_reports(df, df_drift, drift_config, time_col=time_col)
 
         return df_drift

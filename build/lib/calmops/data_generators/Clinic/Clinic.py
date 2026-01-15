@@ -1,10 +1,10 @@
 import numpy as np
 import pandas as pd
-import scipy.stats as stats
-from scipy.linalg import eigh
+from scipy import stats
+from scipy import stats
 import os
 import io
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional
 from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
 from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
 
@@ -28,6 +28,120 @@ class ClinicGenerator:
         """
         np.random.seed(seed)
 
+    def generate(
+        self,
+        n_samples: int = 100,
+        n_genes: int = 200,
+        n_proteins: int = 50,
+        date_config: Optional["DateConfig"] = None,
+        output_dir: Optional[str] = None,
+        save_dataset: bool = False,
+        # ... forward other args as needed or keep simple for now
+        **kwargs,
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Main entry point for generating clinical datasets (Demographics + Omics).
+        Returns a dictionary of DataFrames.
+        """
+        # Backward compatibility for n_patients
+        if "n_patients" in kwargs:
+            n_samples = kwargs.pop("n_patients")
+        # 1. Resolve date params
+        date_col = "timestamp"
+        date_val = None
+        if date_config:
+            date_col = date_config.date_col
+            if date_config.start_date:
+                date_val = date_config.start_date
+
+        # 2. Generate Demographics
+        demo_df, raw_demo = self.generate_demographic_data(
+            n_samples=n_samples,
+            date_column_name=date_col,
+            date_value=date_val,
+            # Pass through other potential kwargs if they match
+            control_disease_ratio=kwargs.get("control_disease_ratio", 0.5),
+            demographic_correlations=kwargs.get("demographic_correlations"),
+            custom_demographic_columns=kwargs.get("custom_demographic_columns"),
+            drift_injection_config=kwargs.get("demographics_drift_config"),
+            dynamics_config=kwargs.get("demographics_dynamics_config"),
+        )
+
+        # 3. Generate Genes (RNA-Seq by default if not specified)
+        genes_df = self.generate_gene_data(
+            n_genes=n_genes,
+            gene_type=kwargs.get("gene_type", "RNA-Seq"),
+            demographic_df=demo_df,
+            demographic_id_col="Patient_ID",  # Default from generate_demographic_data
+            raw_demographic_data=raw_demo,
+            n_samples=n_samples,  # Redundant but required by signature
+            demographic_gene_correlations=kwargs.get("demographic_gene_correlations"),
+            gene_correlations=kwargs.get("gene_correlations"),
+            drift_injection_config=kwargs.get("genes_drift_config"),
+            dynamics_config=kwargs.get("genes_dynamics_config"),
+            disease_effects_config=kwargs.get("disease_effects_config"),
+        )
+
+        # 4. Generate Proteins
+        proteins_df = self.generate_protein_data(
+            n_proteins=n_proteins,
+            demographic_df=demo_df,
+            demographic_id_col="Patient_ID",
+            raw_demographic_data=raw_demo,
+            n_samples=n_samples,
+            drift_injection_config=kwargs.get("proteins_drift_config"),
+            dynamics_config=kwargs.get("proteins_dynamics_config"),
+            disease_effects_config=kwargs.get("disease_effects_config"),
+        )
+
+        res = {"demographics": demo_df, "genes": genes_df, "proteins": proteins_df}
+
+        if save_dataset and output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            demo_df.to_csv(os.path.join(output_dir, "demographics.csv"))
+            genes_df.to_csv(os.path.join(output_dir, "genes.csv"))
+            proteins_df.to_csv(os.path.join(output_dir, "proteins.csv"))
+
+        # 5. Generate Target Variable
+        target_config = kwargs.get("target_variable_config")
+        if target_config:
+            try:
+                # Assuming omics_dfs can take a list or we combine.
+                # For safety, let's pass a list of non-empty DFs
+                omics_list = [
+                    df
+                    for df in [genes_df, proteins_df]
+                    if df is not None and not df.empty
+                ]
+
+                config_copy = target_config.copy()
+                tgt_name = config_copy.pop("name", "diagnosis")
+
+                diagnosis = self.generate_target_variable(
+                    demographic_df=raw_demo,
+                    omics_dfs=omics_list[0] if len(omics_list) == 1 else omics_list,
+                    **config_copy,
+                )
+                diagnosis.name = tgt_name
+
+                # Append
+                if demo_df is not None:
+                    demo_df[tgt_name] = diagnosis
+                if genes_df is not None:
+                    genes_df[tgt_name] = diagnosis
+                if proteins_df is not None:
+                    proteins_df[tgt_name] = diagnosis
+
+                # Re-save if needed
+                if save_dataset and output_dir:
+                    demo_df.to_csv(os.path.join(output_dir, "demographics.csv"))
+                    genes_df.to_csv(os.path.join(output_dir, "genes.csv"))
+                    proteins_df.to_csv(os.path.join(output_dir, "proteins.csv"))
+            except Exception as e:
+                print(f"Warning: Failed to generate target variable: {e}")
+
+        return res
+
     def _generate_module_data(
         self,
         n_samples,
@@ -46,6 +160,7 @@ class ClinicGenerator:
         try:
             np.linalg.cholesky(sigma_module)
         except np.linalg.LinAlgError:
+            from scipy.linalg import eigh
             eigvals, eigvecs = eigh(sigma_module)
             eigvals[eigvals < 1e-6] = 1e-6
             sigma_module_psd = eigvecs.dot(np.diag(eigvals)).dot(eigvecs.T)
@@ -57,6 +172,7 @@ class ClinicGenerator:
         Z_mod = np.random.multivariate_normal(
             mean=mean_vec, cov=sigma_module, size=n_samples
         )
+        import scipy.stats as stats
         U_mod = stats.norm.cdf(Z_mod)
 
         X_mod = np.zeros((n_samples, n_mod_vars))
@@ -128,6 +244,7 @@ class ClinicGenerator:
                 - raw_demographic_data: A DataFrame with raw numerical/binary values for correlation.
         """
         # Default marginals for age, sex, and propensity score
+        import scipy.stats as stats
         default_marginals = {
             "Age": stats.norm(loc=60, scale=12),
             "Sex": stats.binom(n=1, p=0.52),
@@ -337,7 +454,11 @@ class ClinicGenerator:
             demographic_marginals_for_corr = []
             if raw_demographic_data is not None:
                 for col in raw_demographic_data.columns:
-                    if col != demographic_id_col and col != "Group":
+                    if (
+                        col != demographic_id_col
+                        and col != "Group"
+                        and col != "Binary_Group"
+                    ):
                         if pd.api.types.is_numeric_dtype(raw_demographic_data[col]):
                             if raw_demographic_data[col].nunique() <= 2:
                                 p_val = raw_demographic_data[col].mean()
@@ -451,6 +572,7 @@ class ClinicGenerator:
 
             # Clip U to avoid infinity in Z
             U = np.clip(U, 1e-6, 1 - 1e-6)
+            import scipy.stats as stats
             Z_cond[:, i] = stats.norm.ppf(U)
 
         # 2. Partition Covariance Matrix
@@ -478,6 +600,7 @@ class ClinicGenerator:
         try:
             np.linalg.cholesky(Sigma_cond)
         except np.linalg.LinAlgError:
+            from scipy.linalg import eigh
             eigvals, eigvecs = eigh(Sigma_cond)
             eigvals[eigvals < 1e-6] = 1e-6
             Sigma_cond = eigvecs.dot(np.diag(eigvals)).dot(eigvecs.T)
@@ -490,6 +613,7 @@ class ClinicGenerator:
         Z_target = mu_cond + Z_noise
 
         # 5. Transform Z_target to X_target using target marginals
+        import scipy.stats as stats
         U_target = stats.norm.cdf(Z_target)
         X_target = np.zeros((n_samples, n_target))
         for i, marginal in enumerate(target_marginals):
@@ -543,6 +667,7 @@ class ClinicGenerator:
             if gene_type.lower() == "microarray":
                 loc = np.random.normal(loc=gene_mean_loc_center, scale=1.0)
                 scale = np.random.uniform(low=0.5, high=2.0)
+                scale = np.random.uniform(low=0.5, high=2.0)
                 base_gene_marginals[i] = stats.norm(loc=loc, scale=scale)
             else:  # RNA-Seq
                 log_mean = np.random.normal(loc=gene_mean_log_center, scale=1.5)
@@ -561,7 +686,10 @@ class ClinicGenerator:
             cond_cols = [
                 c
                 for c in raw_demographic_data.columns
-                if c != demographic_id_col and c != "Group"
+                if c != demographic_id_col
+                and c != "Group"
+                and c != "Binary_Group"
+                and pd.api.types.is_numeric_dtype(raw_demographic_data[c])
             ]
             conditioning_data = raw_demographic_data[cond_cols].values
 
@@ -806,7 +934,7 @@ class ClinicGenerator:
         raw_demographic_data: pd.DataFrame = None,
         protein_correlations: np.ndarray = None,
         demographic_protein_correlations: np.ndarray = None,
-        disease_effects_config: list = None,  # New parameter
+        disease_effects_config: list = None,
         control_disease_ratio: float = 0.5,
         custom_protein_parameters: dict = None,
         protein_mean_log_center: float = 3.0,
@@ -814,6 +942,8 @@ class ClinicGenerator:
         drift_injection_config: Optional[List[Dict]] = None,
         dynamics_config: Optional[Dict] = None,
     ) -> pd.DataFrame:
+        if n_proteins <= 0:
+            return pd.DataFrame()  # Return empty DF
         """
         Generates synthetic protein expression data using post-generation stochastic effects.
         """

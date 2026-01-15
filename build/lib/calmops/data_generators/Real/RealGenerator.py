@@ -25,8 +25,7 @@ import logging
 import pandas as pd
 import numpy as np
 import warnings
-from typing import Optional, Dict, Union, Any, List
-from datetime import datetime
+from typing import Optional, Dict, Any, List
 import os
 import math
 import tempfile
@@ -36,19 +35,12 @@ import tempfile
 
 
 # Model imports
-from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.mixture import GaussianMixture
-from imblearn.over_sampling import RandomOverSampler
-from imblearn.under_sampling import RandomUnderSampler
-from imblearn.pipeline import Pipeline as ImblearnPipeline
-import lightgbm as lgb
-
 # Custom logger and reporter
 from calmops.logger.logger import get_logger
 from calmops.data_generators.Real.RealReporter import RealReporter
 from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
 from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
+from calmops.data_generators.configs import DateConfig
 
 # Suppress common warnings for cleaner output
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -342,6 +334,11 @@ class RealGenerator:
     ) -> pd.DataFrame:
         """Synthesizes data using Gaussian Mixture Models. Only supports numeric data."""
         self.logger.info("Starting GMM synthesis...")
+        try:
+            from sklearn.mixture import GaussianMixture
+        except ImportError:
+            raise ImportError("scikit-learn is required for GMM synthesis.")
+
         non_numeric_cols = self.data.select_dtypes(exclude=np.number).columns
         if not non_numeric_cols.empty:
             raise ValueError(
@@ -363,9 +360,7 @@ class RealGenerator:
                 self.logger.info(
                     f"Rounding GMM results for target column '{self.target_col}' to nearest integer."
                 )
-                synth[self.target_col] = (
-                    synth[self.target_col].round().astype(int)
-                )
+                synth[self.target_col] = synth[self.target_col].round().astype(int)
 
         if custom_distributions:
             self.logger.warning(
@@ -558,6 +553,11 @@ class RealGenerator:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with Decision Trees."""
 
         def model_factory(is_classification):
+            try:
+                from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
+            except ImportError:
+                raise ImportError("scikit-learn is required for CART synthesis.")
+
             model_params = {"random_state": self.random_state}
             if self.cart_min_samples_leaf is not None:
                 model_params["min_samples_leaf"] = self.cart_min_samples_leaf
@@ -591,6 +591,16 @@ class RealGenerator:
                 k: v for k, v in target_counts.items() if v < original_counts.get(k, 0)
             }
             steps = []
+            
+            try:
+                from imblearn.over_sampling import RandomOverSampler
+                from imblearn.under_sampling import RandomUnderSampler
+                from imblearn.pipeline import Pipeline as ImblearnPipeline
+            except ImportError:
+                 # Fallback if imblearn not available? Or raise.
+                 self.logger.warning("imbalanced-learn not installed. Skipping resampling strategy.")
+                 return X, y
+
             if oversampling_strategy:
                 steps.append(
                     (
@@ -661,6 +671,11 @@ class RealGenerator:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with Random Forests."""
 
         def model_factory(is_classification):
+            try:
+                from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+            except ImportError:
+                raise ImportError("scikit-learn is required for RF synthesis.")
+
             model_params = {"random_state": self.random_state, "n_jobs": 1}
             if self.rf_n_estimators is not None:
                 model_params["n_estimators"] = self.rf_n_estimators
@@ -690,6 +705,11 @@ class RealGenerator:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with LightGBM."""
 
         def model_factory(is_classification):
+            try:
+                import lightgbm as lgb
+            except ImportError:
+                raise ImportError("lightgbm is required for LGBM synthesis.")
+
             model_params = {
                 "random_state": self.random_state,
                 "n_jobs": 1,
@@ -841,15 +861,18 @@ class RealGenerator:
         )
         return df
 
-    def synthesize(
+    def generate(
         self,
         n_samples: int,
-        output_dir: str,
+        output_dir: Optional[str] = None,
         custom_distributions: Optional[Dict] = None,
+        date_config: Optional["DateConfig"] = None,
+        # Legacy/Unpacked date args for compat (optional)
         date_start: Optional[str] = None,
         date_every: int = 1,
         date_step: Optional[Dict[str, int]] = None,
         date_col: str = "timestamp",
+        # End legacy
         save_dataset: bool = False,
         drift_injection_config: Optional[List[Dict]] = None,
         dynamics_config: Optional[Dict] = None,
@@ -859,12 +882,9 @@ class RealGenerator:
 
         Args:
             n_samples (int): The number of synthetic samples to generate.
-            output_dir (str): Directory to save the report and dataset.
+            output_dir (Optional[str]): Directory to save the report and dataset. Optional if save_dataset is False.
             custom_distributions (Optional[Dict]): A dictionary to specify custom distributions for columns.
-            date_start (Optional[str]): Start date for date injection (e.g., '2023-01-01').
-            date_every (int): Generate a new date every N rows.
-            date_step (Optional[Dict[str, int]]): The time step for date injection (e.g., {'days': 1}).
-            date_col (str): The name of the date column to be injected.
+            date_config (Optional[DateConfig]): Configuration for date injection.
             save_dataset (bool): If True, saves the generated dataset to a CSV file.
             drift_injection_config (Optional[List[Dict]]): List of drift injection configurations.
             dynamics_config (Optional[Dict]): Configuration for dynamics injection (feature evolution, target construction).
@@ -873,8 +893,21 @@ class RealGenerator:
             Optional[pd.DataFrame]: The generated synthetic DataFrame, or None if synthesis fails.
         """
         self.logger.info(
-            f"Starting synthesis of {n_samples} samples using method '{self.method}'..."
+            f"Starting generation of {n_samples} samples using method '{self.method}'..."
         )
+
+        # Resolve Date Config
+        if date_config is None and date_start is not None:
+            # Construct from legacy args
+            from calmops.data_generators.configs import DateConfig
+
+            date_config = DateConfig(
+                start_date=date_start,
+                frequency=date_every,
+                step=date_step,
+                date_col=date_col,
+            )
+
         if custom_distributions:
             custom_distributions = self._validate_custom_distributions(
                 custom_distributions, self.data
@@ -944,24 +977,21 @@ class RealGenerator:
                     # Evolve Features
                     if "evolve_features" in dynamics_config:
                         self.logger.info("Evolving features (Dynamics)...")
-                        # Try to handle time_col if available, else standard
                         evolve_args = dynamics_config["evolve_features"]
-                        # We can try to use date_col if it exists and has been injected already?
-                        # NOTE: date injection happens *after* this in the original code, but we might want it *before*
-                        # if evolution depends on time.
-                        # Let's inject dates FIRST if we want time-dependent evolution.
 
-                        # Inject dates early for dynamics
-                        synth = self._inject_dates(
-                            df=synth,
-                            date_col=date_col,
-                            date_start=date_start,
-                            date_every=date_every,
-                            date_step=date_step,
-                        )
+                        # Inject dates early for dynamics if needed
+                        if date_config and date_config.start_date:
+                            synth = self._inject_dates(
+                                df=synth,
+                                date_col=date_config.date_col,
+                                date_start=date_config.start_date,
+                                date_every=date_config.frequency,
+                                date_step=date_config.step,
+                            )
 
+                        time_col = date_config.date_col if date_config else "timestamp"
                         synth = dyn_injector.evolve_features(
-                            synth, time_col=date_col, **evolve_args
+                            synth, time_col=time_col, **evolve_args
                         )
 
                     # Construct/Overwrite Target
@@ -969,26 +999,38 @@ class RealGenerator:
                         self.logger.info("Constructing dynamic target (Dynamics)...")
                         target_args = dynamics_config["construct_target"]
                         synth = dyn_injector.construct_target(synth, **target_args)
-                else:
-                    # If no dynamics that require time, we inject dates here as usual
+
+                # --- Date Injection (if not done in dynamics) ---
+                # We check if date_col is present? Or just force inject if configured.
+                # If we injected above, _inject_dates is usually idempotent (overwrites) or we can skip.
+                # The original code injected dates here if no dynamics.
+                # Let's just always inject if config present, _inject_dates is robust.
+                if date_config and date_config.start_date:
                     synth = self._inject_dates(
                         df=synth,
-                        date_col=date_col,
-                        date_start=date_start,
-                        date_every=date_every,
-                        date_step=date_step,
+                        date_col=date_config.date_col,
+                        date_start=date_config.start_date,
+                        date_every=date_config.frequency,
+                        date_step=date_config.step,
                     )
 
                 # --- Drift Injection ---
                 if drift_injection_config:
                     self.logger.info("Applying drift injection...")
+
+                    # Resolve dir for drift injector
+                    drift_out_dir = (
+                        output_dir or "."
+                    )  # Drift injector might need a dir, fallback to current
+                    time_col_name = date_config.date_col if date_config else "timestamp"
+
                     drift_injector = DriftInjector(
                         original_df=synth,  # We drift the synthetic data
-                        output_dir=output_dir,
+                        output_dir=drift_out_dir,
                         generator_name=f"{self.method}_drifted",
                         target_column=self.target_col,
                         block_column=self.block_column,
-                        time_col=date_col,
+                        time_col=time_col_name,
                         random_state=self.random_state,
                     )
 
@@ -1019,18 +1061,23 @@ class RealGenerator:
                                 f"Drift method '{method_name}' not found in DriftInjector."
                             )
 
-                if self.auto_report:
+                if self.auto_report and output_dir:
+                    time_col_name = date_config.date_col if date_config else "timestamp"
                     self.reporter.generate_comprehensive_report(
                         real_df=self.data,
                         synthetic_df=synth,
                         generator_name=f"RealGenerator_{self.method}",
                         output_dir=output_dir,
                         target_column=self.target_col,
-                        time_col=date_col,
+                        time_col=time_col_name,
                     )
 
                 # Save the generated dataset for inspection
                 if save_dataset:  # Only save if save_dataset is True
+                    if not output_dir:
+                        raise ValueError(
+                            "output_dir must be provided if save_dataset is True"
+                        )
                     try:
                         save_path = os.path.join(
                             output_dir, f"synthetic_data_{self.method}.csv"

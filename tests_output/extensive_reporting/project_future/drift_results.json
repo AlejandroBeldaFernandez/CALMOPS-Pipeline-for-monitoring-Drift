@@ -1,0 +1,15 @@
+{
+  "generator_name": "FutureProjection",
+  "generation_timestamp": "2026-01-15T14:35:35.481949",
+  "real_rows": 90,
+  "synthetic_rows": 60,
+  "sdv_quality": {
+    "overall_quality_score": 0.405,
+    "weighted_quality_score": 0.243
+  },
+  "sdv_by_block": null,
+  "compared_data_files": {
+    "original": "real_data",
+    "generated": "synthetic_data"
+  }
+}

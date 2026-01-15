@@ -873,10 +873,10 @@ def start_monitor_schedule(
     # Standard monitoring system initialization for development environments
     # and direct execution scenarios without persistence requirements
     base_pipeline_dir = pipelines_root / "pipelines" / pipeline_name
-    output_dir = base_pipeline_dir / "modelos"
+    output_dir = base_pipeline_dir / "models"
     control_dir = base_pipeline_dir / "control"
     logs_dir = base_pipeline_dir / "logs"
-    metrics_dir = base_pipeline_dir / "resultados"
+    metrics_dir = base_pipeline_dir / "metrics"
     config_dir = base_pipeline_dir / "config"
 
     for d in [output_dir, control_dir, logs_dir, metrics_dir, config_dir]:

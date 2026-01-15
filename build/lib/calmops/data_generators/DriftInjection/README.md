@@ -52,6 +52,65 @@ drifted_df = injector.add_drift(
 - **Gradual:** Change happens over a transition period.
 - **Incremental:** Change increases linearly over time.
 
+
+## API Reference: Drift Methods
+
+This section lists the available drift injection methods you can use in the `drift_injection_config` list.
+
+### 1. Feature Drift (`inject_feature_drift` family)
+
+Modifies the values of feature columns.
+
+| Method Name | Key Parameters | Description |
+| :--- | :--- | :--- |
+| `inject_feature_drift` | `feature_cols`, `drift_type` (gaussian_noise, shift, scale), `drift_magnitude` | Base method. Applies drift to a selection. |
+| `inject_feature_drift_gradual` | Same as above + `center`, `width` | Applies drift gradually using a sigmoid window. |
+| `inject_feature_drift_abrupt` | Same as above + `change_index` | Applies drift suddenly at a specific point. |
+| `inject_feature_drift_incremental` | Same as above | Drift increases linearly over the selection. |
+| `inject_conditional_drift` | `conditions` (e.g. `[{"column": "age", "operator": ">", "value": 50}]`) | Applies drift only to rows matching conditions. |
+| `inject_missing_values_drift` | `missing_fraction` | Sets a fraction of values to `NaN`. |
+
+### 2. Label Drift (`inject_label_drift` family)
+
+Modifies the target/label column.
+
+| Method Name | Key Parameters | Description |
+| :--- | :--- | :--- |
+| `inject_label_drift` | `target_cols`, `drift_magnitude` (flip rate) | Randomly flips labels. |
+| `inject_label_drift_gradual` | Same as above + `center`, `width` | Flip rate increases gradually. |
+| `inject_label_drift_abrupt` | Same as above + `change_index` | Flip rate changes suddenly. |
+
+### 3. Advanced / Other
+
+| Method Name | Key Parameters | Description |
+| :--- | :--- | :--- |
+| `inject_new_category_drift` | `feature_col`, `new_category` | Introduces a previously unseen category. |
+| `inject_correlation_matrix_drift` | `target_correlation_matrix` | Alters the relationships between features. |
+
+### Configuration Example
+
+When using with a Generator (e.g., `RealGenerator`), use these method names in your config:
+
+```python
+drift_config = [
+    {
+        "method": "inject_feature_drift",
+        "params": {
+            "feature_cols": ["age"],
+            "drift_type": "shift",
+            "drift_magnitude": 10.0
+        }
+    },
+    {
+        "method": "inject_missing_values_drift",
+        "params": {
+            "feature_cols": ["income"],
+            "missing_fraction": 0.2
+        }
+    }
+]
+```
+
 ## Tutorial
 
 For a complete example, run the `tutorial.py` script in this directory:
@@ -59,3 +118,4 @@ For a complete example, run the `tutorial.py` script in this directory:
 ```bash
 python tutorial.py
 ```
+

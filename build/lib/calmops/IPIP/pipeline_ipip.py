@@ -15,13 +15,7 @@ import numpy as np
 import joblib
 import pandas as pd
 from datetime import datetime
-from sklearn.metrics import (
-    classification_report,
-    accuracy_score,
-    balanced_accuracy_score,
-    f1_score,
-    roc_auc_score,
-)
+# from sklearn.metrics import ... (Lazy loaded)
 
 from calmops.logger.logger import PipelineLogger
 from calmops.utils import get_pipelines_root
@@ -226,6 +220,14 @@ def _save_eval_results(
     current_model=None,
     filename="eval_results.json",
 ):
+    from sklearn.metrics import (
+        classification_report,
+        accuracy_score,
+        balanced_accuracy_score,
+        f1_score,
+        roc_auc_score,
+    )
+
     if not final_predictions_list:
         logger.warning(f"No predictions to save for {filename}.")
         return

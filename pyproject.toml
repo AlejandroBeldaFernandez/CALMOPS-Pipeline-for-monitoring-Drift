@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "calmops"
-version = "0.1.0"
-description = "A Python library for MLOps with drift detection and monitoring."
+version = "0.5.0"
+description = "A Python library for MLOps and Data Generation with focus on Concept Drift and Imbalanced class problems."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
 authors = [
-  { name = "Your Name", email = "your@email.com" },
+  { name = "Alejandro Belda Fernandez", email = "alejandrobeldafernandez@gmail.com" },
 ]
 dependencies = [
     "numpy==1.26.4",
@@ -22,7 +22,9 @@ dependencies = [
     "plotly==5.24.1",
     "imbalanced-learn",
     "lightgbm",
-    "river",
+    "river==0.21.0",
+    "sweetviz>=2.3.1",
+    "ydata-profiling>=4.12.0"
 ]
 
 [project.optional-dependencies]
@@ -32,11 +34,11 @@ mlops = [
     "frouros==0.9.0",
     "joblib==1.5.1",
     "streamlit==1.47.1",
-    "watchdog==5.0.3",
+    "watchdog==5.0.3"
 ]
 deeplearning = [
     "sdv>=1.0.0",
-    "torch>=2.0.0",
+    "torch>=2.0.0"
 ]
 full = [
     "calmops[mlops,deeplearning]"

@@ -29,26 +29,20 @@ from typing import Optional, Dict, Any, List
 import os
 import math
 import tempfile
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 
 # SDV and DataSynthesizer imports are now lazy-loaded
 
 
 # Model imports
-from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.mixture import GaussianMixture
-from imblearn.over_sampling import RandomOverSampler
-from imblearn.under_sampling import RandomUnderSampler
-from imblearn.pipeline import Pipeline as ImblearnPipeline
-import lightgbm as lgb
-
 # Custom logger and reporter
 from calmops.logger.logger import get_logger
 from calmops.data_generators.Real.RealReporter import RealReporter
 from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
-from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
+from calmops.data_generators.Dynamics.ScenarioInjector import ScenarioInjector
 from calmops.data_generators.configs import DateConfig
+
 
 # Suppress common warnings for cleaner output
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -63,42 +57,30 @@ class RealGenerator:
 
     def __init__(
         self,
-        data: pd.DataFrame,
-        method: str = "cart",
-        target_col: Optional[str] = None,
-        block_column: Optional[str] = None,
         auto_report: bool = True,
         logger: Optional[logging.Logger] = None,
         random_state: Optional[int] = None,
-        balance_target: bool = False,
-        model_params: Optional[Dict[str, Any]] = None,
     ):
         """
         Initializes the RealGenerator.
 
         Args:
-            data (pd.DataFrame): The real dataset to be synthesized.
-            method (str): The synthesis method to use. See class docstring for options.
-            target_col (Optional[str]): The name of the target variable column.
-            block_column (Optional[str]): The name of the column defining data blocks.
             auto_report (bool): If True, automatically generates a quality report after synthesis.
             logger (Optional[logging.Logger]): An external logger instance. If None, a new one is created.
             random_state (Optional[int]): Seed for random number generation for reproducibility.
-            balance_target (bool): If True, balances the distribution of the target column.
-            model_params (Optional[Dict[str, Any]]): A dictionary of hyperparameters for the chosen synthesis model.
         """
-        self.data = data
-        self.method = method
-        self.target_col = target_col
-        self.block_column = block_column
         self.auto_report = auto_report
         self.logger = logger if logger else get_logger("RealGenerator")
         self.random_state = random_state
-        self.balance_target = balance_target
         self.rng = np.random.default_rng(random_state)
         self.reporter = RealReporter()
+        self.synthesizer = None
+        self.metadata = None
 
-        # --- Set default parameters ---
+    def _get_model_params(
+        self, method: str, user_params: Optional[Dict] = None
+    ) -> Dict:
+        """Merges user parameters with defaults based on the method."""
         defaults = {
             "cart_iterations": 10,
             "cart_min_samples_leaf": None,
@@ -112,28 +94,13 @@ class RealGenerator:
             "sdv_batch_size": 100,
             "ds_k": 5,
         }
-
-        # --- Merge user-provided params with defaults ---
         params = defaults.copy()
-        if model_params:
-            params.update(model_params)
+        if user_params:
+            params.update(user_params)
+        return params
 
-        # --- Store synthesis parameters as instance attributes ---
-        self.cart_iterations = params["cart_iterations"]
-        self.cart_min_samples_leaf = params["cart_min_samples_leaf"]
-        self.rf_n_estimators = params["rf_n_estimators"]
-        self.rf_min_samples_leaf = params["rf_min_samples_leaf"]
-        self.lgbm_n_estimators = params["lgbm_n_estimators"]
-        self.lgbm_learning_rate = params["lgbm_learning_rate"]
-        self.gmm_n_components = params["gmm_n_components"]
-        self.gmm_covariance_type = params["gmm_covariance_type"]
-        self.sdv_epochs = params["sdv_epochs"]
-        self.sdv_batch_size = params["sdv_batch_size"]
-        self.ds_k = params["ds_k"]
-
-        self.metadata = None
-        self.synthesizer = None
-
+    def _validate_method(self, method: str):
+        """Validates the synthesis method."""
         valid_methods = [
             "cart",
             "rf",
@@ -145,9 +112,9 @@ class RealGenerator:
             "datasynth",
             "resample",
         ]
-        if self.method not in valid_methods:
+        if method not in valid_methods:
             raise ValueError(
-                f"Unknown synthesis method '{self.method}'. Valid methods are: {valid_methods}"
+                f"Unknown synthesis method '{method}'. Valid methods are: {valid_methods}"
             )
 
     def _build_metadata(self, data: pd.DataFrame):
@@ -165,6 +132,9 @@ class RealGenerator:
 
     def _get_synthesizer(
         self,
+        method: str,
+        sdv_epochs: int,
+        sdv_batch_size: int,
     ):
         """Initializes and returns the appropriate SDV synthesizer based on the method."""
         try:
@@ -178,29 +148,32 @@ class RealGenerator:
                 "The 'sdv' library is required for deep learning methods. Please install it using 'pip install sdv'."
             )
 
-        self.metadata = self._build_metadata(self.data)
-        if self.method == "ctgan":
+        # metadata is built externally or stored
+        if self.metadata is None:
+            raise ValueError("Metadata must be built before getting synthesizer.")
+
+        if method == "ctgan":
             return CTGANSynthesizer(
                 metadata=self.metadata,
-                epochs=self.sdv_epochs,
-                batch_size=self.sdv_batch_size,
+                epochs=sdv_epochs,
+                batch_size=sdv_batch_size,
                 verbose=True,
             )
-        elif self.method == "tvae":
+        elif method == "tvae":
             return TVAESynthesizer(
                 metadata=self.metadata,
-                epochs=self.sdv_epochs,
-                batch_size=self.sdv_batch_size,
+                epochs=sdv_epochs,
+                batch_size=sdv_batch_size,
             )
-        elif self.method == "copula":
+        elif method == "copula":
             return CopulaGANSynthesizer(
                 metadata=self.metadata,
-                epochs=self.sdv_epochs,
-                batch_size=self.sdv_batch_size,
+                epochs=sdv_epochs,
+                batch_size=sdv_batch_size,
                 verbose=True,
             )
         else:
-            raise ValueError(f"No SDV synthesizer for method '{self.method}'")
+            raise ValueError(f"No SDV synthesizer for method '{method}'")
 
     def _validate_custom_distributions(
         self, custom_distributions: Dict, data: pd.DataFrame
@@ -236,15 +209,23 @@ class RealGenerator:
         return validated_distributions
 
     def _synthesize_sdv(
-        self, n_samples: int, custom_distributions: Optional[Dict] = None
+        self,
+        data: pd.DataFrame,
+        n_samples: int,
+        method: str,
+        sdv_epochs: int,
+        sdv_batch_size: int,
+        target_col: Optional[str] = None,
+        custom_distributions: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """Synthesizes data using an SDV model, with support for conditional sampling."""
-        self.logger.info(
-            f"Starting conditional SDV synthesis with method: {self.method}..."
-        )
-        if self.synthesizer is None:
-            self.synthesizer = self._get_synthesizer()
-            self.synthesizer.fit(self.data)
+        self.logger.info(f"Starting conditional SDV synthesis with method: {method}...")
+        # Always rebuild/refit for stateless operation on new data.
+        # (Optimization: could cache if data/method matches, but keeping it simple/safe first)
+        self.metadata = self._build_metadata(data)
+        self.synthesizer = self._get_synthesizer(method, sdv_epochs, sdv_batch_size)
+        self.synthesizer.fit(data)
+
         if not custom_distributions:
             self.logger.info(
                 "No custom distributions provided. Generating samples unconditionally."
@@ -253,18 +234,18 @@ class RealGenerator:
         self.logger.info(
             f"Applying custom distributions via conditional sampling: {custom_distributions}"
         )
-        all_synth_parts = []
         if len(custom_distributions.keys()) > 1:
             self.logger.warning(
                 f"Multiple columns found in custom_distributions. Conditioning on first column: '{next(iter(custom_distributions))}'."
             )
         col_to_condition = (
-            self.target_col
-            if self.target_col in custom_distributions
+            target_col
+            if target_col and target_col in custom_distributions
             else next(iter(custom_distributions))
         )
         dist = custom_distributions[col_to_condition]
         remaining_samples = n_samples
+        all_synth_parts = []
         for value, proportion in dist.items():
             num_rows_for_val = int(n_samples * proportion)
             if num_rows_for_val > 0 and remaining_samples > 0:
@@ -303,12 +284,16 @@ class RealGenerator:
         )
 
     def _synthesize_resample(
-        self, n_samples: int, custom_distributions: Optional[Dict] = None
+        self,
+        data: pd.DataFrame,
+        n_samples: int,
+        target_col: Optional[str] = None,
+        custom_distributions: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """Synthesizes data by resampling from the original dataset, with optional weighting."""
         self.logger.info("Starting synthesis by resampling...")
         if not custom_distributions:
-            return self.data.sample(
+            return data.sample(
                 n=n_samples, replace=True, random_state=self.random_state
             )
         self.logger.info(
@@ -318,60 +303,71 @@ class RealGenerator:
             "The 'resample' method with custom distributions changes proportions but does not generate new data."
         )
         col_to_condition = (
-            self.target_col
-            if self.target_col in custom_distributions
+            target_col
+            if target_col and target_col in custom_distributions
             else next(iter(custom_distributions))
         )
         dist = custom_distributions[col_to_condition]
-        weights = pd.Series(0.0, index=self.data.index)
+        weights = pd.Series(0.0, index=data.index)
         for category, proportion in dist.items():
-            weights[self.data[col_to_condition] == category] = proportion
+            weights[data[col_to_condition] == category] = proportion
         if weights.sum() == 0:
             self.logger.warning(
                 "Weights are all zero. Falling back to uniform resampling."
             )
-            return self.data.sample(
+            return data.sample(
                 n=n_samples, replace=True, random_state=self.random_state
             )
-        return self.data.sample(
+        return data.sample(
             n=n_samples, replace=True, random_state=self.random_state, weights=weights
         )
 
     def _synthesize_gmm(
-        self, n_samples: int, custom_distributions: Optional[Dict] = None
+        self,
+        data: pd.DataFrame,
+        n_samples: int,
+        gmm_n_components: int,
+        gmm_covariance_type: str,
+        target_col: Optional[str] = None,
+        custom_distributions: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """Synthesizes data using Gaussian Mixture Models. Only supports numeric data."""
         self.logger.info("Starting GMM synthesis...")
-        non_numeric_cols = self.data.select_dtypes(exclude=np.number).columns
+        try:
+            from sklearn.mixture import GaussianMixture
+        except ImportError:
+            raise ImportError("scikit-learn is required for GMM synthesis.")
+
+        non_numeric_cols = data.select_dtypes(exclude=np.number).columns
         if not non_numeric_cols.empty:
             raise ValueError(
                 f"The 'gmm' method only supports numeric data, but found non-numeric columns: {list(non_numeric_cols)}."
             )
         gmm = GaussianMixture(
-            n_components=self.gmm_n_components,
-            covariance_type=self.gmm_covariance_type,
+            n_components=gmm_n_components,
+            covariance_type=gmm_covariance_type,
             random_state=self.random_state,
         )
-        gmm.fit(self.data)
+        gmm.fit(data)
         synth_data, _ = gmm.sample(n_samples)
-        synth = pd.DataFrame(synth_data, columns=self.data.columns)
+        synth = pd.DataFrame(synth_data, columns=data.columns)
 
         # If the target is supposed to be classification, round the results
-        if self.target_col and self.target_col in synth.columns:
-            unique_values = self.data[self.target_col].nunique()
-            if unique_values < 25 or (unique_values / len(self.data)) < 0.05:
+        if target_col and target_col in synth.columns:
+            unique_values = data[target_col].nunique()
+            if unique_values < 25 or (unique_values / len(data)) < 0.05:
                 self.logger.info(
-                    f"Rounding GMM results for target column '{self.target_col}' to nearest integer."
+                    f"Rounding GMM results for target column '{target_col}' to nearest integer."
                 )
-                synth[self.target_col] = synth[self.target_col].round().astype(int)
+                synth[target_col] = synth[target_col].round().astype(int)
 
         if custom_distributions:
             self.logger.warning(
                 "Applying custom distributions to GMM output via post-processing. This may break learned correlations."
             )
             col_to_condition = (
-                self.target_col
-                if self.target_col in custom_distributions
+                target_col
+                if target_col and target_col in custom_distributions
                 else next(iter(custom_distributions))
             )
             dist = custom_distributions[col_to_condition]
@@ -396,6 +392,7 @@ class RealGenerator:
         model_factory_func,
         method_name: str,
         iterations: int,
+        target_col: Optional[str] = None,
     ) -> Optional[pd.DataFrame]:
         """
         Generic helper for Fully Conditional Specification (FCS) synthesis.
@@ -468,7 +465,7 @@ class RealGenerator:
                     if not pd.api.types.is_numeric_dtype(y_real_train):
                         is_classification = True
                     # Heuristic for low-cardinality numeric targets (treat as class)
-                    elif col == self.target_col:
+                    elif col == target_col:
                         unique_values = y_real_train.nunique()
                         if (
                             unique_values < 25
@@ -556,6 +553,11 @@ class RealGenerator:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with Decision Trees."""
 
         def model_factory(is_classification):
+            try:
+                from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
+            except ImportError:
+                raise ImportError("scikit-learn is required for CART synthesis.")
+
             model_params = {"random_state": self.random_state}
             if self.cart_min_samples_leaf is not None:
                 model_params["min_samples_leaf"] = self.cart_min_samples_leaf
@@ -589,6 +591,18 @@ class RealGenerator:
                 k: v for k, v in target_counts.items() if v < original_counts.get(k, 0)
             }
             steps = []
+
+            try:
+                from imblearn.over_sampling import RandomOverSampler
+                from imblearn.under_sampling import RandomUnderSampler
+                from imblearn.pipeline import Pipeline as ImblearnPipeline
+            except ImportError:
+                # Fallback if imblearn not available? Or raise.
+                self.logger.warning(
+                    "imbalanced-learn not installed. Skipping resampling strategy."
+                )
+                return X, y
+
             if oversampling_strategy:
                 steps.append(
                     (
@@ -627,14 +641,22 @@ class RealGenerator:
         self,
         data: pd.DataFrame,
         n_samples: int,
+        target_col: Optional[str] = None,
         custom_distributions: Optional[Dict] = None,
+        min_samples_leaf: Optional[int] = None,
+        iterations: int = 10,
     ) -> pd.DataFrame:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with Decision Trees."""
 
         def model_factory(is_classification):
+            try:
+                from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
+            except ImportError:
+                raise ImportError("scikit-learn is required for CART synthesis.")
+
             model_params = {"random_state": self.random_state}
-            if self.cart_min_samples_leaf is not None:
-                model_params["min_samples_leaf"] = self.cart_min_samples_leaf
+            if min_samples_leaf is not None:
+                model_params["min_samples_leaf"] = min_samples_leaf
             return (
                 DecisionTreeClassifier(**model_params)
                 if is_classification
@@ -647,23 +669,36 @@ class RealGenerator:
             custom_distributions,
             model_factory,
             "CART",
-            self.cart_iterations,
+            iterations,
+            target_col,
         )
 
     def _synthesize_rf(
         self,
         data: pd.DataFrame,
         n_samples: int,
+        target_col: Optional[str] = None,
         custom_distributions: Optional[Dict] = None,
+        n_estimators: Optional[int] = None,
+        min_samples_leaf: Optional[int] = None,
+        iterations: int = 10,
     ) -> pd.DataFrame:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with Random Forests."""
 
         def model_factory(is_classification):
+            try:
+                from sklearn.ensemble import (
+                    RandomForestRegressor,
+                    RandomForestClassifier,
+                )
+            except ImportError:
+                raise ImportError("scikit-learn is required for RF synthesis.")
+
             model_params = {"random_state": self.random_state, "n_jobs": 1}
-            if self.rf_n_estimators is not None:
-                model_params["n_estimators"] = self.rf_n_estimators
-            if self.rf_min_samples_leaf is not None:
-                model_params["min_samples_leaf"] = self.rf_min_samples_leaf
+            if n_estimators is not None:
+                model_params["n_estimators"] = n_estimators
+            if min_samples_leaf is not None:
+                model_params["min_samples_leaf"] = min_samples_leaf
             return (
                 RandomForestClassifier(**model_params)
                 if is_classification
@@ -676,27 +711,37 @@ class RealGenerator:
             custom_distributions,
             model_factory,
             "RF",
-            self.cart_iterations,
+            iterations,
+            target_col,
         )
 
     def _synthesize_lgbm(
         self,
         data: pd.DataFrame,
         n_samples: int,
+        target_col: Optional[str] = None,
         custom_distributions: Optional[Dict] = None,
+        n_estimators: Optional[int] = None,
+        learning_rate: Optional[float] = None,
+        iterations: int = 10,
     ) -> pd.DataFrame:
         """Synthesizes data using a Fully Conditional Specification (FCS) approach with LightGBM."""
 
         def model_factory(is_classification):
+            try:
+                import lightgbm as lgb
+            except ImportError:
+                raise ImportError("lightgbm is required for LGBM synthesis.")
+
             model_params = {
                 "random_state": self.random_state,
                 "n_jobs": 1,
                 "verbose": -1,
             }
-            if self.lgbm_n_estimators is not None:
-                model_params["n_estimators"] = self.lgbm_n_estimators
-            if self.lgbm_learning_rate is not None:
-                model_params["learning_rate"] = self.lgbm_learning_rate
+            if n_estimators is not None:
+                model_params["n_estimators"] = n_estimators
+            if learning_rate is not None:
+                model_params["learning_rate"] = learning_rate
             return (
                 lgb.LGBMClassifier(**model_params)
                 if is_classification
@@ -709,11 +754,17 @@ class RealGenerator:
             custom_distributions,
             model_factory,
             "LGBM",
-            self.cart_iterations,
+            iterations,
+            target_col,
         )
 
     def _synthesize_datasynth(
-        self, n_samples: int, custom_distributions: Optional[Dict] = None
+        self,
+        data: pd.DataFrame,
+        n_samples: int,
+        k: int,
+        target_col: Optional[str] = None,
+        custom_distributions: Optional[Dict] = None,
     ) -> pd.DataFrame:
         """
         Synthesizes data using DataSynthesizer in correlated attribute mode.
@@ -737,12 +788,12 @@ class RealGenerator:
                         "The 'DataSynthesizer' library is required for this method. Please install it."
                     )
                 # Save the original data to the secure temporary location.
-                self.data.to_csv(temp_csv_path, index=False)
+                data.to_csv(temp_csv_path, index=False)
 
                 # Describe the dataset
                 describer = DataDescriber()
                 describer.describe_dataset_in_correlated_attribute_mode(
-                    dataset_file=temp_csv_path, k=self.ds_k
+                    dataset_file=temp_csv_path, k=k
                 )
 
                 # Save the DataDescriber object for the DataGenerator to read.
@@ -760,8 +811,8 @@ class RealGenerator:
                         "Applying custom distributions to DataSynthesizer output via post-processing."
                     )
                     col_to_condition = (
-                        self.target_col
-                        if self.target_col in custom_distributions
+                        target_col
+                        if target_col and target_col in custom_distributions
                         else next(iter(custom_distributions))
                     )
                     dist = custom_distributions[col_to_condition]
@@ -841,7 +892,11 @@ class RealGenerator:
 
     def generate(
         self,
+        data: pd.DataFrame,
         n_samples: int,
+        method: str = "cart",
+        target_col: Optional[str] = None,
+        block_column: Optional[str] = None,
         output_dir: Optional[str] = None,
         custom_distributions: Optional[Dict] = None,
         date_config: Optional["DateConfig"] = None,
@@ -851,27 +906,37 @@ class RealGenerator:
         date_step: Optional[Dict[str, int]] = None,
         date_col: str = "timestamp",
         # End legacy
+        balance_target: bool = False,
         save_dataset: bool = False,
         drift_injection_config: Optional[List[Dict]] = None,
         dynamics_config: Optional[Dict] = None,
+        model_params: Optional[Dict[str, Any]] = None,
     ) -> Optional[pd.DataFrame]:
         """
         The main public method to generate synthetic data.
 
         Args:
+            data (pd.DataFrame): The real dataset to be synthesized.
             n_samples (int): The number of synthetic samples to generate.
+            method (str): The synthesis method to use.
+            target_col (Optional[str]): The name of the target variable column.
+            block_column (Optional[str]): The name of the column defining data blocks.
             output_dir (Optional[str]): Directory to save the report and dataset. Optional if save_dataset is False.
             custom_distributions (Optional[Dict]): A dictionary to specify custom distributions for columns.
             date_config (Optional[DateConfig]): Configuration for date injection.
+            balance_target (bool): If True, balances the distribution of the target column.
             save_dataset (bool): If True, saves the generated dataset to a CSV file.
             drift_injection_config (Optional[List[Dict]]): List of drift injection configurations.
             dynamics_config (Optional[Dict]): Configuration for dynamics injection (feature evolution, target construction).
+            model_params (Optional[Dict[str, Any]]): A dictionary of hyperparameters for the chosen synthesis model.
 
         Returns:
             Optional[pd.DataFrame]: The generated synthetic DataFrame, or None if synthesis fails.
         """
+        self._validate_method(method)
+        params = self._get_model_params(method, model_params)
         self.logger.info(
-            f"Starting generation of {n_samples} samples using method '{self.method}'..."
+            f"Starting generation of {n_samples} samples using method '{method}'..."
         )
 
         # Resolve Date Config
@@ -888,59 +953,85 @@ class RealGenerator:
 
         if custom_distributions:
             custom_distributions = self._validate_custom_distributions(
-                custom_distributions, self.data
+                custom_distributions, data
             )
         if (
-            self.balance_target
-            and self.target_col
-            and (
-                custom_distributions is None
-                or self.target_col not in custom_distributions
-            )
+            balance_target
+            and target_col
+            and (custom_distributions is None or target_col not in custom_distributions)
         ):
             self.logger.info(
-                f"'balance_target' is True. Generating balanced distribution for '{self.target_col}'."
+                f"'balance_target' is True. Generating balanced distribution for '{target_col}'."
             )
-            target_classes = self.data[self.target_col].unique()
+            target_classes = data[target_col].unique()
             custom_distributions = custom_distributions or {}
-            custom_distributions[self.target_col] = {
+            custom_distributions[target_col] = {
                 c: 1 / len(target_classes) for c in target_classes
             }
         try:
             synth = None
-            if self.method in ["ctgan", "tvae", "copula"]:
+            if method in ["ctgan", "tvae", "copula"]:
                 synth = self._synthesize_sdv(
-                    n_samples, custom_distributions=custom_distributions
+                    data,
+                    n_samples,
+                    method,
+                    params["sdv_epochs"],
+                    params["sdv_batch_size"],
+                    target_col=target_col,
+                    custom_distributions=custom_distributions,
                 )
-            elif self.method == "resample":
+            elif method == "resample":
                 synth = self._synthesize_resample(
-                    n_samples, custom_distributions=custom_distributions
+                    data,
+                    n_samples,
+                    target_col=target_col,
+                    custom_distributions=custom_distributions,
                 )
-            elif self.method == "cart":
+            elif method == "cart":
                 synth = self._synthesize_cart(
-                    self.data,
+                    data,
                     n_samples,
+                    target_col=target_col,
                     custom_distributions=custom_distributions,
+                    min_samples_leaf=params["cart_min_samples_leaf"],
+                    iterations=params["cart_iterations"],
                 )
-            elif self.method == "rf":
+            elif method == "rf":
                 synth = self._synthesize_rf(
-                    self.data,
+                    data,
                     n_samples,
+                    target_col=target_col,
                     custom_distributions=custom_distributions,
+                    n_estimators=params["rf_n_estimators"],
+                    min_samples_leaf=params["rf_min_samples_leaf"],
+                    iterations=params["cart_iterations"],
                 )
-            elif self.method == "lgbm":
+            elif method == "lgbm":
                 synth = self._synthesize_lgbm(
-                    self.data,
+                    data,
                     n_samples,
+                    target_col=target_col,
+                    custom_distributions=custom_distributions,
+                    n_estimators=params["lgbm_n_estimators"],
+                    learning_rate=params["lgbm_learning_rate"],
+                    iterations=params["cart_iterations"],
+                )
+            elif method == "gmm":
+                synth = self._synthesize_gmm(
+                    data,
+                    n_samples,
+                    gmm_n_components=params["gmm_n_components"],
+                    gmm_covariance_type=params["gmm_covariance_type"],
+                    target_col=target_col,
                     custom_distributions=custom_distributions,
                 )
-            elif self.method == "gmm":
-                synth = self._synthesize_gmm(
-                    n_samples, custom_distributions=custom_distributions
-                )
-            elif self.method == "datasynth":
+            elif method == "datasynth":
                 synth = self._synthesize_datasynth(
-                    n_samples, custom_distributions=custom_distributions
+                    data,
+                    n_samples,
+                    k=params["ds_k"],
+                    target_col=target_col,
+                    custom_distributions=custom_distributions,
                 )
 
             if synth is not None:
@@ -950,7 +1041,7 @@ class RealGenerator:
                 if dynamics_config:
                     self.logger.info("Applying dynamics injection...")
                     # Initialize dynamics injector
-                    dyn_injector = DynamicsInjector(seed=self.random_state)
+                    dyn_injector = ScenarioInjector(seed=self.random_state)
 
                     # Evolve Features
                     if "evolve_features" in dynamics_config:
@@ -969,7 +1060,7 @@ class RealGenerator:
 
                         time_col = date_config.date_col if date_config else "timestamp"
                         synth = dyn_injector.evolve_features(
-                            synth, time_col=time_col, **evolve_args
+                            synth, time_col=time_col, evolution_config=evolve_args
                         )
 
                     # Construct/Overwrite Target
@@ -979,10 +1070,6 @@ class RealGenerator:
                         synth = dyn_injector.construct_target(synth, **target_args)
 
                 # --- Date Injection (if not done in dynamics) ---
-                # We check if date_col is present? Or just force inject if configured.
-                # If we injected above, _inject_dates is usually idempotent (overwrites) or we can skip.
-                # The original code injected dates here if no dynamics.
-                # Let's just always inject if config present, _inject_dates is robust.
                 if date_config and date_config.start_date:
                     synth = self._inject_dates(
                         df=synth,
@@ -1005,16 +1092,16 @@ class RealGenerator:
                     drift_injector = DriftInjector(
                         original_df=synth,  # We drift the synthetic data
                         output_dir=drift_out_dir,
-                        generator_name=f"{self.method}_drifted",
-                        target_column=self.target_col,
-                        block_column=self.block_column,
+                        generator_name=f"{method}_drifted",
+                        target_column=target_col,
+                        block_column=block_column,
                         time_col=time_col_name,
                         random_state=self.random_state,
                     )
 
                     for drift_conf in drift_injection_config:
                         method_name = drift_conf.get("method")
-                        params = drift_conf.get("params", {})
+                        params_drift = drift_conf.get("params", {})
 
                         if hasattr(drift_injector, method_name):
                             self.logger.info(f"Injecting drift: {method_name}")
@@ -1022,10 +1109,10 @@ class RealGenerator:
                             try:
                                 # Most DriftInjector methods return the modified DF
                                 # We check if 'df' is in params, injecting it if needed.
-                                if "df" not in params:
-                                    params["df"] = synth
+                                if "df" not in params_drift:
+                                    params_drift["df"] = synth
 
-                                res = drift_method(**params)
+                                res = drift_method(**params_drift)
                                 # Update synth if result is dataframe
                                 if isinstance(res, pd.DataFrame):
                                     synth = res
@@ -1042,11 +1129,11 @@ class RealGenerator:
                 if self.auto_report and output_dir:
                     time_col_name = date_config.date_col if date_config else "timestamp"
                     self.reporter.generate_comprehensive_report(
-                        real_df=self.data,
+                        real_df=data,
                         synthetic_df=synth,
-                        generator_name=f"RealGenerator_{self.method}",
+                        generator_name=f"RealGenerator_{method}",
                         output_dir=output_dir,
-                        target_column=self.target_col,
+                        target_column=target_col,
                         time_col=time_col_name,
                     )
 
@@ -1058,7 +1145,7 @@ class RealGenerator:
                         )
                     try:
                         save_path = os.path.join(
-                            output_dir, f"synthetic_data_{self.method}.csv"
+                            output_dir, f"synthetic_data_{method}.csv"
                         )
                         synth.to_csv(save_path, index=False)
                         self.logger.info(
@@ -1070,11 +1157,11 @@ class RealGenerator:
                 return synth
             else:
                 self.logger.error(
-                    f"Synthesis method '{self.method}' failed to generate data."
+                    f"Synthesis method '{method}' failed to generate data."
                 )
                 return None
         except Exception as e:
             self.logger.error(
-                f"Synthesis with method '{self.method}' failed: {e}", exc_info=True
+                f"Synthesis with method '{method}' failed: {e}", exc_info=True
             )
             return None

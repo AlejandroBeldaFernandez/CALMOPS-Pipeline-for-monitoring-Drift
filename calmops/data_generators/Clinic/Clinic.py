@@ -1,12 +1,11 @@
 import numpy as np
 import pandas as pd
-import scipy.stats as stats
-from scipy.linalg import eigh
+from scipy import stats
 import os
 import io
 from typing import List, Dict, Optional
 from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
-from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
+from calmops.data_generators.Dynamics.ScenarioInjector import ScenarioInjector
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 # import tensorflow as tf
@@ -15,6 +14,15 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 # tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 # tf.get_logger().setLevel("ERROR")
+
+
+from dataclasses import dataclass
+
+
+@dataclass
+class DateConfig:
+    date_col: str = "timestamp"
+    start_date: Optional[str] = None
 
 
 class ClinicGenerator:
@@ -43,9 +51,7 @@ class ClinicGenerator:
         Main entry point for generating clinical datasets (Demographics + Omics).
         Returns a dictionary of DataFrames.
         """
-        # Backward compatibility for n_patients
-        if "n_patients" in kwargs:
-            n_samples = kwargs.pop("n_patients")
+
         # 1. Resolve date params
         date_col = "timestamp"
         date_val = None
@@ -160,6 +166,8 @@ class ClinicGenerator:
         try:
             np.linalg.cholesky(sigma_module)
         except np.linalg.LinAlgError:
+            from scipy.linalg import eigh
+
             eigvals, eigvecs = eigh(sigma_module)
             eigvals[eigvals < 1e-6] = 1e-6
             sigma_module_psd = eigvecs.dot(np.diag(eigvals)).dot(eigvecs.T)
@@ -171,6 +179,8 @@ class ClinicGenerator:
         Z_mod = np.random.multivariate_normal(
             mean=mean_vec, cov=sigma_module, size=n_samples
         )
+        import scipy.stats as stats
+
         U_mod = stats.norm.cdf(Z_mod)
 
         X_mod = np.zeros((n_samples, n_mod_vars))
@@ -242,6 +252,8 @@ class ClinicGenerator:
                 - raw_demographic_data: A DataFrame with raw numerical/binary values for correlation.
         """
         # Default marginals for age, sex, and propensity score
+        import scipy.stats as stats
+
         default_marginals = {
             "Age": stats.norm(loc=60, scale=12),
             "Sex": stats.binom(n=1, p=0.52),
@@ -373,12 +385,12 @@ class ClinicGenerator:
 
         # --- Dynamics Injection ---
         if dynamics_config:
-            injector = DynamicsInjector()
+            injector = ScenarioInjector()
             if "evolve_features" in dynamics_config:
                 evolve_args = dynamics_config["evolve_features"]
                 # If date_column_name was used, use it as time_col
                 df_temp = injector.evolve_features(
-                    df_temp, time_col=date_column_name, **evolve_args
+                    df_temp, time_col=date_column_name, evolution_config=evolve_args
                 )
             if "construct_target" in dynamics_config:
                 target_args = dynamics_config["construct_target"]
@@ -569,6 +581,8 @@ class ClinicGenerator:
 
             # Clip U to avoid infinity in Z
             U = np.clip(U, 1e-6, 1 - 1e-6)
+            import scipy.stats as stats
+
             Z_cond[:, i] = stats.norm.ppf(U)
 
         # 2. Partition Covariance Matrix
@@ -596,6 +610,8 @@ class ClinicGenerator:
         try:
             np.linalg.cholesky(Sigma_cond)
         except np.linalg.LinAlgError:
+            from scipy.linalg import eigh
+
             eigvals, eigvecs = eigh(Sigma_cond)
             eigvals[eigvals < 1e-6] = 1e-6
             Sigma_cond = eigvecs.dot(np.diag(eigvals)).dot(eigvecs.T)
@@ -608,6 +624,8 @@ class ClinicGenerator:
         Z_target = mu_cond + Z_noise
 
         # 5. Transform Z_target to X_target using target marginals
+        import scipy.stats as stats
+
         U_target = stats.norm.cdf(Z_target)
         X_target = np.zeros((n_samples, n_target))
         for i, marginal in enumerate(target_marginals):
@@ -660,6 +678,7 @@ class ClinicGenerator:
         for i in range(n_genes):
             if gene_type.lower() == "microarray":
                 loc = np.random.normal(loc=gene_mean_loc_center, scale=1.0)
+                scale = np.random.uniform(low=0.5, high=2.0)
                 scale = np.random.uniform(low=0.5, high=2.0)
                 base_gene_marginals[i] = stats.norm(loc=loc, scale=scale)
             else:  # RNA-Seq
@@ -809,10 +828,12 @@ class ClinicGenerator:
 
         # --- Dynamics Injection ---
         if dynamics_config:
-            injector = DynamicsInjector()
+            injector = ScenarioInjector()
             if "evolve_features" in dynamics_config:
                 evolve_args = dynamics_config["evolve_features"]
-                df_genes = injector.evolve_features(df_genes, **evolve_args)
+                df_genes = injector.evolve_features(
+                    df_genes, evolution_config=evolve_args
+                )
             if "construct_target" in dynamics_config:
                 target_args = dynamics_config["construct_target"]
                 df_genes = injector.construct_target(df_genes, **target_args)
@@ -1046,10 +1067,12 @@ class ClinicGenerator:
 
         # --- Dynamics Injection ---
         if dynamics_config:
-            injector = DynamicsInjector()
+            injector = ScenarioInjector()
             if "evolve_features" in dynamics_config:
                 evolve_args = dynamics_config["evolve_features"]
-                df_proteins = injector.evolve_features(df_proteins, **evolve_args)
+                df_proteins = injector.evolve_features(
+                    df_proteins, evolution_config=evolve_args
+                )
             if "construct_target" in dynamics_config:
                 target_args = dynamics_config["construct_target"]
                 df_proteins = injector.construct_target(df_proteins, **target_args)

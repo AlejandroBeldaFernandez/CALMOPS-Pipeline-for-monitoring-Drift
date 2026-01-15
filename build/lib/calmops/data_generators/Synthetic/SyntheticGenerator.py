@@ -1,14 +1,13 @@
 import os
-import json
 import logging
 import random
 import warnings
-from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, Tuple, List, Iterator, Union
+from typing import Optional, Dict, Tuple, List, Iterator
 import pandas as pd
 import numpy as np
 from collections import defaultdict
+
+from calmops.data_generators.configs import DateConfig
 
 # Suppress common warnings for cleaner output
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -63,101 +62,64 @@ class SyntheticGenerator:
     def generate(
         self,
         generator_instance,
-        output_dir: Optional[str],
-        filename: str,
         n_samples: int,
-        drift_type: str = "none",
-        position_of_drift: int = None,
+        filename: str = "synthetic_data.csv",
+        output_dir: Optional[str] = None,
         target_col: str = "target",
-        block_column: Optional[str] = None,
         balance: bool = False,
-        inconsistency: float = 0.0,
+        date_config: Optional[DateConfig] = None,  # New config object
+        drift_type: str = "none",  # Kept for backward compat or ease of use if config not passed
         drift_options: Optional[Dict] = None,
-        date_start: Optional[str] = None,
-        date_every: int = 1,
-        date_step: Optional[Dict[str, int]] = None,
-        date_col: str = "timestamp",
-        report_path_override: Optional[str] = None,
-        prebuilt_instances: Optional[List[object]] = None,
-        segment_lengths: Optional[List[int]] = None,
-        segment_widths: Optional[List[int]] = None,
-        segment_positions: Optional[List[Optional[int]]] = None,
-        last_segment_pure: bool = True,
-        durations_seconds: Optional[List[float]] = None,
-        samples_per_second: Optional[float] = None,
-        transition_width: Optional[int] = None,
-        segment_label_ratios: Optional[List[Optional[Dict]]] = None,
-        drift_generator: Optional[object] = None,
-        save_dataset: bool = True,
+        save_dataset: bool = False,  # Changed default to False
         generate_report: bool = True,
-        metadata_generator_instance: Optional[object] = None,
-        drift_config: Optional[List[Dict]] = None,
-        dynamics_config: Optional[Dict] = None,
-    ) -> Union[pd.DataFrame, str]:
+        # ... other specialized args can remain optionally or be grouped later
+        **kwargs,
+    ) -> pd.DataFrame:
         """
         Main public method to generate a synthetic dataset.
 
         Args:
-            generator_instance: An instantiated River generator or an iterator.
-            output_path (Optional[str]): Directory to save the output files.
-            filename (str): Name of the output CSV file.
-            n_samples (int): Total number of samples to generate.
-            drift_type (str): Type of drift to inject.
-            position_of_drift (int): The sample index where the drift should occur.
-            target_col (str): Name for the target variable column.
-            balance (bool): If True, balances the class distribution.
-            inconsistency (float): A factor to add random noise to gradual drift transitions.
-            drift_options (Optional[Dict]): Additional options for specific drift types.
-            date_start (Optional[str]): Start date for timestamp injection.
-            date_every (int): Generate a new date every N rows.
-            date_step (Optional[Dict[str, int]]): Time step for date injection.
-            date_col (str): Name of the timestamp column.
-            drift_generator (Optional[object]): A second River generator instance for drift.
-            save_dataset (bool): If True, saves the DataFrame to a CSV file.
-            generate_report (bool): If True, generates a JSON report.
-            metadata_generator_instance (Optional[object]): An optional generator instance to use for metadata inference.
+           ...
 
         Returns:
-            Union[pd.DataFrame, str]: The generated DataFrame or the path to the saved CSV file.
+            pd.DataFrame: The generated DataFrame.
         """
-        out_dir = self._resolve_output_dir(output_dir)
+        out_dir = self._resolve_output_dir(output_dir) if output_dir else None
+
+        # Backward compatibility for date args if unpacked params are used (simple logic)
+        # Ideally we prefer date_config.
+
+        if date_config is None:
+            # Try to construct from kwargs for backward compat
+            if kwargs.get("date_start"):
+                from calmops.data_generators.configs import DateConfig
+
+                date_config = DateConfig(
+                    start_date=kwargs.get("date_start"),
+                    frequency=kwargs.get("date_every", 1),
+                    step=kwargs.get("date_step"),
+                    date_col=kwargs.get("date_col", "timestamp"),
+                )
+
         df = self._generate_internal(
             generator_instance=generator_instance,
-            metadata_generator_instance=metadata_generator_instance,
-            output_dir=out_dir,
-            filename=filename,
             n_samples=n_samples,
-            generator_instance_drift=drift_generator,
-            position_of_drift=position_of_drift,
             target_col=target_col,
-            block_column=block_column,
             balance=balance,
             drift_type=drift_type,
-            inconsistency=inconsistency,
-            drift_options=drift_options or {},
-            extra_info=None,
-            date_start=date_start,
-            date_every=date_every,
-            date_step=date_step,
-            date_col=date_col,
-            prebuilt_instances=prebuilt_instances,
-            segment_lengths=segment_lengths,
-            segment_widths=segment_widths,
-            segment_positions=segment_positions,
-            last_segment_pure=last_segment_pure,
-            durations_seconds=durations_seconds,
-            samples_per_second=samples_per_second,
-            transition_width=transition_width,
-            segment_label_ratios=segment_label_ratios,
+            drift_options=drift_options,
+            date_config=date_config,
+            output_dir=out_dir,
             generate_report=generate_report,
-            drift_config=drift_config,
-            dynamics_config=dynamics_config,
+            filename=filename,
+            **kwargs,
         )
-        if save_dataset:
+
+        if save_dataset and out_dir:
             full_csv_path = os.path.join(out_dir, filename)
             df.to_csv(full_csv_path, index=False)
             logger.info(f"Data generated and saved at: {full_csv_path}")
-            return full_csv_path
+
         return df
 
     def _generate_internal(self, **kwargs) -> pd.DataFrame:
@@ -166,7 +128,24 @@ class SyntheticGenerator:
         generator_instance = kwargs["generator_instance"]
         balance = kwargs["balance"]
         target_col = kwargs["target_col"]
+        target_col = kwargs["target_col"]
         drift_type = kwargs["drift_type"]
+
+        # Extract date config
+        date_config = kwargs.get("date_config")
+        if date_config:
+            date_start = date_config.start_date
+            date_every = date_config.frequency
+            date_step = date_config.step
+            date_col = date_config.date_col
+        else:
+            date_start = kwargs.get("date_start")
+            date_every = kwargs.get("date_every", 1)
+            date_step = kwargs.get("date_step")
+            date_col = kwargs.get("date_col", "timestamp")
+
+        # Update kwargs for downstream usage (like _inject_dates if it used kwargs directly, or just local vars)
+        # Actually _inject_dates is called below with specific args, so we just use local vars.
 
         data_gen_instance = generator_instance
 
@@ -243,10 +222,10 @@ class SyntheticGenerator:
         df = pd.DataFrame(data, columns=final_columns)
         df = self._inject_dates(
             df,
-            kwargs["date_col"],
-            kwargs["date_start"],
-            kwargs["date_every"],
-            kwargs["date_step"],
+            date_col,
+            date_start,
+            date_every,
+            date_step,
         )
 
         # --- Dynamics Injection ---
@@ -273,16 +252,18 @@ class SyntheticGenerator:
                 df = injector.construct_target(df, **target_args)
 
         # --- Drift Injection ---
-        drift_config = kwargs.get("drift_config")
+        drift_config = kwargs.get("drift_config") or kwargs.get(
+            "drift_injection_config"
+        )
         if drift_config:
             logger.info("Applying drift injection...")
             injector = DriftInjector(
                 original_df=df,
-                output_dir=kwargs["output_dir"],
-                generator_name="SyntheticGenerator_Drifted",  # Generic name or infer
-                target_column=kwargs["target_col"],
-                block_column=kwargs["block_column"],
-                time_col=kwargs["date_col"],
+                output_dir=kwargs.get("output_dir") or ".",
+                generator_name="SyntheticGenerator_Drifted",
+                target_column=kwargs.get("target_col"),
+                block_column=kwargs.get("block_column"),
+                time_col=kwargs.get("date_col"),
             )
 
             for drift_conf in drift_config:
@@ -308,7 +289,11 @@ class SyntheticGenerator:
                     )
 
         if kwargs.get("generate_report", True):
-            report_kwargs = {k: v for k, v in kwargs.items() if k != "save_dataset"}
+            report_kwargs = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in ["save_dataset", "output_dir"]
+            }
             # Ensure the report gets the actual generator instance, not the iterator
             report_kwargs["generator_instance"] = (
                 kwargs.get("metadata_generator_instance")

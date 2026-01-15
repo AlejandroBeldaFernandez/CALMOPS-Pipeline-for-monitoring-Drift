@@ -1,0 +1,87 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CalmOps Data Report</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f8f9fa; margin: 0; padding: 0; }
+        .container { display: flex; height: 100vh; }
+        .sidebar { width: 250px; background-color: #343a40; color: white; padding: 20px; display: flex; flex-direction: column; }
+        .sidebar h2 { margin-top: 0; font-size: 1.2rem; margin-bottom: 20px; border-bottom: 1px solid #4b545c; padding-bottom: 10px; }
+        .nav-btn { background: none; border: none; color: #c2c7d0; padding: 10px 15px; text-align: left; cursor: pointer; font-size: 1rem; border-radius: 4px; margin-bottom: 5px; transition: background 0.2s; width: 100%; }
+        .nav-btn:hover { background-color: #495057; color: white; }
+        .nav-btn.active { background-color: #007bff; color: white; }
+        .content { flex-grow: 1; padding: 0; background-color: white; overflow: hidden; position: relative; }
+        iframe { width: 100%; height: 100%; border: none; display: none; }
+        iframe.active { display: block; }
+        .gallery-container { padding: 20px; overflow-y: auto; height: 100%; box-sizing: border-box; display: none; }
+        .gallery-container.active { display: block; } 
+        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 20px; }
+        .gallery-item { border: 1px solid #dee2e6; border-radius: 4px; padding: 10px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .gallery-item img { max-width: 100%; height: auto; cursor: pointer; }
+        .gallery-item h4 { margin: 0 0 10px 0; font-size: 0.9rem; color: #495057; text-align: center; overflow-wrap: break-word; }
+        .empty-state { padding: 40px; text-align: center; color: #6c757d; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h2>CalmOps Report</h2>
+            <button class="nav-btn" onclick="showTab('plots')" id="btn-plots">📊 CalmOps Plots</button>
+            
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                    <button class="nav-btn" onclick="showTab('ydata')" id="btn-ydata" style="margin-bottom: 0; flex-grow: 1;">🐼 YData Profile</button>
+                    <a href="profile_report.html" target="_blank" style="color: #adb5bd; margin-left: 8px; text-decoration: none; font-size: 1.2rem;" title="Open in New Tab">↗</a>
+                </div>
+                
+        </div>
+        
+        <div class="content">
+            <div id="plots" class="gallery-container">
+                <div class="gallery-grid">
+                    
+                    <div class="gallery-item">
+                        <h4>Dist Plot Value</h4>
+                        <a href="dist_plot_Value.png" target="_blank"><img src="dist_plot_Value.png" alt="Dist Plot Value" loading="lazy"></a>
+                    </div>
+                    
+                    <div class="gallery-item">
+                        <h4>Pca Testblocksfull</h4>
+                        <a href="pca_TestBlocksFull.png" target="_blank"><img src="pca_TestBlocksFull.png" alt="Pca Testblocksfull" loading="lazy"></a>
+                    </div>
+                    
+                </div>
+            </div>
+            
+            <iframe id="ydata" src="profile_report.html?v=1768473153" scrolling="yes"></iframe>
+
+        </div>
+    </div>
+
+    <script>
+        function showTab(id) {
+            // Buttons
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            const btn = document.getElementById('btn-' + id);
+            if(btn) btn.classList.add('active');
+
+            // Content
+            document.querySelectorAll('iframe').forEach(f => f.classList.remove('active'));
+            document.querySelectorAll('.gallery-container').forEach(c => c.classList.remove('active'));
+            
+            const el = document.getElementById(id);
+            if(el) el.classList.add('active');
+        }
+
+        // Activate first available tab by default
+        document.addEventListener('DOMContentLoaded', () => {
+             // Priority: Comparison -> YData -> Plots
+             if (document.getElementById('comparison')) { showTab('comparison'); }
+             else if (document.getElementById('ydata')) { showTab('ydata'); }
+             else { showTab('plots'); }
+        });
+    </script>
+</body>
+</html>

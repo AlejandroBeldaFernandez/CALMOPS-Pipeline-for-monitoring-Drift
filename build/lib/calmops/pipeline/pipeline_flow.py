@@ -21,7 +21,7 @@ import importlib.util
 import pandas as pd
 import joblib
 from pathlib import Path
-from sklearn.model_selection import train_test_split
+# from sklearn.model_selection import train_test_split (Lazy loaded)
 
 from calmops.logger.logger import PipelineLogger
 from calmops.utils import get_pipelines_root
@@ -872,6 +872,7 @@ def run_pipeline(
                 model = joblib.load(model_path)
 
                 # Create test split for Champion evaluation
+                from sklearn.model_selection import train_test_split
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y, test_size=0.2, random_state=random_state
                 )

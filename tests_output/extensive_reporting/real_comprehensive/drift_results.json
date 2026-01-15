@@ -1,0 +1,15 @@
+{
+  "generator_name": "TestRealReporter",
+  "generation_timestamp": "2026-01-15T14:33:21.556536",
+  "real_rows": 100,
+  "synthetic_rows": 100,
+  "sdv_quality": {
+    "overall_quality_score": 0.8721,
+    "weighted_quality_score": 0.8721
+  },
+  "sdv_by_block": null,
+  "compared_data_files": {
+    "original": "real_data",
+    "generated": "synthetic_data"
+  }
+}

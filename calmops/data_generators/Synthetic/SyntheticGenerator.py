@@ -16,7 +16,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from .SyntheticReporter import SyntheticReporter  # reporter to save JSON reports
 from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
-from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
+from calmops.data_generators.Dynamics.ScenarioInjector import ScenarioInjector
 # Removed unused river import
 
 
@@ -461,6 +461,27 @@ class SyntheticGenerator:
             k: v for k, v in report_kwargs.items() if v is not None
         }
 
+        # Assuming 'dynamics_config', 'time_col', 'save_data', 'resample_rule' are available in kwargs or self
+        dynamics_config = kwargs.get("dynamics_config")
+        time_col = kwargs.get(
+            "date_col"
+        )  # Assuming date_col is used for time_col in dynamics
+        save_data = kwargs.get(
+            "save_dataset", False
+        )  # Assuming save_dataset controls output_dir for dynamics
+        resample_rule = kwargs.get("resample_rule")  # Assuming resample_rule is passed
+
+        if dynamics_config:
+            injector = ScenarioInjector()
+            # Assuming 'df' is the 'synthetic_data' to be evolved
+            df = injector.evolve_features(
+                df,  # Use df as synthetic_data
+                evolution_config=dynamics_config,
+                time_col=time_col,
+                output_dir=output_dir if save_data else None,
+                auto_report=True,
+                resample_rule=resample_rule,
+            )
         try:
             SyntheticReporter(verbose=True).generate_report(
                 synthetic_df=df,

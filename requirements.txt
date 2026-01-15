@@ -1,4 +1,5 @@
 apscheduler==3.11.0
+DataSynthesizer==0.1.13
 Flask==3.1.2
 frouros==0.9.0
 imbalanced-learn
@@ -8,12 +9,14 @@ matplotlib==3.9.4
 numpy==1.26.4
 pandas==2.3.1
 plotly==5.24.1
+rdt==1.17.1
+river==0.22.0
 scikit-learn==1.7.2
 scipy==1.14.1
+sdv==1.24.1
 seaborn==0.13.2
 streamlit==1.47.1
+torch==2.7.1
 watchdog==5.0.3
+tensorflow
 umap-learn
-river
-sdv
-torch

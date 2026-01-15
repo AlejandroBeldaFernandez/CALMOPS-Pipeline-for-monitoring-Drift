@@ -5,8 +5,8 @@ from calmops.data_generators.Synthetic.SyntheticBlockGenerator import (
     SyntheticBlockGenerator,
 )
 from calmops.data_generators.DriftInjection.DriftInjector import DriftInjector
-from calmops.data_generators.Dynamics.DynamicsInjector import DynamicsInjector
-from calmops.data_generators.Clinic.ClinicGenerator import ClinicGenerator
+from calmops.data_generators.Dynamics.ScenarioInjector import ScenarioInjector
+from calmops.data_generators.Clinic.Clinic import ClinicGenerator, DateConfig
 from calmops.data_generators.Clinic.ClinicReporter import ClinicReporter
 
 
@@ -72,6 +72,13 @@ class ClinicGeneratorBlock(SyntheticBlockGenerator):
             n_samples_this_block = n_samples_block[i]
             current_block_label = block_labels[i]
 
+            # Create DateConfig for this block
+            date_conf = None
+            if block_dates:
+                date_conf = DateConfig(
+                    date_col=date_col, start_date=block_dates[i].isoformat()
+                )
+
             block_df = clinic_generator.generate(
                 generator_instance=gen,
                 metadata_generator_instance=gen,
@@ -80,12 +87,24 @@ class ClinicGeneratorBlock(SyntheticBlockGenerator):
                 n_samples=n_samples_this_block,
                 target_col=target_col,
                 balance=balance,
-                date_start=block_dates[i].isoformat() if block_dates else None,
-                date_every=n_samples_this_block,
-                date_col=date_col,
+                date_config=date_conf,  # Pass DateConfig object
                 save_dataset=False,
                 generate_report=False,  # We aggregate at the end
             )
+
+            # ClinicGenerator returns a dict of DataFrames (demographics, genes, proteins)
+            if isinstance(block_df, dict):
+                # Filter out None values and concatenate
+                dfs_to_concat = [
+                    v for k, v in block_df.items() if v is not None and not v.empty
+                ]
+                if dfs_to_concat:
+                    # Assuming they share the same index (Patient_ID)
+                    block_df = pd.concat(dfs_to_concat, axis=1)
+                    # Remove duplicate columns if any (e.g. if multiple have target)
+                    block_df = block_df.loc[:, ~block_df.columns.duplicated()]
+                else:
+                    block_df = pd.DataFrame()  # Empty fallback
             block_df["block"] = current_block_label
             all_data.append(block_df)
 
@@ -93,10 +112,15 @@ class ClinicGeneratorBlock(SyntheticBlockGenerator):
 
         # --- Dynamics Injection ---
         if dynamics_config:
-            injector = DynamicsInjector()
+            injector = ScenarioInjector()
             if "evolve_features" in dynamics_config:
                 evolve_args = dynamics_config["evolve_features"]
-                df = injector.evolve_features(df, time_col=date_col, **evolve_args)
+                df = injector.evolve_features(
+                    df,
+                    time_col=date_col,
+                    evolution_config=evolve_args,
+                    auto_report=generate_report,
+                )
             if "construct_target" in dynamics_config:
                 target_args = dynamics_config["construct_target"]
                 df = injector.construct_target(df, **target_args)
@@ -104,29 +128,16 @@ class ClinicGeneratorBlock(SyntheticBlockGenerator):
         # --- Drift Injection ---
         if drift_config:
             injector = DriftInjector(
-                original_df=df,
                 output_dir=output_dir,
                 generator_name="ClinicGeneratorBlock_Drifted",
+            )
+            df = injector.inject_multiple_types_of_drift(
+                df=df,
+                schedule=drift_config,
                 target_column=target_col,
                 block_column="block",
                 time_col=date_col,
             )
-            for drift_conf in drift_config:
-                method_name = drift_conf.get("method")
-                params = drift_conf.get("params", {})
-                if hasattr(injector, method_name):
-                    drift_method = getattr(injector, method_name)
-                    try:
-                        if "df" not in params:
-                            params["df"] = df
-                        res = drift_method(**params)
-                        if isinstance(res, pd.DataFrame):
-                            df = res
-                    except Exception as e:
-                        print(f"Failed to apply drift {method_name}: {e}")
-                        raise e
-                else:
-                    print(f"Drift method '{method_name}' not found.")
 
         df.to_csv(full_path, index=False)
         print(f"Generated {total_samples} samples in {n_blocks} blocks at: {full_path}")

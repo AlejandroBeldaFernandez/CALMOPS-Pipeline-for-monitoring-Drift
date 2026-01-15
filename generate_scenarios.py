@@ -355,10 +355,14 @@ def generate_real_benchmark():
     for method in methods:
         print(f"Generating Synthetic Data using {method.upper()}...")
         try:
-            gen = RealGenerator(data=real_df, method=method, auto_report=False)
+            gen = RealGenerator(auto_report=False)
             # Generate same amount as original
             syn_df = gen.generate(
-                n_samples=len(real_df), output_dir=output_dir, save_dataset=False
+                data=real_df,
+                method=method,
+                n_samples=len(real_df),
+                output_dir=output_dir,
+                save_dataset=False,
             )
             synthetic_datasets[method] = syn_df
         except Exception as e:
@@ -424,10 +428,8 @@ def generate_real_benchmark():
 
     results = []
 
-    # Initialize Injector (dummy init for access to methods)
-    injector = DriftInjector(
-        original_df=real_df, output_dir=output_dir, generator_name="drift_injector"
-    )
+    # Initialize Injector
+    injector = DriftInjector(output_dir=output_dir, generator_name="drift_injector")
 
     for method, syn_df in synthetic_datasets.items():
         if syn_df.empty:

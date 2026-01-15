@@ -1,0 +1,457 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-9.0.1, pluggy-1.6.0 -- /home/alex/calm/bin/python
+cachedir: .pytest_cache
+rootdir: /home/alex/calmops
+configfile: pyproject.toml
+plugins: Faker-38.2.0, dash-3.2.0
+collecting ... collected 8 items
+
+tests/test_data_generators_comprehensive.py::test_real_generator_basic PASSED [ 12%]
+tests/test_data_generators_comprehensive.py::test_synthetic_generator_basic FAILED [ 25%]
+tests/test_data_generators_comprehensive.py::test_clinic_generator_basic FAILED [ 37%]
+tests/test_data_generators_comprehensive.py::test_clinic_generator_longitudinal FAILED [ 50%]
+tests/test_data_generators_comprehensive.py::test_drift_injector_comprehensive FAILED [ 62%]
+tests/test_data_generators_comprehensive.py::test_real_block_generator_comprehensive FAILED [ 75%]
+tests/test_data_generators_comprehensive.py::test_clinic_generator_block_comprehensive FAILED [ 87%]
+tests/test_data_generators_comprehensive.py::test_dynamics_injector_basic FAILED [100%]
+
+=================================== FAILURES ===================================
+________________________ test_synthetic_generator_basic ________________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_synthetic_generator_basic(output_dir):
+        """Test standard SyntheticGenerator with River."""
+        gen = SyntheticGenerator()
+        # Using 'Agrawal' stream from River via wrapper
+        # Note: SyntheticGenerator usually takes a River stream instance
+        try:
+            from river.datasets import synth
+    
+            stream = synth.Agrawal(classification_function=0, seed=42)
+    
+            path = gen.generate(
+                generator_instance=stream,
+                n_samples=50,
+                filename="syn_test.csv",
+                output_path=output_dir,
+                generate_report=False,
+            )
+>           assert os.path.exists(path)
+
+tests/test_data_generators_comprehensive.py:68: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+path =            salary    commission  age  ...  hyears           loan  target
+0   103125.483800      0.000000   21  ...    ... 166092.733973       1
+49  141006.065186      0.000000   71  ...       4  191270.861298       1
+
+[50 rows x 10 columns]
+
+    def exists(path):
+        """Test whether a path exists.  Returns False for broken symbolic links"""
+        try:
+>           os.stat(path)
+E           TypeError: stat: path should be string, bytes, os.PathLike or integer, not DataFrame
+
+/usr/lib/python3.10/genericpath.py:19: TypeError
+_________________________ test_clinic_generator_basic __________________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_clinic_generator_basic(output_dir):
+        """Test ClinicGenerator demographics and data creation."""
+        gen = ClinicGenerator(seed=42)
+    
+        # 1. Demographics
+        demo_df, raw_demo = gen.generate_demographic_data(n_samples=20)
+        assert len(demo_df) == 20
+>       assert "Patient_ID" in demo_df.columns
+E       AssertionError: assert 'Patient_ID' in Index(['Age', 'Sex', 'Disease_Subgroup', 'Group'], dtype='object')
+E        +  where Index(['Age', 'Sex', 'Disease_Subgroup', 'Group'], dtype='object') =               Age     Sex Disease_Subgroup    Group\nPatient_ID                                         \nPAT_62256_0    66  Female          Disease  Disease\nPAT_99135_1    78  Female          Disease  Disease\nPAT_45222_2    79    Male          Control  Control\nPAT_87373_3    67  Female          Control  Control\nPAT_89575_4    63  Female          Control  Control\nPAT_94651_5    53  Female          Disease  Disease\nPAT_73335_6    49  Female          Disease  Disease\nPAT_20965_7    57    Male          Control  Control\nPAT_34538_8    53    Male          Control  Control\nPAT_80592_9    65  Female          Control  Control\nPAT_18110_10   53    Male          Disease  Disease\nPAT_89309_11   47    Male          Control  Control\nPAT_37266_12   63  Female          Control  Control\nPAT_62992_13   62    Male          Disease  Disease\nPAT_92948_14   59  Female          Control  Control\nPAT_16910_15   51  Female          Disease  Disease\nPAT_10206_16   64  Female          Disease  Disease\nPAT_97054_17   55  Female          Disease  Disease\nPAT_97897_18   72    Male          Control  Control\nPAT_33419_19   56    Male          Disease  Disease.columns
+
+tests/test_data_generators_comprehensive.py:85: AssertionError
+______________________ test_clinic_generator_longitudinal ______________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_clinic_generator_longitudinal(output_dir):
+        """Test longitudinal data generation (simulating time steps)."""
+        gen = ClinicGenerator(seed=42)
+        # Initial state (T0)
+        demo_df, raw_demo = gen.generate_demographic_data(n_samples=10)
+>       genes_t0 = gen.generate_gene_data(
+            n_genes=3, demographic_df=demo_df, raw_demographic_data=raw_demo, n_samples=10
+        )
+E       TypeError: ClinicGenerator.generate_gene_data() missing 1 required positional argument: 'gene_type'
+
+tests/test_data_generators_comprehensive.py:107: TypeError
+______________________ test_drift_injector_comprehensive _______________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_drift_injector_comprehensive(output_dir):
+        """Test various drift injection methods in stateless DriftInjector."""
+        df = pd.DataFrame(
+            {
+                "Feature": np.random.rand(100),
+                "Category": np.random.choice(["A", "B"], 100),
+                "Target": np.random.randint(0, 2, 100),
+                "Time": pd.date_range("2023-01-01", periods=100),
+            }
+        )
+    
+        injector = DriftInjector(output_dir=output_dir, generator_name="test_injector")
+    
+        # A. Feature Drift (Abrupt via alias)
+>       df_abrupt = injector.inject_feature_drift_abrupt(
+            df=df,
+            feature_cols=["Feature"],
+            drift_type="shift",
+            drift_magnitude=2.0,
+            change_index=50,
+            time_col="Time",
+        )
+
+tests/test_data_generators_comprehensive.py:138: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+calmops/data_generators/DriftInjection/DriftInjector.py:1669: in inject_feature_drift_abrupt
+    return self.inject_feature_drift(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <calmops.data_generators.DriftInjection.DriftInjector.DriftInjector object at 0x7fe64ed4b520>
+df =      Feature Category  Target       Time
+0   0.520068        B       0 2023-01-01
+1   0.546710        B       1 2023-0... 0 2023-04-08
+98  0.036887        B       0 2023-04-09
+99  0.609564        B       1 2023-04-10
+
+[100 rows x 4 columns]
+feature_cols = ['Feature'], drift_type = 'shift', drift_magnitude = 2.0
+drift_value = None, drift_values = None, start_index = 50, block_index = None
+block_column = None, time_col = 'Time', time_start = None, time_end = None
+time_ranges = None, specific_times = None, auto_report = True, output_dir = None
+generator_name = None
+
+    def inject_feature_drift(
+        self,
+        df: pd.DataFrame,
+        feature_cols: List[str],
+        drift_type: str = "gaussian_noise",
+        drift_magnitude: float = 0.2,
+        drift_value: Optional[float] = None,
+        drift_values: Optional[Dict[str, float]] = None,
+        start_index: Optional[int] = None,
+        block_index: Optional[int] = None,
+        block_column: Optional[str] = None,
+        time_col: Optional[str] = None,
+        time_start: Optional[str] = None,
+        time_end: Optional[str] = None,
+        time_ranges: Optional[Sequence[Tuple[str, str]]] = None,
+        specific_times: Optional[Sequence[str]] = None,
+        auto_report: bool = True,
+        output_dir: Optional[str] = None,
+        generator_name: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Applies drift at once based on various selection criteria.
+    
+        Args:
+            df, feature_cols, drift_type, drift_magnitude, drift_value, drift_values: Core drift parameters.
+            start_index, block_index, block_column: Index and block-based selection.
+            time_start, time_end, time_ranges, specific_times: Time-based selection.
+            time_col: The timestamp column used for time selection.
+            auto_report: Whether to generate a report.
+            output_dir: Directory for reports (overrides init default).
+            generator_name: Name for reports (overrides init default).
+        """
+        self._validate_feature_op(drift_type, drift_magnitude)
+        df_drift = df.copy()
+        rows = self._get_target_rows(
+            df,
+            start_index=start_index,
+            block_index=block_index,
+            block_column=block_column,
+            time_col=time_col,
+            time_start=time_start,
+            time_end=time_end,
+            time_ranges=time_ranges,
+            specific_times=specific_times,
+        )
+    
+        w = np.ones(len(rows), dtype=float)
+    
+        for col in feature_cols:
+            if col not in df.columns:
+                warnings.warn(f"Column '{col}' not found")
+                continue
+    
+            column_drift_value = None
+            if drift_type in {
+                "add_value",
+                "subtract_value",
+                "multiply_value",
+                "divide_value",
+            }:
+                column_drift_value = (
+                    drift_values.get(col) if drift_values else drift_value
+                )
+                if column_drift_value is None:
+                    raise ValueError(
+                        f"For '{drift_type}', provide drift_value or drift_values['{col}']"
+                    )
+    
+            if pd.api.types.is_numeric_dtype(df[col]):
+                x = df_drift.loc[rows, col].to_numpy(copy=True)
+                x2 = self._apply_numeric_op_with_weights(
+                    x, drift_type, drift_magnitude, w, self.rng, column_drift_value
+                )
+                df_drift.loc[rows, col] = x2
+            else:
+                s = df_drift.loc[rows, col]
+                s2 = self._apply_categorical_with_weights(
+                    s, w, drift_magnitude, self.rng
+                )
+                df_drift.loc[rows, col] = s2
+    
+        if auto_report:
+            gen_name = generator_name or self.generator_name
+            out_dir = output_dir or self.output_dir
+    
+            drift_config = {
+                "drift_method": "inject_feature_drift",
+                "feature_cols": feature_cols,
+                "drift_type": drift_type,
+                "drift_magnitude": drift_magnitude,
+                "start_index": start_index,
+                "block_index": block_index,
+                "time_start": time_start,
+                "generator_name": f"{gen_name}_feature_drift",
+            }
+            if out_dir:
+                df_drift.to_csv(
+                    os.path.join(out_dir, f"{drift_config['generator_name']}.csv"),
+                    index=False,
+                )
+>               self._generate_reports(
+                    df, df_drift, drift_config, output_dir=out_dir, time_col=time_col
+                )
+E               TypeError: DriftInjector._generate_reports() got an unexpected keyword argument 'output_dir'
+
+calmops/data_generators/DriftInjection/DriftInjector.py:728: TypeError
+___________________ test_real_block_generator_comprehensive ____________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_real_block_generator_comprehensive(output_dir):
+        """Test RealBlockGenerator with drift schedule."""
+        data = pd.DataFrame(
+            {"Val": np.random.randn(100), "Date": pd.date_range("2023-01-01", periods=100)}
+        )
+        # Create manual blocks
+        data["Block"] = np.where(data.index < 50, "B1", "B2")
+    
+        gen = RealBlockGenerator(auto_report=False)
+    
+        # Schedule: Drift only in B2
+        drift_schedule = [
+            {
+                "method": "inject_feature_drift",
+                "params": {
+                    "feature_cols": ["Val"],
+                    "drift_type": "scale",
+                    "drift_magnitude": 2.0,
+                    # In stateless API, block filtering is done via params if not implicitly handled by orchestrator's iteration.
+                    # Here we pass 'blocks' param to target specific block
+                    "blocks": ["B2"],
+                },
+            }
+        ]
+    
+        final_df = gen.generate(
+            data=data,
+            output_dir=output_dir,
+            method="cart",
+            block_column="Block",
+            drift_config=drift_schedule,
+            date_col="Date",
+        )
+    
+        assert len(final_df) == 100
+        assert "B1" in final_df["Block"].values
+        assert "B2" in final_df["Block"].values
+    
+        # Check B1 matches original distribution roughly (no drift)
+        # Check B2 has higher scale
+        b1_std = final_df[final_df["Block"] == "B1"]["Val"].std()
+        b2_std = final_df[final_df["Block"] == "B2"]["Val"].std()
+    
+        # Since original was N(0,1), B1 should be ~1. B2 should be ~1 * (1+2) = 3 or similar depending on implementation
+        # Scale drift: x = mean + (x-mean)*(1+drift). Std should scale by (1+drift).
+        # 1+2 = 3. So B2 std should be roughly 3x B1 std.
+>       assert b2_std > b1_std * 1.5
+E       assert 1.0615661897720416 > (0.7141388774182988 * 1.5)
+
+tests/test_data_generators_comprehensive.py:225: AssertionError
+----------------------------- Captured stderr call -----------------------------
+2026-01-13 15:31:19,693 - RealGenerator - INFO - RealGenerator.py:938 - Starting generation of 50 samples using method 'cart'...
+2026-01-13 15:31:19,695 - RealGenerator - INFO - RealGenerator.py:408 - Starting CART (FCS-style) synthesis...
+2026-01-13 15:31:19,700 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 1/10
+2026-01-13 15:31:19,749 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 2/10
+2026-01-13 15:31:19,792 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 3/10
+2026-01-13 15:31:19,842 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 4/10
+2026-01-13 15:31:19,886 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 5/10
+2026-01-13 15:31:19,932 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 6/10
+2026-01-13 15:31:19,992 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 7/10
+2026-01-13 15:31:20,056 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 8/10
+2026-01-13 15:31:20,112 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 9/10
+2026-01-13 15:31:20,191 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 10/10
+2026-01-13 15:31:20,240 - RealGenerator - INFO - RealGenerator.py:1038 - Successfully synthesized 50 samples.
+2026-01-13 15:31:20,299 - RealGenerator - INFO - RealGenerator.py:938 - Starting generation of 50 samples using method 'cart'...
+2026-01-13 15:31:20,300 - RealGenerator - INFO - RealGenerator.py:408 - Starting CART (FCS-style) synthesis...
+2026-01-13 15:31:20,327 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 1/10
+2026-01-13 15:31:20,491 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 2/10
+2026-01-13 15:31:20,613 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 3/10
+2026-01-13 15:31:20,689 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 4/10
+2026-01-13 15:31:20,772 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 5/10
+2026-01-13 15:31:20,824 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 6/10
+2026-01-13 15:31:20,872 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 7/10
+2026-01-13 15:31:20,929 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 8/10
+2026-01-13 15:31:20,967 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 9/10
+2026-01-13 15:31:21,000 - RealGenerator - INFO - RealGenerator.py:457 - CART iteration 10/10
+2026-01-13 15:31:21,034 - RealGenerator - INFO - RealGenerator.py:1038 - Successfully synthesized 50 samples.
+------------------------------ Captured log call -------------------------------
+INFO     RealBlockGenerator:RealBlockGenerator.py:65 RealBlockGenerator initialized.
+INFO     RealBlockGenerator:RealBlockGenerator.py:95 Using existing column 'Block' for blocks.
+INFO     RealBlockGenerator:RealBlockGenerator.py:241 RealBlockGenerator processing 2 blocks
+INFO     RealBlockGenerator:RealBlockGenerator.py:242 Blocks are defined by column: 'Block'
+INFO     RealBlockGenerator:RealBlockGenerator.py:149 Generating 50 samples for block B1 using method 'cart'
+INFO     RealGenerator:RealGenerator.py:938 Starting generation of 50 samples using method 'cart'...
+INFO     RealGenerator:RealGenerator.py:408 Starting CART (FCS-style) synthesis...
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 1/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 2/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 3/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 4/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 5/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 6/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 7/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 8/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 9/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 10/10
+INFO     RealGenerator:RealGenerator.py:1038 Successfully synthesized 50 samples.
+INFO     RealBlockGenerator:RealBlockGenerator.py:286 Generated block B1: 50 samples
+INFO     RealBlockGenerator:RealBlockGenerator.py:149 Generating 50 samples for block B2 using method 'cart'
+INFO     RealGenerator:RealGenerator.py:938 Starting generation of 50 samples using method 'cart'...
+INFO     RealGenerator:RealGenerator.py:408 Starting CART (FCS-style) synthesis...
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 1/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 2/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 3/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 4/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 5/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 6/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 7/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 8/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 9/10
+INFO     RealGenerator:RealGenerator.py:457 CART iteration 10/10
+INFO     RealGenerator:RealGenerator.py:1038 Successfully synthesized 50 samples.
+INFO     RealBlockGenerator:RealBlockGenerator.py:286 Generated block B2: 50 samples
+INFO     RealBlockGenerator:RealBlockGenerator.py:295 Applying drift schedule to the complete dataset.
+INFO     RealBlockGenerator:RealBlockGenerator.py:312 Drift schedule applied successfully.
+INFO     RealBlockGenerator:RealBlockGenerator.py:335 Complete synthetic dataset saved to: test_output_comprehensive/complete_block_dataset_cart.csv
+INFO     RealBlockGenerator:RealBlockGenerator.py:337 Complete synthetic dataset generated: (100, 3)
+INFO     RealBlockGenerator:RealBlockGenerator.py:340 Final block distribution: {'B1': 50, 'B2': 50}
+__________________ test_clinic_generator_block_comprehensive ___________________
+
+output_dir = 'test_output_comprehensive'
+
+    def test_clinic_generator_block_comprehensive(output_dir):
+        """Test ClinicGeneratorBlock with drift and dynamics."""
+        cohort_gen = ClinicGeneratorBlock()
+        clinic_instance = ClinicGenerator(seed=123)
+    
+        # Dynamics config
+        dynamics_conf = {"evolve_features": {"feature_cols": ["Age"], "rate": 0.05}}
+    
+        # Drift config
+        drift_conf = [
+            {
+                "method": "inject_new_value",  # Stateless check
+                "params": {
+                    "cols": ["Group"],
+                    "new_value": "NewGroup",
+                    "prob": 0.5,
+                    "blocks": [
+                        2
+                    ],  # Target 2nd block (labels are 1-based integers usually in helper)
+                },
+            }
+        ]
+    
+>       path = cohort_gen.generate(
+            output_dir=output_dir,
+            filename="clinic_block_test.csv",
+            n_blocks=2,
+            total_samples=40,
+            n_samples_block=20,  # 20 per block
+            generators=clinic_instance,
+            date_start="2023-01-01",
+            dynamics_config=dynamics_conf,
+            drift_config=drift_conf,
+            target_col="Diagnosis",
+            generate_report=False,
+        )
+
+tests/test_data_generators_comprehensive.py:251: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+calmops/data_generators/Clinic/ClinicGeneratorBlock.py:75: in generate
+    block_df = clinic_generator.generate(
+calmops/data_generators/Synthetic/SyntheticGenerator.py:104: in generate
+    df = self._generate_internal(
+calmops/data_generators/Clinic/ClinicGenerator.py:56: in _generate_internal
+    df = super()._generate_internal(**kwargs)
+calmops/data_generators/Synthetic/SyntheticGenerator.py:193: in _generate_internal
+    else self._generate_data(data_gen_instance, n_samples)
+calmops/data_generators/Synthetic/SyntheticGenerator.py:422: in _generate_data
+    return [list(x.values()) + [y] for x, y in data_iterator]
+calmops/data_generators/Synthetic/SyntheticGenerator.py:422: in <listcomp>
+    return [list(x.values()) + [y] for x, y in data_iterator]
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+.0 = <range_iterator object at 0x7fe64ed22430>
+
+>   data_iterator = (next(gen) for _ in range(n_samples))
+E   TypeError: 'ClinicGenerator' object is not an iterator
+
+calmops/data_generators/Synthetic/SyntheticGenerator.py:420: TypeError
+_________________________ test_dynamics_injector_basic _________________________
+
+    def test_dynamics_injector_basic():
+        """Test basic rule application of DynamicsInjector."""
+        injector = DynamicsInjector()
+        df = pd.DataFrame({"A": [1, 2, 3, 4, 5], "B": [5, 4, 3, 2, 1]})
+    
+        # Construct target rule: if A > B then 1 else 0
+>       df_new = injector.construct_target(
+            df,
+            target_col="Target",
+            rules=[{"condition": "A > B", "output": 1}],
+            default_output=0,
+        )
+E       TypeError: DynamicsInjector.construct_target() got an unexpected keyword argument 'rules'
+
+tests/test_data_generators_comprehensive.py:287: TypeError
+=============================== warnings summary ===============================
+tests/test_data_generators_comprehensive.py::test_real_block_generator_comprehensive
+  /home/alex/calmops/calmops/data_generators/DriftInjection/DriftInjector.py:1647: UserWarning: Failed to apply drift 'inject_feature_drift': DriftInjector.inject_feature_drift() got an unexpected keyword argument 'blocks'
+    warnings.warn(f"Failed to apply drift '{method_name}': {e}")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_data_generators_comprehensive.py::test_synthetic_generator_basic
+FAILED tests/test_data_generators_comprehensive.py::test_clinic_generator_basic
+FAILED tests/test_data_generators_comprehensive.py::test_clinic_generator_longitudinal
+FAILED tests/test_data_generators_comprehensive.py::test_drift_injector_comprehensive
+FAILED tests/test_data_generators_comprehensive.py::test_real_block_generator_comprehensive
+FAILED tests/test_data_generators_comprehensive.py::test_clinic_generator_block_comprehensive
+FAILED tests/test_data_generators_comprehensive.py::test_dynamics_injector_basic
+============== 7 failed, 1 passed, 1 warning in 154.09s (0:02:34) ==============
